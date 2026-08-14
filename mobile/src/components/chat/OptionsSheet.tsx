@@ -59,9 +59,6 @@ export function OptionsSheet({
            see RelatedWorksSheet.tsx for the on-device confirmation of why an ancestor Pressable
            blocks the ScrollView's drag-to-scroll below. */}
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        {/* DR-078: this menu lives in its own OS window, so the base-layer devtest bubble
-            can't float over it — dev builds re-render the trigger here instead. */}
-        <DevTestModalTrigger />
         <View style={styles.card}>
           <ScrollView bounces={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
             {title ? (
@@ -121,6 +118,13 @@ export function OptionsSheet({
             ))}
           </ScrollView>
         </View>
+        {/* DR-078: this menu lives in its own OS window, so the base-layer devtest bubble
+            can't float over it — dev builds re-render the trigger here instead. AFTER the
+            card (PR #402 review): a tall menu geometrically overlaps the trigger's corner,
+            and sibling order keeps it on top even if the card ever gains an elevation. The
+            trade, dev builds only: in that overlap the trigger takes the tap — if a
+            bottom-right menu row "stops responding" in dev, this is why. */}
+        <DevTestModalTrigger />
       </View>
     </Modal>
   );

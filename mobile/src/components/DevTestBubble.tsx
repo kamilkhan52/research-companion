@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
 import type { DevTestItem, DevTestFeedbackEntry } from '@/api/endpoints';
+import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -57,46 +58,60 @@ export function requestDevTestOpen() {
   sheetOpener?.();
 }
 
-// Whether the root DevTestBubble is currently mounted — the modal-hosted triggers subscribe
+// Whether a root DevTestBubble is currently mounted — the modal-hosted triggers subscribe
 // to this instead of re-running the RC_DEV health query themselves, so they carry no
 // react-query context requirement into their host components (or those components' tests).
+// A COUNTER, not a boolean (Opus review, PR #402): with last-writer-wins, a transient second
+// mount's cleanup would de-register the survivor and every modal trigger would vanish with
+// no signal.
 const activeListeners = new Set<() => void>();
-let bubbleMounted = false;
-function setBubbleMounted(next: boolean) {
-  if (next === bubbleMounted) return;
-  bubbleMounted = next;
-  activeListeners.forEach((l) => l());
+let bubbleMounts = 0;
+function adjustBubbleMounts(delta: number) {
+  const wasActive = bubbleMounts > 0;
+  bubbleMounts += delta;
+  if (bubbleMounts > 0 !== wasActive) activeListeners.forEach((l) => l());
 }
+// Module-scope subscribe: an inline closure would re-subscribe on every render of every
+// trigger copy (Opus review, PR #402).
+function subscribeToBubbleMounts(cb: () => void) {
+  activeListeners.add(cb);
+  return () => activeListeners.delete(cb);
+}
+const bubbleIsMounted = () => bubbleMounts > 0;
 
 /** The modal-layer trigger: renders nothing unless the root bubble is live (dev builds
  *  against a dev server), so Modal hosts can mount it unconditionally. */
 export function DevTestFloatingTriggerIfActive() {
-  const active = useSyncExternalStore(
-    (cb) => {
-      activeListeners.add(cb);
-      return () => activeListeners.delete(cb);
-    },
-    () => bubbleMounted,
-  );
+  const active = useSyncExternalStore(subscribeToBubbleMounts, bubbleIsMounted);
   if (!active) return null;
   return <DevTestFloatingTrigger />;
 }
 
-/** The floating clipboard trigger, for rendering INSIDE a native Modal's own window. The
- *  screenshot taken on open captures the app's main window only (dialogs are separate OS
- *  windows react-native-view-shot cannot see), so feedback filed from a menu arrives without
- *  the menu in the shot — still strictly better than having to close the menu to reach the
- *  bubble at all. */
+/** The floating clipboard trigger — rendered by the root bubble in the base layer, and by
+ *  native-Modal hosts INSIDE their own window. Keyboard-aware in both places: the review
+ *  surfaces hosting it (NotesReviewSheet's edit mode especially) put a keyboard over the
+ *  default position (DR-072's lesson, re-found in PR #402's review).
+ *
+ *  Known limits, deliberate: on Android, react-native-view-shot captures the app's main
+ *  window only (dialogs are separate OS windows), so feedback filed from a native menu
+ *  arrives without the menu in the shot — still strictly better than closing the menu to
+ *  reach the bubble. On iOS the same call grabs the key window INCLUDING presented
+ *  view-controllers, so a modal-hosted copy could appear in its own screenshot; Android-only
+ *  today, revisit self-hiding if iOS ever ships. */
 export function DevTestFloatingTrigger() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
   return (
     <Pressable
       onPress={requestDevTestOpen}
       accessibilityRole="button"
       accessibilityLabel="Open device-test companion"
-      style={[styles.bubble, { bottom: insets.bottom + 96 }]}
+      style={[
+        styles.bubble,
+        { bottom: keyboardHeight > 0 ? keyboardHeight + space.md : insets.bottom + 96 },
+      ]}
     >
       <Icon name="clipboard" size={20} color={t.mintInk} />
     </Pressable>
@@ -189,11 +204,8 @@ export function DevTestBubble() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
-  // DR-072 — the trigger bubble is positioned off the bottom safe-area inset alone, so a
-  // keyboard open on whatever screen the bubble floats over (e.g. mid-comment) covers it —
-  // mildly self-defeating, since this bubble is how Kamil files feedback about exactly that
-  // kind of bug. Same fix as DR-055/DR-072's Toast fix: read the global keyboard state.
-  const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
+  // DR-072's keyboard-aware positioning lives inside DevTestFloatingTrigger now, shared with
+  // the modal-hosted copies (PR #402 review).
   const pathname = usePathname();
   const [visible, setVisible] = useState(false);
   const [hidden, setHidden] = useState(false);   // bubble hidden for the capture frame
@@ -275,13 +287,14 @@ export function DevTestBubble() {
   }, []);
 
   // DR-078: triggers hosted inside native Modal windows open this sheet through the
-  // module-level opener above, and render only while this root mount is live.
+  // module-level opener above, and render only while a root mount is live.
   useEffect(() => {
-    sheetOpener = () => void open();
-    setBubbleMounted(true);
+    const opener = () => void open();
+    sheetOpener = opener;
+    adjustBubbleMounts(1);
     return () => {
-      sheetOpener = null;
-      setBubbleMounted(false);
+      if (sheetOpener === opener) sheetOpener = null;
+      adjustBubbleMounts(-1);
     };
   }, [open]);
 
@@ -333,19 +346,7 @@ export function DevTestBubble() {
 
   return (
     <>
-      {!visible && !hidden ? (
-        <Pressable
-          onPress={() => void open()}
-          accessibilityRole="button"
-          accessibilityLabel="Open device-test companion"
-          style={[
-            styles.bubble,
-            { bottom: keyboardHeight > 0 ? keyboardHeight + space.md : insets.bottom + 96 },
-          ]}
-        >
-          <Icon name="clipboard" size={20} color={t.mintInk} />
-        </Pressable>
-      ) : null}
+      {!visible && !hidden ? <DevTestFloatingTrigger /> : null}
 
       <Modal visible={visible} animationType="slide" onRequestClose={() => setVisible(false)}>
         <View style={[styles.sheet, { paddingTop: insets.top + space.sm }]}>
@@ -688,6 +689,10 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
           {item.feedback_count ? (
             <Chip label={`${item.feedback_count} note${item.feedback_count === 1 ? '' : 's'}`} color={t.mint} dot={false} />
           ) : null}
+          {item.response_count ? (
+            // DR-080: a reply exists — worth opening the history before re-testing.
+            <Chip label={`${item.response_count} repl${item.response_count === 1 ? 'y' : 'ies'}`} color={t.violet} dot={false} />
+          ) : null}
           {lastVerdict ? (
             // Opus review, PR #380: an explicit `=== 'fail'` check (not an else) so a future
             // widening of the verdict type can't silently mislabel an unrecognized value "Failed".
@@ -722,12 +727,38 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
                 }
               }}
             />
+          ) : history.length === 0 ? (
+            <Text variant="caption" color={t.muted} style={styles.history}>
+              No earlier notes.
+            </Text>
           ) : (
-            history.map((e, idx) => (
-              <Text key={`${e.ts}-${idx}`} variant="caption" color={t.muted} style={styles.history}>
-                {e.ts.slice(5, 16)} · {e.verdict}{e.comment ? ` — ${e.comment}` : ''}
-              </Text>
-            ))
+            // DR-080: a styled conversation, not `ts · verdict — comment` lines. Tester
+            // entries carry their verdict chip; agent responses (triage answers — diagnosis,
+            // "fixed in PR #N", "split into DR-0XX") render as markdown under an Agent chip,
+            // so the pass/close decision can be made right here.
+            history.map((e, idx) =>
+              e.kind === 'response' ? (
+                <View key={`${e.ts}-${idx}`} style={[styles.historyEntry, styles.historyAgent]}>
+                  <View style={styles.historyHead}>
+                    <Chip label="Agent" color={t.violet} dot={false} />
+                    <Text variant="caption" color={t.muted}>{e.ts.slice(5, 16)}</Text>
+                  </View>
+                  <Markdown text={e.text ?? ''} />
+                </View>
+              ) : (
+                <View key={`${e.ts}-${idx}`} style={styles.historyEntry}>
+                  <View style={styles.historyHead}>
+                    <Chip
+                      label={`You · ${e.verdict ?? 'note'}`}
+                      color={e.verdict === 'pass' ? t.mint : e.verdict === 'fail' ? t.danger : t.muted}
+                      dot={false}
+                    />
+                    <Text variant="caption" color={t.muted}>{e.ts.slice(5, 16)}</Text>
+                  </View>
+                  {e.comment ? <Text variant="body">{e.comment}</Text> : null}
+                </View>
+              ),
+            )
           )}
           <TextInput
             placeholder="Comment (optional for pass/fail, required for remark)"
@@ -794,6 +825,15 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   cardTitle: { fontFamily: fonts.bodyMedium },
   how: { marginTop: space.xs, lineHeight: 18 },
   history: { marginTop: 4 },
+  historyEntry: {
+    marginTop: space.sm,
+    paddingLeft: space.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: t.line,
+    gap: 2,
+  },
+  historyAgent: { borderLeftColor: t.violet },
+  historyHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   input: {
     marginTop: space.sm,
     borderWidth: 1,

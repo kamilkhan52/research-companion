@@ -153,6 +153,49 @@ def test_the_inbox_survives_a_real_torn_write(client, tmp_path):
     assert [e["item_id"] for e in entries] == ["DR-001", "DR-002"]
 
 
+def test_agent_responses_interleave_with_feedback_and_are_counted(client):
+    """DR-080: the triage skill's `append_response` entries must reach the phone — both in the
+    item's history (interleaved, in ts order, distinguishable by kind) and as a per-item count
+    on the items list so the card can show a reply exists before the history is opened."""
+    client.post("/api/devtest/feedback", json={"item_id": "DR-058", "verdict": "fail",
+                                               "comment": "the plan never appears"})
+    devtest.append_response("DR-058", "Root-caused: the plan step 404s. **Fixed in PR #999** — "
+                                      "please re-test and pass this row.")
+    client.post("/api/devtest/feedback", json={"item_id": "DR-058", "verdict": "remark",
+                                               "comment": "will retest tonight"})
+
+    entries = client.get("/api/devtest/feedback",
+                         params={"item_id": "DR-058"}).json()["entries"]
+    kinds = [e.get("kind") for e in entries]
+    assert kinds == ["feedback", "response", "feedback"]
+    assert "Fixed in PR #999" in entries[1]["text"]
+
+    items = client.get("/api/devtest/items").json()["items"]
+    row = next(i for i in items if i["id"] == "DR-058")
+    assert row["response_count"] == 1
+    assert row["feedback_count"] == 2
+
+    # A response is agent-authored, never HTTP-authored: the POST body has no way to mint one
+    # (verdict is a closed set), and empty inputs are refused at the helper.
+    with pytest.raises(ValueError):
+        devtest.append_response("DR-058", "   ")
+    with pytest.raises(ValueError):
+        devtest.append_response("", "text")
+
+    # And pin the property as BEHAVIOR, not prose (Opus review, PR #403): a POST that smuggles
+    # a `kind` field must not become a response — pydantic drops the unknown field and the
+    # stored entry is assembled field-by-field as kind="feedback". This fails loudly if the
+    # handler ever switches to `**req.model_dump()`.
+    smuggled = client.post("/api/devtest/feedback", json={
+        "item_id": "DR-058", "verdict": "pass", "kind": "response", "text": "forged voice",
+    })
+    assert smuggled.status_code == 200
+    stored = client.get("/api/devtest/feedback",
+                        params={"item_id": "DR-058"}).json()["entries"][-1]
+    assert stored["kind"] == "feedback"
+    assert "text" not in stored
+
+
 def test_new_item_ids_never_touch_the_ledger(client):
     """The app writes the inbox only — the ledger is the agent's to edit (the same
     agent-proposes boundary as everywhere else)."""

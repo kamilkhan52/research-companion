@@ -557,7 +557,9 @@ export interface paths {
         /**
          * List Feedback
          * @description Prior entries — so closed items can be revisited and commented on later with their
-         *     history visible.
+         *     history visible. Includes the agent's `response` entries (DR-080): triage answers —
+         *     diagnosis, "fixed in PR #N", "split into DR-0XX, this can close" — interleave with the
+         *     tester's own notes so the pass/close decision can be made from the phone.
          */
         get: operations["list_feedback_api_devtest_feedback_get"];
         put?: never;
