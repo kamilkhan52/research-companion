@@ -215,6 +215,13 @@ export interface Session {
   /** Added with independent discussions; absent only on an older backend during rollout. */
   thread_id?: string;
   threads?: DiscussionThreadSummary[];
+  /** DR-083 interim: a recorded user turn whose worker died without recording a response —
+   *  no live job to reattach to, nothing in the transcript to show. The screen surfaces an
+   *  honest interrupted-turn card with a retry (continue_job re-runs it without
+   *  re-recording). `error` is set when the server still remembers THIS turn's failure;
+   *  null after a restart. `stopped` marks a cooperative Stop that recorded nothing — the
+   *  reader's own action, so the copy must not claim a server failure. */
+  pending_turn?: { kind: string; ts: string; error: string | null; stopped?: boolean } | null;
 }
 
 /** GET /api/projects/{pid}/review/{slug} — the proposed commit for the notes-drafted review. */
