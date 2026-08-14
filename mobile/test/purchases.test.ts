@@ -120,10 +120,17 @@ test('overlapping identity syncs serialize — the later call decides the final 
   await Promise.all([signOut, signIn]);
 
   expect(effects).toEqual(['logOut', 'logIn']);
-  mockSdk.getAppUserID.mockResolvedValue('$RCAnonymousID:abc');
-  mockSdk.isAnonymous.mockResolvedValue(true);
-  mockSdk.logOut.mockReset();
-  mockSdk.logIn.mockReset();
+});
+
+afterEach(() => {
+  // clearAllMocks clears calls but NOT implementations — without this, the serialization
+  // test's persistent mockResolvedValues would leak into whatever test runs after a mid-test
+  // failure and turn one red into two.
+  mockSdk.getAppUserID.mockReset().mockResolvedValue('$RCAnonymousID:abc');
+  mockSdk.isAnonymous.mockReset().mockResolvedValue(true);
+  mockSdk.logOut.mockReset().mockResolvedValue({});
+  mockSdk.logIn.mockReset().mockResolvedValue({});
+  mockSdk.getOfferings.mockReset().mockResolvedValue({ current: null });
 });
 
 test('a build without the native module degrades everywhere and never configures', async () => {

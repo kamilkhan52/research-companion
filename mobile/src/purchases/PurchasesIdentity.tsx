@@ -25,7 +25,10 @@ export function PurchasesIdentity() {
     if (status === 'signed-in' && userId) void syncIdentity(userId);
     else if (status === 'signed-out' || status === 'disabled') void syncIdentity(null);
     // 'unknown' / 'unreachable' / 'cleanup-required': auth unresolved — leave the persisted
-    // RevenueCat identity exactly as it is.
+    // RevenueCat identity exactly as it is. cleanup-required skipping logOut is safe, not a
+    // gap: AuthGate blocks the whole app behind LocalCleanupRequired (nothing can read an
+    // entitlement), clearing app data takes RevenueCat's cache with it, and the only other
+    // exit is a successful adoption whose logIn supersedes the missed logOut.
   }, [status, userId]);
   return null;
 }
