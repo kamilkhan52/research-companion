@@ -200,6 +200,27 @@ def notes_discussion_update_job(target: str, req: DiscussionUpdateReq):
     return {"job": notes_jobs.snapshot(job.id)}
 
 
+class ProjectFoldReq(BaseModel):
+    assistant_index: int | None = None
+    thread_id: str | None = None
+
+
+@project_router.post("/notes/{slug}/project_fold_job")
+def notes_project_fold_job(slug: str, req: ProjectFoldReq):
+    """Start (or join) a mid-conversation PROJECT Notes proposal from one of `slug`'s
+    responses (DR-081) — the per-response button sends the response's `assistant_index`; the
+    analyst's `propose_project_notes_update` tool sends none and folds the discussion tail.
+    Poll /notes/jobs/{id}; review and apply on the Project Notes screen via POST
+    /notes/working, like every Project Notes proposal."""
+    if not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
+    try:
+        job = notes_jobs.start_project_notes_fold(slug, req.assistant_index, req.thread_id)
+    except (notes_jobs.NotesError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"job": notes_jobs.snapshot(job.id)}
+
+
 @project_router.get("/review/{slug}")
 def get_review(slug: str, thread_id: str = sessions.MAIN_THREAD):
     try:

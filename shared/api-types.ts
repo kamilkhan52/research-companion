@@ -696,7 +696,7 @@ export interface paths {
          * Split Project
          * @description Split selected papers (and the work done on them) into a new project. Deterministic
          *     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
-         *     the removal endpoint above. The optional AI working-notes passes are separate jobs.
+         *     the removal endpoint above. The optional AI Project Notes passes are separate jobs.
          *
          *     Refused (409) while any background job is running for the source project: a chat turn or
          *     graph build mid-move would write into files being relocated. Mark the source busy FIRST,
@@ -1475,6 +1475,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/notes/{slug}/project_fold_job": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Notes Project Fold Job
+         * @description Start (or join) a mid-conversation PROJECT Notes proposal from one of `slug`'s
+         *     responses (DR-081) — the per-response button sends the response's `assistant_index`; the
+         *     analyst's `propose_project_notes_update` tool sends none and folds the discussion tail.
+         *     Poll /notes/jobs/{id}; review and apply on the Project Notes screen via POST
+         *     /notes/working, like every Project Notes proposal.
+         */
+        post: operations["notes_project_fold_job_api_projects__pid__notes__slug__project_fold_job_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/review/{slug}": {
         parameters: {
             query?: never;
@@ -2184,6 +2208,13 @@ export interface components {
             user_id: string;
             /** Plan */
             plan?: string | null;
+        };
+        /** ProjectFoldReq */
+        ProjectFoldReq: {
+            /** Assistant Index */
+            assistant_index?: number | null;
+            /** Thread Id */
+            thread_id?: string | null;
         };
         /** ProjectReq */
         ProjectReq: {
@@ -4725,6 +4756,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["DiscussionUpdateReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    notes_project_fold_job_api_projects__pid__notes__slug__project_fold_job_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectFoldReq"];
             };
         };
         responses: {

@@ -1778,6 +1778,26 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel, sentenceComments]);
 
+  // DR-081 — fold ONE response's insight into the PROJECT Notes, on demand. A conservative
+  // separate-editor pass server-side; the Project Notes screen resumes the job and hosts the
+  // review, so approval stays where every notes proposal lives (invariant 4).
+  const foldRouter = useRouter();
+  const foldToProjectNotes = useCallback(async (assistantIndex: number) => {
+    if (!pid || !slug) return;
+    try {
+      await api.startProjectNotesFold(pid, slug, assistantIndex, threadId);
+      showToast('Drafting a Project Notes update from this response…');
+      foldRouter.push('/notes/working');
+    } catch (e) {
+      if (presentSpendRefusal(e, {
+        operation: 'other',
+        retry: () => void foldToProjectNotes(assistantIndex),
+      })) return;
+      showToast((e as Error).message ?? 'Could not start the Project Notes update.');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, slug, threadId]);
+
   // Long-press a message for its actions (copy everywhere; edit on user replies; the full
   // under-response row — Listen, Retry, Retry-with-model — on assistant responses, U.12: the
   // menu is a shortcut to the same actions, not a different set). Rendered through the app's
@@ -1934,6 +1954,7 @@ function DiscussionThread({
           onRetry={handleRetry}
           onConfigureFirstRetry={() => setFirstRetryOpen(true)}
           canRetry={canRetry}
+          onFoldToProjectNotes={foldToProjectNotes}
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
           figureContext={figureContext}
@@ -1951,7 +1972,7 @@ function DiscussionThread({
         textStyle={{ left: scaledUserText, right: scaledUserText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, scaledUserText]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, scaledUserText]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2916,6 +2937,7 @@ function AssistantBody({
   onRetry,
   onConfigureFirstRetry,
   canRetry,
+  onFoldToProjectNotes,
   onSwitchBranch,
   switchDisabled,
   figureContext,
@@ -2935,6 +2957,8 @@ function AssistantBody({
   ) => void;
   onConfigureFirstRetry: () => void;
   canRetry: boolean;
+  /** DR-081: fold this response's insight into the Project Notes (conservative editor pass). */
+  onFoldToProjectNotes: (assistantIndex: number) => void;
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
   figureContext?: FigureContext;
@@ -3070,6 +3094,17 @@ function AssistantBody({
           onPress={() => void copy()}
           accessibilityLabel="Copy this response"
         />
+        {/* Opus review, PR #398: a DRAFT response (proposed_commit) renders through this same
+            body, and folding one always 400s server-side — a draft is approved or discarded,
+            not folded. Hide the action there instead of offering a dead end. */}
+        {!entry.proposed_commit ? (
+          <MsgAction
+            icon="edit-3"
+            label="Project Notes"
+            onPress={() => onFoldToProjectNotes(entry.assistant_index)}
+            accessibilityLabel="Fold this response into the Project Notes"
+          />
+        ) : null}
         {canRetry ? (
           <MsgAction
             icon="rotate-ccw"

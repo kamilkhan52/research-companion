@@ -595,3 +595,126 @@ def test_a_refused_tool_start_is_the_tools_answer_not_the_turns_death(temp_proje
     assert "Could not start a notes update" in out
     assert "usage limit" in out.lower()
 
+
+
+# ---- DR-081: the mid-conversation Project Notes fold ----
+
+def _seed_fold_discussion(slug: str, title: str) -> None:
+    sessions.start_session(slug, title)
+    sessions.record_user(slug, "What did we learn here?")
+    sessions._append_record(slug, {
+        "role": "assistant",
+        "canonical": "First response: the method uses paged attention.",
+    })
+    sessions.record_user(slug, "And the cross-paper angle?")
+    sessions._append_record(slug, {
+        "role": "assistant",
+        "canonical": "Second response: this connects continuous batching to AWQ's scaling story.",
+    })
+
+
+def test_project_fold_targets_working_and_uses_only_the_chosen_response(temp_project):
+    add_paper(temp_project, "p1", "Paper One")
+    _seed_fold_discussion("p1", "Paper One")
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nExisting thread.")
+    captured = {}
+
+    def runner(target, prompt):
+        captured["target"], captured["prompt"] = target, prompt
+        yield {"type": "final", "text": "# Project Notes\n\nExisting thread.\n\nBatching↔AWQ link."}
+
+    job = notes_jobs.start_project_notes_fold("p1", assistant_index=1, runner=runner)
+    settled = _wait_until_settled(job.id)
+    assert settled.status == "done"
+    assert settled.kind == "project_fold"
+    assert settled.target == notes_jobs.WORKING          # resumes on the Project Notes screen
+    assert captured["target"] == notes_jobs.WORKING
+    # The fold carries ONE response (DR-081's quantity control), not the whole conversation.
+    assert "Second response" in captured["prompt"]
+    assert "First response" not in captured["prompt"]
+    assert "Existing thread." in captured["prompt"]      # the current document is the base
+    assert "MID-CONVERSATION" in captured["prompt"]      # the conservative-editor instruction
+    # Proposal only — nothing reaches the record without the human apply (invariant 4).
+    assert notes_jobs.read(notes_jobs.WORKING).strip() == "# Project Notes\n\nExisting thread."
+
+
+def test_project_fold_without_index_folds_the_discussion_tail(temp_project):
+    add_paper(temp_project, "p1", "Paper One")
+    _seed_fold_discussion("p1", "Paper One")
+    # Opus review, PR #398: reader feedback on a draft lives in `authored_text` on a
+    # `revision` record — the tail must carry it, same filter as start_discussion_update.
+    sessions._append_record("p1", {
+        "role": "user", "kind": "revision", "text": "(rendered template)",
+        "authored_text": "Please emphasize the KV-cache angle.",
+    })
+    captured = {}
+
+    def runner(target, prompt):
+        captured["prompt"] = prompt
+        yield {"type": "final", "text": "# Project Notes\n\nProposal."}
+
+    job = notes_jobs.start_project_notes_fold("p1", runner=runner)
+    assert _wait_until_settled(job.id).status == "done"
+    # The agent-tool path (no index — the response being generated is not yet recorded) reads
+    # the discussion tail: reader questions, revision feedback, and both responses.
+    assert "What did we learn here?" in captured["prompt"]
+    assert "First response" in captured["prompt"]
+    assert "Second response" in captured["prompt"]
+    assert "Reader revision: Please emphasize the KV-cache angle." in captured["prompt"]
+    assert "(rendered template)" not in captured["prompt"]
+
+
+def test_project_fold_rejects_a_missing_response(temp_project):
+    add_paper(temp_project, "p1", "Paper One")
+    _seed_fold_discussion("p1", "Paper One")
+    with pytest.raises(notes_jobs.NotesError, match="No such response"):
+        notes_jobs.start_project_notes_fold("p1", assistant_index=7)
+
+
+def test_project_fold_ordinal_counts_draft_records_like_the_transcript_does(temp_project):
+    """sessions.transcript() increments assistant_index for EVERY assistant record, drafts
+    included — the fold's ordinal must match, or the button would fold the wrong response
+    whenever a draft proposal sits earlier in the thread."""
+    add_paper(temp_project, "p1", "Paper One")
+    sessions.start_session("p1", "Paper One")
+    sessions._append_record("p1", {
+        "role": "assistant", "canonical": "Draft preview.",
+        "proposed_commit": {"summary": "s", "notes_block": "n", "synthesis": ""},
+    })
+    sessions._append_record("p1", {
+        "role": "assistant", "canonical": "The real discussion response.",
+    })
+    captured = {}
+
+    def runner(target, prompt):
+        captured["prompt"] = prompt
+        yield {"type": "final", "text": "# Project Notes\n\nProposal."}
+
+    job = notes_jobs.start_project_notes_fold("p1", assistant_index=1, runner=runner)
+    assert _wait_until_settled(job.id).status == "done"
+    assert "The real discussion response." in captured["prompt"]
+    # And the draft itself is refused rather than folded.
+    with pytest.raises(notes_jobs.NotesError, match="notes\ndraft|notes draft"):
+        notes_jobs.start_project_notes_fold("p1", assistant_index=0)
+
+
+def test_only_the_finish_approval_marks_a_paper_read(temp_project):
+    """DR-081's forward-looking constraint, pinned: mid-read applies — a Paper Notes
+    discussion update, a Project Notes fold — never flip a paper to read. Only the finish
+    approve path (committer.commit) does."""
+    from app import committer, store
+
+    add_paper(temp_project, "p1", "Paper One")
+    _seed_fold_discussion("p1", "Paper One")
+
+    # Apply a Paper Notes update (the DR-043 flow's apply is notes_jobs.save on the paper).
+    notes_jobs.save("p1", "## Notes\n\nMid-read paper notes.")
+    assert store.get_paper("p1").list_status != "read"
+
+    # Apply a Project Notes fold (the DR-081 flow's apply is notes_jobs.save on WORKING).
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nFolded insight.")
+    assert store.get_paper("p1").list_status != "read"
+
+    # The finish approval is the one path that marks read.
+    committer.commit("p1", "## Notes\n\nFinal notes.", "# Project Notes\n\nFull fold.", "Read it")
+    assert store.get_paper("p1").list_status == "read"

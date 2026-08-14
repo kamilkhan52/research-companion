@@ -80,7 +80,7 @@ def save(target: str, markdown: str, summary: str = "") -> dict:
 class NotesJob(Job):
     target: str = ""                 # notes document being edited (also the registry dedup key)
     instruction: str = ""
-    kind: str = "edit"               # edit | split_destination | split_source_cleanup
+    kind: str = "edit"               # edit | discussion_update | project_fold | split_destination | split_source_cleanup
     summary: str = ""                # suggested human-approved commit message
     # Optimistic-concurrency token for the document the proposal was generated from. Applying
     # a proposal after the Project Notes changed would silently overwrite newer human work.
@@ -281,6 +281,97 @@ def start_discussion_update(target: str, thread_id: str | None = None,
             # target, so a thread-scoped key would strand the job from its own review surface.
             # The accepted cost is that a second thread's request while one is running joins
             # the first thread's proposal.
+            reject_running=False,
+        )
+
+
+#: Cap on the source material for a mid-conversation Project Notes fold. Smaller than the
+#: paper-notes cap on purpose: DR-081's quantity-control decision — a fold carries ONE
+#: response's insight (or a short tail), never the whole conversation.
+FOLD_CONTEXT_CHARS = 16_000
+
+
+def start_project_notes_fold(slug: str, assistant_index: int | None = None,
+                             thread_id: str | None = None,
+                             runner: RunnerFn | None = None) -> NotesJob:
+    """Propose folding a mid-discussion insight into the PROJECT Notes (DR-081).
+
+    Kamil's design, 2026-08-13: mid-conversation Project Notes updates exist but are
+    quantity-controlled — a SEPARATE editor pass that knows it is a mid-conversation update
+    (conservative, small deltas), distinct from the Finish turn's full integration
+    (`chat_jobs._maybe_edit_synthesis`). Triggered by the per-response button (a specific
+    `assistant_index`) or the analyst's `propose_project_notes_update` tool (no index — the
+    discussion tail, since the response being generated is not yet recorded). Invariant 4
+    holds: the result is a proposal on the job, applied only by an explicit human `save()`.
+
+    The proposal targets WORKING — it edits the Project Notes document, resumes on the
+    Project Notes screen, and serializes under the same mutation lock as every other
+    Project Notes proposal. `slug` names the paper whose discussion supplies the insight.
+    """
+    if not store.get_paper(slug):
+        raise NotesError(f"Unknown paper: {slug}")
+    with mutation_lock(WORKING):
+        current = read(WORKING)
+        title = store.title_for(slug)
+        # Same record-shape filter as start_discussion_update above (assistant text lives in
+        # `canonical`; finish/revision user records are rendered templates; a record with a
+        # proposed_commit is a draft, not discussion).
+        assistants: list[str] = []
+        parts: list[str] = []
+        for record in sessions.read_records(slug, thread_id):
+            role = record.get("role")
+            if role == "assistant":
+                # Ordinal must match the server-stamped assistant_index the client renders:
+                # sessions.transcript() increments for EVERY assistant record, drafts and
+                # empty-canonical records included, so this list must too.
+                assistants.append("" if record.get("proposed_commit")
+                                 else record.get("canonical", "").strip())
+            if role == "user" and record.get("kind") == "reply" and record.get("text", "").strip():
+                parts.append(f"Reader: {record['text'].strip()}")
+            elif (role == "user" and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                parts.append(f"Reader revision: {record['authored_text'].strip()}")
+            elif (role == "assistant" and not record.get("proposed_commit")
+                  and record.get("canonical", "").strip()):
+                parts.append(f"Analyst: {record['canonical'].strip()}")
+        if assistant_index is not None:
+            if not (0 <= assistant_index < len(assistants)):
+                raise NotesError("No such response in this discussion.")
+            excerpt = assistants[assistant_index]
+            if not excerpt:
+                raise NotesError("That response carries no discussion text to fold — a notes "
+                                 "draft is approved or discarded, not folded.")
+        else:
+            excerpt = "\n\n".join(parts)
+        if len(excerpt) > FOLD_CONTEXT_CHARS:
+            excerpt = "…[earlier material omitted]\n\n" + excerpt[-FOLD_CONTEXT_CHARS:]
+        if not excerpt.strip():
+            raise NotesError("There is no discussion to fold into the Project Notes yet.")
+        prompt = (
+            "=== CURRENT PROJECT NOTES ===\n"
+            f"{current.strip() or '(none yet)'}\n"
+            "=== END CURRENT PROJECT NOTES ===\n\n"
+            f"=== DISCUSSION EXCERPT — {title} ===\n"
+            f"{excerpt}\n"
+            "=== END EXCERPT ===\n\n"
+            "Instruction: Fold this mid-discussion insight into the Project Notes and return "
+            "the COMPLETE document. This is a MID-CONVERSATION update, not a finished-paper "
+            "integration: be conservative. Add or refine only what the excerpt clearly "
+            "establishes — a finding, correction, cross-paper connection, or open question "
+            "worth carrying forward. Prefer extending an existing thread over adding a new "
+            "one; never reorganize the document; keep every existing entry unless the excerpt "
+            "directly corrects it. If the Project Notes are empty, start a minimal document "
+            "holding only this insight. Use ONLY the supplied material — no external research, "
+            f"no invented content — and attribute the insight to {title}."
+        )
+        return _start_proposal(
+            WORKING,
+            f"Fold an insight from {title} into the Project Notes.",
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="project_fold",
+            summary=f"Fold into Project Notes: {title}",
             reject_running=False,
         )
 

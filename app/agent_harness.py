@@ -481,8 +481,30 @@ def build_agent(slug: str, model: Model | None = None,
                 "Tell the reader it will appear for their review shortly; nothing is saved "
                 "without their approval.")
 
+    def propose_project_notes_update(reason: str) -> str:
+        """Start drafting a conservative PROJECT Notes update from this discussion — the
+        cross-paper document, not this paper's own notes. Use sparingly, when the discussion
+        has just established something clearly worth carrying ACROSS papers: a cross-paper
+        connection, a correction to the project's running synthesis, or a finding that
+        reframes other papers. The reader reviews and approves the draft before anything is
+        saved. `reason` = one sentence on what should be carried across."""
+        # DR-081's second trigger (the first is the per-response button). Same contract as
+        # propose_notes_update above: writes nothing, starts a metered background proposal the
+        # reader must approve (invariant 4). No assistant_index — the response being generated
+        # is not yet recorded, so the fold reads the discussion tail; no thread argument for
+        # the same ambient-contextvar reason as its sibling.
+        from . import notes_jobs, quotas, rate_limits
+        try:
+            notes_jobs.start_project_notes_fold(slug)
+        except (notes_jobs.NotesError, quotas.QuotaError,
+                rate_limits.RateLimited, RuntimeError) as exc:
+            return f"Could not start a Project Notes update: {exc}"
+        return ("A conservative Project Notes update is being drafted in the background. "
+                "Tell the reader it will appear for their review on the Project Notes "
+                "screen; nothing is saved without their approval.")
+
     return Agent(model or _openrouter_model(), system_prompt=system,
-                 tools=TOOLS + [propose_notes_update],
+                 tools=TOOLS + [propose_notes_update, propose_project_notes_update],
                  output_type=str, retries=2)
 
 
