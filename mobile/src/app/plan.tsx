@@ -23,6 +23,7 @@ import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { usePlan } from '@/api/queries';
 import type { Plan } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
+import { billingAvailable } from '@/purchases/purchases';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, moneyType, space, type ThemePalette } from '@/theme/tokens';
 import {
@@ -172,6 +173,7 @@ export default function PlanScreen() {
 }
 
 function PlanBody({ plan }: { plan: Plan }) {
+  const router = useRouter();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const remaining = remainingFraction(plan.limit_nanousd, plan.spent_nanousd);
@@ -291,6 +293,17 @@ function PlanBody({ plan }: { plan: Plan }) {
         </View>
         {/* Server copy verbatim: it is the single source of what this plan promises. */}
         <Text variant="body" color={t.muted} style={[styles.planSummary, styles.bodyMin]}>{plan.plan.summary}</Text>
+        {/* M4: the paywall entry, dev builds only until M5 lands server-side entitlement
+            enforcement — the flag the roadmap's rollback plan calls for. billingAvailable
+            also gates it, so a build without the native module never dead-ends here. */}
+        {__DEV__ && billingAvailable() ? (
+          <Button
+            title="Upgrade"
+            variant="ghost"
+            onPress={() => router.push('/paywall')}
+            style={styles.cardAction}
+          />
+        ) : null}
       </Card>
     </>
   );

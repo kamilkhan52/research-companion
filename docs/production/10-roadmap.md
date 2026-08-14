@@ -274,7 +274,7 @@ gets updated as each lands.
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | ✅ **complete** — ownership enforced, per-user settings, verified against the live schema |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build | M1, M2 | L | **code-complete** — deletion, reporting and legal surfaces shipped; the AAB and Play Data Safety answers are the remainder |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | **shipped, with a remainder** — exact-cost metering, the reservation ledger, per-operation caps and plans are live; see "Current position" |
-| M4 | RevenueCat foundation | M2 | M | queued — **next** |
+| M4 | RevenueCat foundation | M2 | M | **in progress** — client foundation shipped 2026-08-14 (SDK, identity, paywall behind flag; `03-monetization-and-entitlements.md`); Play app created; remainder gated on H8's payments profile → H9 products → H10 credential |
 | M5 | Subscription-backed access | M3, M4 | M | queued |
 | M6 | Durability — job persistence and backups | M1, M3 | M | queued |
 | M7 | Remaining compliance, safety, and legal surfaces | M2, M2.5 | M | queued |
@@ -510,7 +510,7 @@ documents.
 | `02-security-and-privacy.md` | 🚧 M2.5 code-derived inventory + Data Safety draft written; implementation and M7 expansion open | M2.5, expanded in M7 |
 | `04-ai-costs-quotas-and-abuse.md` | ✅ done | M3 |
 | `01-architecture.md` | queued | M1 |
-| `03-monetization-and-entitlements.md` | queued | M4 |
+| `03-monetization-and-entitlements.md` | ✅ done — design record + remaining order | M4 |
 
 **Rule:** every architecture or configuration change updates the relevant document in the same PR.
 These are project memory — a future Claude or Codex session must be able to operate from them

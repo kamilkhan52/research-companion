@@ -67,7 +67,8 @@
       "eas": {
         "projectId": "ccf7b239-cc05-4a54-819e-36c78def850f"
       },
-      "apiBaseUrl": "http://100.83.161.127:8000"
+      "apiBaseUrl": "http://100.83.161.127:8000",
+      "revenuecatAndroidApiKey": "test_dqtvFSZJjVnTwblxjtuopPRAClP"
     },
     "owner": "kamilkhan52"
   }

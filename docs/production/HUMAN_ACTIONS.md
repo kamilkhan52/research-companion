@@ -658,14 +658,23 @@ Play Console app exists and its product IDs are authored, and no purchase can be
 build is on a track. The server-side half — per-account plans — does not depend on any of that and
 shipped first.
 
-### H8 — Play Console: create the app, agreements, tax and banking · `todo`
-Create the app listing for **`io.scholiast.app`** — the post-rebrand package in `mobile/app.json`,
-not the `com.kamilkhan.researchcompanion` this file named before #272. **Play freezes the package
-name on first upload**, so read it off `mobile/app.json` rather than from any document, including
-this one. Accept the developer agreements, and
-complete tax and banking setup (required before any paid product can be sold).
+### H8 — Play Console: create the app, agreements, tax and banking · 🟡 `app created 2026-08-14; payments profile outstanding`
+**The app now exists in Play Console** (Kamil, 2026-08-14), created as **Free — which is
+correct and needs no second-guessing**: "Free" governs only the up-front download price, and
+this product monetizes through in-app subscriptions, which free apps sell. The choice is
+one-way (a free app can never become paid; paid→free can), but a subscription app never wants
+"Paid", so nothing is lost. Verified against Play's own pricing help page 2026-08-14.
+
+The package name freezes on first AAB **upload**, not on app creation — still read it off
+`mobile/app.json` when that day comes.
+
+**What remains of H8:** the **payments/merchant profile — agreements, tax and banking** —
+required before any subscription product can be created (H9 is blocked on it). Play Console →
+Monetize with Play → Products will prompt for merchant setup.
 **Why not an agent:** legal agreements and financial identity.
-**Report back:** app created, agreements accepted, payments profile active.
+**Report back:** payments profile active — then H9's products can be authored and RevenueCat
+connected (the client foundation shipped with M4's first PR; see
+`03-monetization-and-entitlements.md` for the remaining order).
 
 ### H9 — Author store product IDs and prices · `todo`
 Create the monthly and annual subscription products in Play Console and mirror them in RevenueCat.
