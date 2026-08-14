@@ -346,6 +346,26 @@ def test_unaccounted_turn_surfaces_a_vanished_worker_and_nothing_else(temp_proje
     assert marker is not None
     assert marker["kind"] == "finish"
     assert "boom" in (marker["error"] or "")
+    assert marker["stopped"] is False
+
+    # PR #404 review P1: the newest retained job may belong to a PREVIOUS turn (routes record
+    # the user turn and then start_turn can refuse on the spend ceiling, leaving no new job).
+    # A job older than the record must not have its error pinned to this turn.
+    failed.started_at = "2019-01-01T00:00:00+00:00"
+    marker = chat_jobs.unaccounted_turn(slug)
+    assert marker is not None
+    assert marker["error"] is None
+
+    # A cooperative Stop that recorded no partial is the reader's own action — reported as
+    # `stopped`, never as a server failure (the full cancel flow is test_chat_job_cancel's;
+    # this pins the marker mapping).
+    failed.started_at = "2999-01-01T00:00:00+00:00"
+    failed.status = "cancelled"
+    failed.error = None
+    marker = chat_jobs.unaccounted_turn(slug)
+    assert marker is not None
+    assert marker["stopped"] is True
+    assert marker["error"] is None
 
     # And the snapshot route carries it (the review session avoids reading-list setup).
     sessions.start_session(session_routes.REVIEW_SLUG, session_routes.REVIEW_TITLE,

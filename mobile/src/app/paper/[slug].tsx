@@ -1351,7 +1351,7 @@ function DiscussionThread({
   paths: ReturnType<typeof turnJobPaths>;
   transcript: TranscriptEntry[];
   /** DR-083 interim: server-detected user turn whose worker vanished (see Session type). */
-  pendingTurn: { kind: string; ts: string; error: string | null } | null;
+  pendingTurn: { kind: string; ts: string; error: string | null; stopped?: boolean } | null;
   acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
   title: string;
   favorites: FavoriteModel[];
@@ -2152,12 +2152,19 @@ function DiscussionThread({
     // the marker disappears with it.
     if (pendingTurn && !stream.streaming) {
       const finish = pendingTurn.kind === 'finish';
+      // Honest cause attribution (PR #404 review): a cooperative Stop that recorded nothing
+      // was the READER's action — never blame the server for it.
+      const copy = pendingTurn.stopped
+        ? (finish
+            ? 'You stopped this Finish before it produced anything.'
+            : 'You stopped this turn before it produced a response.')
+        : (finish
+            ? 'Finishing this paper was interrupted before anything could be saved — the server may have restarted mid-turn.'
+            : 'Your last turn never got its response — the server may have restarted mid-turn.');
       return (
         <Card style={[styles.errorCard, { marginBottom: composerHeight + space.md }]}>
-          <Text variant="body" color={theme.danger}>
-            {finish
-              ? 'Finishing this paper was interrupted before anything could be saved — the server may have restarted mid-turn.'
-              : 'Your last turn never got its response — the server may have restarted mid-turn.'}
+          <Text variant="body" color={pendingTurn.stopped ? theme.text : theme.danger}>
+            {copy}
           </Text>
           {pendingTurn.error ? (
             <Text variant="caption" color={theme.muted} style={{ marginTop: space.xs }}>

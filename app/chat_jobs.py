@@ -122,12 +122,16 @@ def unaccounted_turn(slug: str, thread_id: str | None = None) -> dict | None:
     can say honestly "this turn never completed" and offer the retry that already exists
     (``/continue_job`` re-runs the last user turn without re-recording it).
 
-    Returns ``{kind, ts, error}`` when the LAST transcript record is a user turn, no job is
-    running for the thread, and the record is old enough that the record→registry insertion
-    window cannot explain it. ``error`` carries the latest retained job's failure when the
-    registry still remembers one (worker died with a live registry); after a restart it is
-    None and the copy stays generic. A cooperatively-stopped turn that recorded no partial
-    also lands here — "ended without a response, retry?" is the honest state for it too.
+    Returns ``{kind, ts, error, stopped}`` when the LAST transcript record is a user turn,
+    no job is running for the thread, and the record is old enough that the record→registry
+    insertion window cannot explain it. ``error``/``stopped`` come from the latest retained
+    job ONLY when that job started at or after the record (Opus review, PR #404: routes
+    record the user turn and then start the job, and ``start_turn`` can refuse on the spend
+    ceiling — so the newest retained job may belong to a PREVIOUS turn, and attributing its
+    error here would point debugging at the wrong turn, the exact failure mode this function
+    exists to remove). After a restart both are None/False and the copy stays generic.
+    ``stopped`` marks a cooperative Stop that recorded no partial: the reader did that on
+    purpose, and the client copy must not claim a server failure for it.
     """
     records = sessions.read_records(slug)
     if not records or records[-1].get("role") != "user":
@@ -147,10 +151,14 @@ def unaccounted_turn(slug: str, thread_id: str | None = None) -> dict | None:
     if age is not None and age < 30.0:
         return None
     latest = _registry.latest_for(_session_key(slug, thread_id))
+    # Both timestamps are datetime.now(UTC).isoformat() strings, so ordering compares
+    # correctly as strings; an empty/missing started_at fails the >= and is not attributed.
+    ours = latest is not None and (latest.started_at or "") >= ts
     return {
         "kind": records[-1].get("kind", "reply"),
         "ts": ts,
-        "error": latest.error if latest is not None else None,
+        "error": latest.error if ours else None,
+        "stopped": bool(ours and latest.status == "cancelled"),
     }
 
 
