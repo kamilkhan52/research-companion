@@ -11,7 +11,7 @@ import threading
 import time
 
 import pytest
-from app import chat_jobs, config, projects, sessions, store
+from app import chat_jobs, projects, sessions, store
 from app.routers import session as session_routes
 from fastapi import HTTPException
 
