@@ -288,6 +288,14 @@ export const findPaperMatches = (
   candidate: { title: string; arxiv_id?: string; source_url?: string },
 ) =>
   apiPost<PaperMatchResponse>(`${P(pid)}/paper-matches`, candidate);
+/** DR-079: clear every discussion thread of one paper. Destructive and confirmed by the
+ *  caller; the backend refuses (409) while a turn generates and git-commits the tracked
+ *  transcript deletions so they stay recoverable. `contributed` cues the separate offer to
+ *  propose a Project Notes retraction (through the notes agent's review flow). */
+export const clearChats = (pid: string, slug: string) =>
+  apiPost<{ cleared: boolean; contributed: boolean }>(
+    `${P(pid)}/session/${encodeURIComponent(slug)}/clear_chats`, {},
+  );
 /** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
  *  the backend git-commits this change — the caller must have shown a confirm first. */
 export const removePaper = (pid: string, slug: string) =>

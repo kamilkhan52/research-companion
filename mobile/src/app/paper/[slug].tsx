@@ -481,6 +481,59 @@ export default function DiscussionScreen() {
     }
   }
 
+  // DR-079 — "there should be a way to clear all chats". Two-step by design: the clear is
+  // confirmed destructively, and the Project Notes retraction is a SEPARATE offer that goes
+  // through the notes agent's propose/review flow (invariant 4 — removing committed notes
+  // content is a proposal the human approves, never a side effect).
+  function confirmClearChats() {
+    if (!pid || !slug) return;
+    Alert.alert(
+      'Clear all chats for this paper?',
+      'Every discussion thread is cleared. Committed notes and the paper itself are kept. This cannot be undone from the app.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear chats',
+          style: 'destructive',
+          onPress: () => {
+            void api.clearChats(pid, slug).then(
+              async (result) => {
+                await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
+                await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+                void qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
+                void qc.invalidateQueries({ queryKey: keys.recentSessions });
+                if (result.contributed) {
+                  Alert.alert(
+                    'This paper contributed to Project Notes',
+                    'Want to propose removing its contribution? You review the edit before anything changes.',
+                    [
+                      { text: 'Keep notes', style: 'cancel' },
+                      {
+                        text: 'Propose removal',
+                        onPress: () => {
+                          const title = session.data?.paper.title ?? slug;
+                          void api.startNotesAgent(
+                            pid,
+                            'working',
+                            `Remove the contribution of the paper “${title}” from the Project Notes. Take out claims, threads and references that exist only because of that paper, smooth the surrounding text, and keep anything other papers independently support.`,
+                          ).then(
+                            () => router.push('/notes/working'),
+                            (e) => Alert.alert('Could not start the proposal', (e as Error).message),
+                          );
+                        },
+                      },
+                    ],
+                  );
+                }
+              },
+              (e) => Alert.alert('Could not clear chats', (e as Error).message),
+            );
+          },
+        },
+      ],
+    );
+  }
+
   function confirmDeletePaper() {
     if (!pid || !slug || !session.data?.paper) return;
     Alert.alert(
@@ -574,6 +627,9 @@ export default function DiscussionScreen() {
             onPickReadingMode={() => setModePickerOpen(true)}
             onRename={() => setRenameOpen(true)}
             onDelete={confirmDeletePaper}
+            showClearChats={hasSession}
+            clearChatsDisabled={stream.streaming}
+            onClearChats={confirmClearChats}
             showThreads={hasSession}
             threadCount={session.data?.threads?.length ?? 0}
             onThreads={() => setThreadPickerOpen(true)}
@@ -824,6 +880,9 @@ export function OverflowMenu({
   onPickReadingMode,
   onRename,
   onDelete,
+  showClearChats,
+  clearChatsDisabled,
+  onClearChats,
   showThreads,
   threadCount,
   onThreads,
@@ -850,6 +909,9 @@ export function OverflowMenu({
   onPickReadingMode: () => void;
   onRename: () => void;
   onDelete: () => void;
+  showClearChats: boolean;
+  clearChatsDisabled: boolean;
+  onClearChats: () => void;
   showThreads: boolean;
   threadCount: number;
   onThreads: () => void;
@@ -975,6 +1037,21 @@ export function OverflowMenu({
       section: true,
       onPress: onRename,
     },
+  );
+  if (showClearChats) {
+    // DR-079: destructive, so it lives in the same section as Delete; the screen shows a
+    // confirm before anything happens, and offers the Project Notes retraction separately.
+    options.push({
+      key: 'clear-chats',
+      title: 'Clear all chats',
+      subtitle: 'Every thread — committed notes and the paper are kept',
+      icon: 'trash',
+      accent: t.danger,
+      disabled: clearChatsDisabled,
+      onPress: onClearChats,
+    });
+  }
+  options.push(
     {
       key: 'delete',
       title: 'Delete from project',

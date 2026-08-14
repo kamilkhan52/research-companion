@@ -545,6 +545,9 @@ test('paper overflow menu retains the destructive delete action', async () => {
       onPickReadingMode={() => {}}
       onRename={() => {}}
       onDelete={onDelete}
+      showClearChats={false}
+      clearChatsDisabled={false}
+      onClearChats={() => {}}
       showThreads={false}
       threadCount={0}
       onThreads={() => {}}

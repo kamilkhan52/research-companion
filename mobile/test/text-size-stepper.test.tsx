@@ -40,6 +40,9 @@ const BASE_PROPS = {
   showThreads: false,
   threadCount: 0,
   onThreads: jest.fn(),
+  showClearChats: false,
+  clearChatsDisabled: false,
+  onClearChats: jest.fn(),
 };
 
 async function openMenu() {
