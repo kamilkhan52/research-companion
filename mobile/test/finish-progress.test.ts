@@ -1,4 +1,4 @@
-// DR-056 — the Finish wait staged from the server's notes_phase. The working-notes stage
+// DR-056 — the Finish wait staged from the server's notes_phase. The Project Notes stage
 // must never show done before the stream ends, and the review step stays pending until the
 // auto-open takes over.
 

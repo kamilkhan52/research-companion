@@ -43,7 +43,7 @@ class ProposedCommit:
     synthesis: str               # full rewritten content of synthesis.md
     #: DR-058 — the synthesis editor's explicit change plan: what genuinely enriches the
     #: Project Notes, where the paper adds nothing, what new questions it opens. Shown in
-    #: review above the working-notes diff; empty on proposals that predate the editor and on
+    #: review above the Project Notes diff; empty on proposals that predate the editor and on
     #: revision turns (which remain single-shot).
     plan: str = ""
 

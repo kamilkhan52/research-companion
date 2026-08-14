@@ -212,7 +212,7 @@ def test_a_failed_editor_fails_the_turn_before_recording(temp_project, monkeypat
     """A proposal whose approval would erase the Project Notes must never be recorded; the
     turn errors cleanly and is retryable, like a parse failure."""
     def broken(**kwargs):
-        raise chat_jobs.AgentError("The synthesis editor returned no working-notes document.")
+        raise chat_jobs.AgentError("The synthesis editor returned no Project Notes document.")
 
     monkeypatch.setattr(chat_jobs.agent, "edit_synthesis", broken)
     sessions.start_session("p", "Paper P")

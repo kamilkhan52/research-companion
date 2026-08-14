@@ -452,7 +452,7 @@ def _advance_notes_phase(job: ChatJob, full: str, delta_len: int = 0) -> None:
 
 
 def _maybe_edit_synthesis(job: ChatJob, turn, model: str | None = None) -> None:
-    """DR-058 — replace the finish turn's single-shot working-notes rewrite with the separate
+    """DR-058 — replace the finish turn's single-shot Project Notes rewrite with the separate
     synthesis-editor pass, and OVERWRITE any synthesis the model emitted despite the prompt:
     skipping the editor when the model drifted would silently revert to the over-weighted
     rewrite this feature removes.

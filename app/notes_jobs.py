@@ -309,13 +309,13 @@ def start_split_destination(
             f"{len(usable)} paper{'s' if len(usable) != 1 else ''} moved from {source_name}."
         )
         prompt = (
-            "=== CURRENT DESTINATION WORKING NOTES ===\n"
+            "=== CURRENT DESTINATION PROJECT NOTES ===\n"
             f"{current.strip() or '(none yet)'}\n"
-            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== END CURRENT PROJECT NOTES ===\n\n"
             "=== MIGRATED PAPER CONTEXT ===\n"
             f"{_paper_notes_context(usable, include_research_context=True)}\n"
             "=== END MIGRATED PAPER CONTEXT ===\n\n"
-            "Instruction: Produce the COMPLETE destination working-notes document. Integrate "
+            "Instruction: Produce the COMPLETE destination Project Notes document. Integrate "
             "the migrated papers' established findings, methods, relationships, tensions, and "
             "open questions into the current document; if it is empty, create a concise, "
             "well-structured first synthesis. Use ONLY the supplied committed Notes, paper "
@@ -427,13 +427,13 @@ def start_split_source_cleanup(
             f"{'s' if len(usable) != 1 else ''} moved to {destination_name}."
         )
         prompt = (
-            "=== CURRENT SOURCE WORKING NOTES ===\n"
+            "=== CURRENT SOURCE PROJECT NOTES ===\n"
             f"{current.strip()}\n"
-            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== END CURRENT PROJECT NOTES ===\n\n"
             "=== DEPARTED PAPERS AND THEIR COMMITTED NOTES ===\n"
             f"{_paper_notes_context(usable)}\n"
             "=== END DEPARTED PAPER NOTES ===\n\n"
-            "Instruction: Produce the COMPLETE revised source working-notes document. Remove "
+            "Instruction: Produce the COMPLETE revised source Project Notes document. Remove "
             "only claims, evidence, comparisons, and framing attributable exclusively to the "
             "departed papers. Preserve material supported by papers that remain, including "
             "shared insights or cross-paper synthesis that is still valid. Reflow headings and "

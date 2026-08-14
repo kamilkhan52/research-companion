@@ -342,7 +342,7 @@ _FINISH_INSTRUCTION = (
 #: just spent a full context window on the paper systematically over-weights it; this pass sees
 #: the paper only as its committed-size notes, and its plan is surfaced in review so the reader
 #: can judge the diff against the editor's own stated intent.
-_SYNTHESIS_EDITOR = """You are the working-notes editor for a research reading project. You \
+_SYNTHESIS_EDITOR = """You are the Project Notes editor for a research reading project. You \
 receive the project's description, the CURRENT Project Notes (the synthesis across everything \
 read so far), and the Paper Notes block just drafted for a newly finished paper. Your job is to fold \
 the paper into the Project Notes with deliberate restraint.
@@ -354,7 +354,7 @@ significantly to what the notes already say (say so plainly — most papers repe
 a project already knows); and any new open questions it raises. The plan is shown to the \
 reader beside the diff, so write it as the justification for exactly the changes you make.
 
-Then, under a ###SYNTHESIS### marker line, output the COMPLETE working-notes document with \
+Then, under a ###SYNTHESIS### marker line, output the COMPLETE Project Notes document with \
 the planned changes applied — and only those changes. Preserve the existing structure, \
 claims, links, and voice unless the plan says otherwise; integrate rather than reframe; one \
 paper must never reorganize the whole document. If the current Project Notes are empty, draft \
@@ -846,7 +846,7 @@ REGISTRY = (
     ),
     PromptSpec(
         key="synthesis_editor",
-        label="Working-notes editor (synthesis pass)",
+        label="Project Notes editor (synthesis pass)",
         relative_path="Analysis/Synthesis Editor.md",
         bundled_default=_SYNTHESIS_EDITOR,
         required_literals=("###PLAN###", "###SYNTHESIS###"),
@@ -893,7 +893,7 @@ REGISTRY = (
     ),
     PromptSpec(
         key="review_system",
-        label="Working-notes review — system prompt",
+        label="Project Notes review — system prompt",
         relative_path="Review/System.md",
         bundled_default=_REVIEW_SYSTEM,
         required_literals=_SECTION_PROTOCOL,
@@ -901,14 +901,14 @@ REGISTRY = (
     ),
     PromptSpec(
         key="review_opening",
-        label="Working-notes review — first message",
+        label="Project Notes review — first message",
         relative_path="Review/Opening Message.md",
         bundled_default=_REVIEW_OPENING,
         description="Starts a Project Notes Review session.",
     ),
     PromptSpec(
         key="review_finish",
-        label="Working-notes review — update instruction",
+        label="Project Notes review — update instruction",
         relative_path="Review/Finish Instruction.md",
         bundled_default=_REVIEW_FINISH,
         required_literals=("SYNTHESIS", "NOTES_BLOCK"),

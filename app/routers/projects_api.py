@@ -465,7 +465,7 @@ class SplitReq(BaseModel):
 def split_project(pid: str, req: SplitReq, request: Request):
     """Split selected papers (and the work done on them) into a new project. Deterministic
     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
-    the removal endpoint above. The optional AI working-notes passes are separate jobs.
+    the removal endpoint above. The optional AI Project Notes passes are separate jobs.
 
     Refused (409) while any background job is running for the source project: a chat turn or
     graph build mid-move would write into files being relocated. Mark the source busy FIRST,

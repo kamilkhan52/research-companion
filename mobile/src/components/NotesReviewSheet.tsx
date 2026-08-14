@@ -230,7 +230,7 @@ export function NotesReviewSheet({
                 <ReviewSection
                   icon="git-branch"
                   title="Change plan"
-                  description="The editor's stated intent — judge the working-notes diff against it."
+                  description="The editor's stated intent — judge the Project Notes diff against it."
                 >
                   <Markdown text={data.plan} />
                 </ReviewSection>

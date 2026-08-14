@@ -1,4 +1,4 @@
-// Discussion — the streaming chat with the analyst over one paper (or the working-notes review).
+// Discussion — the streaming chat with the analyst over one paper (or the Project Notes review).
 // Compose-first: edit the opening prompt, then start. Mid-discussion: reply with streaming
 // responses. Wrap-up: draft notes, then approve / request changes. Turns run as server-side
 // background jobs (polled, not held open), so a turn survives leaving this screen, the app

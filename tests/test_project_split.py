@@ -359,7 +359,7 @@ def test_synchronous_committing_writers_refuse_while_reserved(temp_project):
             lambda: add_paper(temp_project, AddPaperReq(title="New"), _AnonRequest()),
             lambda: remove_paper(temp_project, "awq"),
             lambda: approve(ApproveReq(slug="awq")),
-            lambda: save_notes("working-notes", NotesSaveReq(markdown="x", summary="y")),
+            lambda: save_notes("Project Notes", NotesSaveReq(markdown="x", summary="y")),
         ):
             with pytest.raises(HTTPException) as exc:
                 call()

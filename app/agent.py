@@ -166,7 +166,7 @@ def _parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
         # Paper commit has both; the review chat has Project Notes (synth) only. Production
         # callers pass the transcript's last human action here, so a model that drifts on an
         # opening/reply cannot manufacture a notes-approval state the user never requested.
-        commit = ProposedCommit(summary=summary or "Notes + working-notes update",
+        commit = ProposedCommit(summary=summary or "Notes + Project Notes update",
                                 notes_block=notes, synthesis=synth).to_dict()
 
     return Turn(
@@ -216,7 +216,7 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
     plan_m = _PLAN_RE.search(raw)
     synth_m = _SYNTH_START_RE.search(raw)
     if not synth_m:
-        raise AgentError("The synthesis editor returned no working-notes document. "
+        raise AgentError("The synthesis editor returned no Project Notes document. "
                          "Try Finish reading again.")
     plan = ""
     if plan_m and plan_m.end() <= synth_m.start():
@@ -238,7 +238,7 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
         synthesis = synthesis[:stray_plan.start()]
     synthesis = synthesis.strip()
     if not synthesis:
-        raise AgentError("The synthesis editor returned an empty working-notes document. "
+        raise AgentError("The synthesis editor returned an empty Project Notes document. "
                          "Try Finish reading again.")
     return plan, synthesis
 

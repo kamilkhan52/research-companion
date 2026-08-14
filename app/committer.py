@@ -38,7 +38,7 @@ def review(slug: str) -> dict:
         "title": store.title_for(slug),
         "summary": proposed.get("summary", ""),
         "notes_block": proposed.get("notes_block", ""),
-        # DR-058: the editor's change plan — review shows it above the working-notes diff as
+        # DR-058: the editor's change plan — review shows it above the Project Notes diff as
         # the stated intent the diff should be judged against. Empty on pre-editor proposals.
         "plan": proposed.get("plan", ""),
         "synthesis_current": store.read_synthesis(),
@@ -79,7 +79,7 @@ def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> d
     title = store.title_for(slug)
     notes_block, synthesis = (notes_block or ""), (synthesis or "")
     if not notes_block.strip() and not synthesis.strip():
-        raise CommitError("Nothing to commit (no notes and no working-notes update).")
+        raise CommitError("Nothing to commit (no notes and no Project Notes update).")
 
     # A paper commit has a Paper Notes block (append + flip to read); the Project Notes review
     # commit has only the rewritten Project Notes.
@@ -94,7 +94,7 @@ def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> d
     if summary.strip():
         msg = summary.strip()
     elif notes_block.strip():
-        msg = f"Read {title}: notes + working-notes update"
+        msg = f"Read {title}: notes + Project Notes update"
     else:
         msg = "Update Project Notes"
     try:
