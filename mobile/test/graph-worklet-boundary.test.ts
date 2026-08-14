@@ -15,13 +15,35 @@ const source = readFileSync(
   'utf8',
 );
 
-function animatedReactionPrepareBlock(): string {
-  const start = source.indexOf('useAnimatedReaction(');
+// The whole `useAnimatedReaction(…)` call, found by balancing parentheses rather than by
+// matching a closing token's indentation: `indexOf('  );')` also matches inside a
+// deeper-indented `    );`, so a nested multiline call would silently truncate the scanned
+// span and let anything after it escape the guard. Comments are stripped first so prose
+// parentheses can't unbalance the count.
+const commentFree = source.replace(/\/\/[^\n]*/g, '');
+
+function animatedReactionCall(): string {
+  const start = commentFree.indexOf('useAnimatedReaction(');
   expect(start).toBeGreaterThan(-1);
+  let depth = 0;
+  let i = commentFree.indexOf('(', start);
+  for (; i < commentFree.length; i++) {
+    if (commentFree[i] === '(') depth += 1;
+    else if (commentFree[i] === ')') {
+      depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  expect(depth).toBe(0); // ran off the end ⇒ the file changed shape; fail loudly, not silently
+  return commentFree.slice(start, i + 1);
+}
+
+function animatedReactionPrepareBlock(): string {
+  const call = animatedReactionCall();
   // Up to the reaction's second argument — the prepare block is everything before it.
-  const end = source.indexOf('(bucket, previous)', start);
-  expect(end).toBeGreaterThan(start);
-  return source.slice(start, end);
+  const end = call.indexOf('(bucket, previous)');
+  expect(end).toBeGreaterThan(-1);
+  return call.slice(0, end);
 }
 
 test('the zoom quantizer does not call an imported function on the UI thread', () => {
@@ -32,15 +54,15 @@ test('the zoom quantizer does not call an imported function on the UI thread', (
 test('the reaction result callback calls nothing but Math and runOnJS', () => {
   // Same UI-thread boundary as the prepare block, added when stepScale stepping moved in here:
   // the result callback runs as a worklet too, so an imported helper call is the same #295
-  // crash. Comments are stripped first — prose like "every node (labelledIds …)" would
-  // otherwise read as a call.
-  const start = source.indexOf('(bucket, previous)');
+  // crash. The span is the balanced call minus the prepare block, so a nested `);` inside the
+  // callback cannot end the scan early (comments were already stripped by animatedReactionCall).
+  const call = animatedReactionCall();
+  const start = call.indexOf('(bucket, previous)');
   expect(start).toBeGreaterThan(-1);
-  const end = source.indexOf('  );', start);
-  expect(end).toBeGreaterThan(start);
-  const body = source
-    .slice(start, end)
-    .replace(/\/\/[^\n]*/g, '');
+  const body = call.slice(start);
+  // Premise: the span really contains the callback's work — an empty or truncated slice would
+  // pass the allowlist below vacuously.
+  expect(body).toContain('stepScale.value');
   const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'return']);
   const calls = [...body.matchAll(/([A-Za-z_$][\w$.]*)\s*\(/g)]
     .map((m) => m[1])

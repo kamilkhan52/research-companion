@@ -176,7 +176,7 @@ export function texToSvg(tex: string, display: boolean): RenderedMath | null {
       result = null;
     }
   }
-  while (svgCache.size >= SVG_CACHE_MAX) {
+  while (svgCache.size > 0 && svgCache.size >= SVG_CACHE_MAX) {
     svgCache.delete(svgCache.keys().next().value as string);
   }
   svgCache.set(key, result);
