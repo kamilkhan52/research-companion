@@ -71,16 +71,30 @@ export function ensureConfigured(): boolean {
 /** Exposed for tests only — the module is stateful by nature (configure-once). */
 export function resetForTests(): void {
   configured = false;
+  identitySync = Promise.resolve();
 }
+
+// syncIdentity calls are SERIALIZED (Opus review, PR #405): each one reads getAppUserID
+// before deciding, so two overlapping calls can both read the pre-transition identity and
+// the LOSER of the race wins the final identity — the exact cross-account condition the
+// identity rules exist to prevent (e.g. a logOut landing after the logIn that followed it,
+// leaving a signed-in app anonymous). The chain never rejects: failures are swallowed
+// per-call below.
+let identitySync: Promise<void> = Promise.resolve();
 
 /** Sync the RevenueCat identity to the app's auth state. `null` means signed out.
  *
  *  logIn is idempotent-enough on RevenueCat's side, but each call is a network round-trip,
- *  so the caller (PurchasesIdentity) only invokes this when the uuid actually changes; the
+ *  so the caller (PurchasesIdentity) only invokes this on a real auth transition; the
  *  getAppUserID check here is the second guard for restarts, where RevenueCat has already
  *  restored the cached identity. logOut resets to a fresh anonymous id — required so an
  *  account switch on a shared device cannot render user A's entitlements to user B. */
-export async function syncIdentity(userId: string | null): Promise<void> {
+export function syncIdentity(userId: string | null): Promise<void> {
+  identitySync = identitySync.then(() => syncIdentityNow(userId));
+  return identitySync;
+}
+
+async function syncIdentityNow(userId: string | null): Promise<void> {
   if (!ensureConfigured()) return;
   try {
     const current = await Purchases!.getAppUserID();
@@ -90,8 +104,9 @@ export async function syncIdentity(userId: string | null): Promise<void> {
       await Purchases!.logOut();
     }
   } catch {
-    // Identity sync is retried on the next auth transition; billing UI independently
-    // re-checks entitlements, so a transient failure here must never crash the shell.
+    // Swallowed by design: a transient failure must never crash the shell, and the billing
+    // UI independently re-checks entitlements. NOTE for M5: there is no retry beyond the
+    // next auth transition — when entitlements become load-bearing, add reconciliation.
   }
 }
 

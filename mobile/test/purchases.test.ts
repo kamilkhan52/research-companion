@@ -98,6 +98,34 @@ test('restore reports whether the pro entitlement came back', async () => {
   await expect(purchases.restore()).resolves.toEqual({ status: 'restored', active: false });
 });
 
+test('overlapping identity syncs serialize — the later call decides the final identity', async () => {
+  // Without serialization, both calls read the pre-transition identity and the LOSER of the
+  // race wins (e.g. a slow logOut landing after the logIn that followed it, leaving a
+  // signed-in app anonymous). Order of SDK effects is the property under test.
+  const effects: string[] = [];
+  mockSdk.getAppUserID.mockResolvedValue('uuid-a');
+  mockSdk.isAnonymous.mockResolvedValue(false);
+  mockSdk.logOut.mockImplementation(async () => {
+    await new Promise((r) => setTimeout(r, 20)); // the slow transition
+    effects.push('logOut');
+    return {};
+  });
+  mockSdk.logIn.mockImplementation(async () => {
+    effects.push('logIn');
+    return {};
+  });
+
+  const signOut = purchases.syncIdentity(null);      // slow
+  const signIn = purchases.syncIdentity('uuid-b');   // fast, must WAIT
+  await Promise.all([signOut, signIn]);
+
+  expect(effects).toEqual(['logOut', 'logIn']);
+  mockSdk.getAppUserID.mockResolvedValue('$RCAnonymousID:abc');
+  mockSdk.isAnonymous.mockResolvedValue(true);
+  mockSdk.logOut.mockReset();
+  mockSdk.logIn.mockReset();
+});
+
 test('a build without the native module degrades everywhere and never configures', async () => {
   delete (NativeModules as Record<string, unknown>).RNPurchases;
   expect(purchases.billingAvailable()).toBe(false);

@@ -45,6 +45,7 @@ export default function PaywallScreen() {
   const [offering, setOffering] = useState<PurchasesOffering | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null); // package identifier mid-purchase
+  const [restoring, setRestoring] = useState(false);
 
   const available = billingAvailable();
 
@@ -64,6 +65,8 @@ export default function PaywallScreen() {
     const result = await purchase(pkg);
     setBusy(null);
     if (result.status === 'purchased') {
+      // Deliberately no Plan-screen refresh: the server's plan does not move until M5's
+      // entitlement wiring lands — refreshing would imply it should have changed.
       showToast('Subscription active. Thank you!');
       router.back();
     } else if (result.status === 'error') {
@@ -73,7 +76,9 @@ export default function PaywallScreen() {
   }, [router]);
 
   const onRestore = useCallback(async () => {
+    setRestoring(true);
     const result = await restore();
+    setRestoring(false);
     if (result.status === 'restored') {
       showToast(result.active
         ? 'Subscription restored.'
@@ -137,7 +142,13 @@ export default function PaywallScreen() {
                 />
               </Card>
             ))}
-            <Button title="Restore purchases" variant="ghost" onPress={() => void onRestore()} />
+            <Button
+              title="Restore purchases"
+              variant="ghost"
+              loading={restoring}
+              disabled={restoring}
+              onPress={() => void onRestore()}
+            />
             <Text variant="caption" color={t.muted} style={styles.footnote}>
               Subscriptions are billed and managed by Google Play. Cancel anytime from the
               Play Store; access continues until the end of the paid period.
