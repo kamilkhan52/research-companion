@@ -465,7 +465,7 @@ class SplitReq(BaseModel):
 def split_project(pid: str, req: SplitReq, request: Request):
     """Split selected papers (and the work done on them) into a new project. Deterministic
     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
-    the removal endpoint above. The optional AI working-notes passes are separate jobs.
+    the removal endpoint above. The optional AI Project Notes passes are separate jobs.
 
     Refused (409) while any background job is running for the source project: a chat turn or
     graph build mid-move would write into files being relocated. Mark the source busy FIRST,
@@ -475,7 +475,7 @@ def split_project(pid: str, req: SplitReq, request: Request):
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,
-            detail="Source working notes can only be cleaned up when papers leave the source.",
+            detail="Source Project Notes can only be cleaned up when papers leave the source.",
         )
     if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
@@ -582,7 +582,7 @@ def move_papers(pid: str, req: MoveReq, request: Request):
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,
-            detail="Source working notes can only be cleaned up when papers leave the source.",
+            detail="Source Project Notes can only be cleaned up when papers leave the source.",
         )
     if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")

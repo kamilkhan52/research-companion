@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 # Paper lifecycle states (Section 2 of the architecture).
-# Reserved "paper" for the cross-paper working-notes review chat (not a real list paper).
+# Reserved "paper" for the cross-paper Project Notes review chat (not a real list paper).
 REVIEW_SLUG = "_review"
-REVIEW_TITLE = "Working Notes Review"
+REVIEW_TITLE = "Project Notes Review"
 
 UNREAD = "unread"
 RETRIEVING = "retrieving"
@@ -39,11 +39,11 @@ class Paper:
 class ProposedCommit:
     """What the agent proposes at completion; the human approves before it lands."""
     summary: str                 # one-line change description
-    notes_block: str             # markdown Notes block appended to corpus/<slug>.md
+    notes_block: str             # markdown Paper Notes block appended to corpus/<slug>.md
     synthesis: str               # full rewritten content of synthesis.md
     #: DR-058 — the synthesis editor's explicit change plan: what genuinely enriches the
-    #: working notes, where the paper adds nothing, what new questions it opens. Shown in
-    #: review above the working-notes diff; empty on proposals that predate the editor and on
+    #: Project Notes, where the paper adds nothing, what new questions it opens. Shown in
+    #: review above the Project Notes diff; empty on proposals that predate the editor and on
     #: revision turns (which remain single-shot).
     plan: str = ""
 

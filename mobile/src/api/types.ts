@@ -223,8 +223,8 @@ export interface Review {
   title: string;
   summary: string;
   notes_block: string;
-  /** DR-058: the synthesis editor's change plan — what enriches the working notes, where the
-   *  paper adds nothing, new questions. Shown above the working-notes diff; empty on
+  /** DR-058: the synthesis editor's change plan — what enriches the Project Notes, where the
+   *  paper adds nothing, new questions. Shown above the Project Notes diff; empty on
    *  pre-editor proposals and revision turns. */
   plan?: string;
   synthesis_current: string;
@@ -391,7 +391,7 @@ export interface ChatJob {
   audio_refusal?: SpendRefusalPayload | null;
   /** DR-056: which section of the marker document is being written — null while the preview
    *  streams ('drafting' is client-synthesized, never sent), 'notes' (paper notes drafting),
-   *  'synthesis' (working-notes rewrite). Drives the staged Finish card; ordinary turns stay
+   *  'synthesis' (Project Notes rewrite). Drives the staged Finish card; ordinary turns stay
    *  null. */
   notes_phase?: 'notes' | 'synthesis' | null;
   assistant_index: number | null;
@@ -431,8 +431,8 @@ export interface PreviewJob {
   finished_at: string | null;
 }
 
-/** A committed notes document (GET /notes/{target}): one paper's Notes block, or the
- *  cross-paper working notes when target === 'working'. markdown is '' when none exist yet. */
+/** A committed notes document (GET /notes/{target}): one paper's Paper Notes block, or the
+ *  cross-paper Project Notes when target === 'working'. markdown is '' when none exist yet. */
 export interface NotesDoc {
   target: string;
   title: string;

@@ -9,7 +9,7 @@ only for the tool loop with plain-text output, so streaming and parsing stay exa
 were; tools are simply available for the model to call before it writes its answer.
 
 The model can call the read-only research tools in app/research_tools.py: read other project
-papers' text/notes, see what's related, read the working notes, fetch a web page, search the
+papers' text/notes, see what's related, read the Project Notes, fetch a web page, search the
 web. Fetched web content is untrusted (prompt-injection boundary) — the system guidance tells
 the model to treat it as data to evaluate, never as instructions.
 """
@@ -384,7 +384,7 @@ def web_fetch(urls: list[str], objective: str = "") -> str:
 
 
 # read_paper_notes / read_working_notes are intentionally NOT exposed: the session already
-# carries the working notes + related papers' notes (see assembler.build_context), so exposing
+# carries the Project Notes + related papers' notes (see assembler.build_context), so exposing
 # them would just burn tool calls re-fetching context the model already has.
 TOOLS = [
     web_search,

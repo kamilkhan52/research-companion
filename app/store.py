@@ -61,8 +61,10 @@ def _file_key(p: Path) -> _FileKey | None:
 
 
 # Per-project file locations resolve against the active project (config.project_dir()), so
-# the same store functions serve every project. The aggregate cross-paper notes (the "working
-# notes") live in working-notes.md; read_synthesis/write_synthesis are the historical names.
+# the same store functions serve every project. The aggregate cross-paper notes — user-facing
+# name "Project Notes" (DR-082) — live in working-notes.md; the FILENAME and the
+# read_synthesis/write_synthesis identifiers deliberately keep their historical names: renaming
+# the file would be a git migration in every existing project's repo for zero user-facing value.
 def _reading_list() -> Path:
     return config.project_dir() / "reading-list.md"
 
@@ -264,7 +266,7 @@ _NOTES_TAIL = 64 * 1024   # notes are appended last, so this tail almost always 
 
 
 def has_notes(slug: str) -> bool:
-    """Whether a paper's corpus file carries a committed Notes block, memoized by the file's
+    """Whether a paper's corpus file carries a committed Paper Notes block, memoized by the file's
     (mtime, size). The former implementation read the *entire* corpus file (the full paper
     text, often hundreds of KB) on every call, once per paper inside list_papers()."""
     p = corpus_path(slug)
@@ -453,7 +455,7 @@ def reading_list_overview() -> str:
     """Compact list of every paper (group, title, status) so the agent can situate the
     current paper relative to the others.
 
-    A paper that has been read contributes its whole Notes block to the context separately, so
+    A paper that has been read contributes its whole Paper Notes block to the context separately, so
     here we just name it. A paper that has *not* been read contributes nothing else anywhere —
     so its abstract rides along here, and is the only thing that lets a discussion say something
     substantive about a paper still on the to-read pile."""
@@ -619,7 +621,7 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
 
 
 def read_full_text(slug: str) -> str:
-    """Return just the full-text body (without the Notes block, if present)."""
+    """Return just the full-text body (without the Paper Notes block, if present)."""
     p = corpus_path(slug)
     if not p.exists():
         return ""
@@ -647,7 +649,7 @@ def read_notes(slug: str) -> str:
 
 
 def all_committed_notes() -> list[tuple[str, str]]:
-    """(title, Notes block) for every paper that has been read — for the working-notes review."""
+    """(title, Paper Notes block) for every paper that has been read — for the Project Notes review."""
     out = []
     for p in list_papers():
         if has_notes(p.slug):
@@ -656,7 +658,7 @@ def all_committed_notes() -> list[tuple[str, str]]:
 
 
 def selected_prior_notes(slug: str) -> list[tuple[str, str]]:
-    """Notes blocks of cited papers that have been read. Falls back to all read papers
+    """Paper Notes blocks of cited papers that have been read. Falls back to all read papers
     when this paper has no recorded citations (small-corpus default)."""
     paper = get_paper(slug)
     if not paper:
@@ -682,7 +684,7 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
     if not body.lower().startswith("## notes"):
         body = "## Notes\n\n" + body
     atomic_write_text(p, text.rstrip() + "\n\n" + body.strip() + "\n")
-    _notes_cache.pop(str(p), None)   # a Notes block was just added/replaced
+    _notes_cache.pop(str(p), None)   # a Paper Notes block was just added/replaced
     _source_url_cache.pop(str(p), None)
 
 
@@ -780,7 +782,7 @@ def _add_entry_locked(title: str, group: str, arxiv_id: str | None,
 def remove_entry(slug: str) -> bool:
     """Delete the entry's block from reading-list.md (metadata only). Returns False when no
     entry carries that slug. Everything else the paper left on disk — corpus text, a committed
-    Notes block, session transcript — deliberately stays: it is cheap, keeps the notes'
+    Paper Notes block, session transcript — deliberately stays: it is cheap, keeps the notes'
     history intact, and makes re-adding the paper later a warm start. Like add_entry, this
     does NOT git-commit; the removal endpoint commits the human-confirmed change."""
     with _RL_LOCK:
@@ -963,7 +965,7 @@ def drop_dangling_cites(gone: set[str]) -> None:
 
 
 def append_removed_marker(slug: str) -> None:
-    """Record inside the paper's retained Notes block that the paper left the reading list
+    """Record inside the paper's retained Paper Notes block that the paper left the reading list
     (the product decision is keep-notes-on-removal; the marker keeps the retained notes
     honest when read later). No-op when the paper has no committed notes."""
     if not has_notes(slug):

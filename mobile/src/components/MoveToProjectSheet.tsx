@@ -88,7 +88,7 @@ export function MoveToProjectSheet({
         <>
           <View style={styles.toggleRow}>
             <View style={{ flex: 1, paddingRight: space.md }}>
-              <Text variant="body">Update destination working notes</Text>
+              <Text variant="body">Update destination Project Notes</Text>
               <Text variant="caption" color={t.muted}>
                 AI proposes integrating the selected papers’ committed Notes.
               </Text>
@@ -104,7 +104,7 @@ export function MoveToProjectSheet({
           {remove ? (
             <View style={styles.toggleRow}>
               <View style={{ flex: 1, paddingRight: space.md }}>
-                <Text variant="body">Clean up this project’s working notes</Text>
+                <Text variant="body">Clean up this project’s Project Notes</Text>
                 <Text variant="caption" color={t.muted}>
                   AI proposes removing contributions tied to the papers leaving.
                 </Text>

@@ -110,7 +110,7 @@ Unrequested synthesis.
 
 
 def _fake_editor(monkeypatch, plan="Plan: fold in the 40% result.",
-                 synthesis="## Working notes\nEdited by the second pass."):
+                 synthesis="## Project Notes\nEdited by the second pass."):
     calls = []
 
     def fake(*, project_name, goals, current_synthesis, paper_title, notes_block, model=None):
@@ -151,7 +151,7 @@ Drifted single-shot synthesis that must NOT survive.
     assert finished.status == "done"
     commit = finished.turn["proposed_commit"]
     assert commit["notes_block"] == "## Notes\nRequested."
-    assert commit["synthesis"] == "## Working notes\nEdited by the second pass."
+    assert commit["synthesis"] == "## Project Notes\nEdited by the second pass."
     assert commit["plan"] == "Plan: fold in the 40% result."
     assert "Drifted" not in commit["synthesis"]
     assert finished.state == "notes_drafted"
@@ -180,7 +180,7 @@ def test_the_plan_reaches_the_review_payload(temp_project, monkeypatch):
         "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
     payload = committer.review("p")
     assert payload["plan"] == "The stated intent."
-    assert payload["synthesis_proposed"] == "## Working notes\nEdited by the second pass."
+    assert payload["synthesis_proposed"] == "## Project Notes\nEdited by the second pass."
 
 
 def test_a_revision_turn_stays_single_shot(temp_project, monkeypatch):
@@ -209,10 +209,10 @@ Revised synthesis stays.
 
 
 def test_a_failed_editor_fails_the_turn_before_recording(temp_project, monkeypatch):
-    """A proposal whose approval would erase the working notes must never be recorded; the
+    """A proposal whose approval would erase the Project Notes must never be recorded; the
     turn errors cleanly and is retryable, like a parse failure."""
     def broken(**kwargs):
-        raise chat_jobs.AgentError("The synthesis editor returned no working-notes document.")
+        raise chat_jobs.AgentError("The synthesis editor returned no Project Notes document.")
 
     monkeypatch.setattr(chat_jobs.agent, "edit_synthesis", broken)
     sessions.start_session("p", "Paper P")
@@ -865,7 +865,7 @@ def test_notes_phase_advances_live_and_forward_only():
     assert job.notes_phase is None
     chat_jobs._advance_notes_phase(job, "###CANONICAL###\npreview\n###NOTES_BLOCK###\n## Notes")
     assert job.notes_phase == "notes"
-    chat_jobs._advance_notes_phase(job, "…\n###SYNTHESIS###\nthe working notes")
+    chat_jobs._advance_notes_phase(job, "…\n###SYNTHESIS###\nthe Project Notes")
     assert job.notes_phase == "synthesis"
     chat_jobs._advance_notes_phase(job, "…later text\n###NOTES_BLOCK###\nagain")
     assert job.notes_phase == "synthesis"  # forward-only

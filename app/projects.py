@@ -67,16 +67,16 @@ _STARTER_READING_LIST = """# Reading list
 Papers are grouped by topic. Each entry carries the title and an italic status marker.
 
 > Machine-readable note: status per entry is the italic `*unread*` / `*read*` marker right
-> after the title. When a paper is read, a short Notes block is appended to its corpus file.
+> after the title. When a paper is read, a short Paper Notes block is appended to its corpus file.
 > Optional citation links may be added per entry as an HTML comment, e.g.
 > `<!-- cites: some-slug, other-slug -->`, which the context assembler uses to pull the right
-> prior Notes blocks. An optional `<!-- slug: my-slug -->` pins a stable slug.
+> prior Paper Notes blocks. An optional `<!-- slug: my-slug -->` pins a stable slug.
 
 ## Unsorted
 
 """
 
-_STARTER_WORKING_NOTES = """# Working notes — running cross-paper context
+_STARTER_WORKING_NOTES = """# Project Notes — running cross-paper context
 
 *This file holds the live cross-paper threads, recurring groups and authors, open questions
 carried forward, and corrections made during discussion. It starts empty and accumulates as

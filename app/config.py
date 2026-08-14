@@ -584,7 +584,7 @@ def state_dir() -> Path:
 # `all` is the default (changed 2026-07-29, Kamil's call). Reading a corpus *as a corpus* is what
 # this app is for, and the citation-graph selection only sees links the graph already knows about,
 # so a paper related by topic rather than by citation was invisible to the very feature meant to
-# situate it. The cost is real — every committed Notes block enters every turn — and it scales with
+# situate it. The cost is real — every committed Paper Notes block enters every turn — and it scales with
 # the project, so this is the setting to revisit first if turn cost becomes a problem.
 #
 # Named rather than inlined because the same fallback was written out at FOUR call sites that must

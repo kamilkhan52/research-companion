@@ -174,7 +174,7 @@ export function Notes({ target, onNavigate }: Props) {
   return (
     <div className="notes">
       <div className="notes-head">
-        <h3>{data.title || (target === 'working' ? 'Working notes' : target)}</h3>
+        <h3>{data.title || (target === 'working' ? 'Project Notes' : target)}</h3>
         <div className="notes-actions">
           {mode === 'view' ? <>
             <button className="btn ghost" onClick={() => { setEditText(data.markdown || ''); setMode('edit'); }}>Edit</button>

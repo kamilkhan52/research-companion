@@ -1,5 +1,5 @@
-"""Viewing and editing committed notes — a paper's Notes block (corpus/<slug>.md) or the
-project's working notes (working-notes.md) — plus the agent-assisted edit.
+"""Viewing and editing committed notes — a paper's Paper Notes block (corpus/<slug>.md) or the
+project's Project Notes (working-notes.md) — plus the agent-assisted edit.
 
 Reading and saving are plain store operations; a save is a human's explicit action, so it
 git-commits immediately (same versioning contract as committer.py). The agent edit runs a
@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from . import agent, agent_harness, committer, config, prompts, sessions, store
 from .jobs import Job, JobRegistry, new_id
 
-# The pseudo-target for the cross-paper working notes; anything else is a paper slug.
+#: The pseudo-target for the cross-paper Project Notes (DR-082's user-facing name); anything
+#: else is a paper slug. The identifier and the wire value stay "working" — clients and
+#: persisted job payloads already speak it.
 WORKING = "working"
 
 # runner(target, prompt) yields the same {'text'|'tool'|'final'} events as the agentic turn
@@ -35,7 +37,7 @@ class NotesError(Exception):
 
 
 def title_for(target: str) -> str:
-    return "Working notes" if target == WORKING else store.title_for(target)
+    return "Project Notes" if target == WORKING else store.title_for(target)
 
 
 def _require_target(target: str) -> None:
@@ -59,7 +61,7 @@ def save(target: str, markdown: str, summary: str = "") -> dict:
         raise NotesError("Notes cannot be saved empty.")
     if target == WORKING:
         store.write_synthesis(markdown)
-        msg = summary.strip() or "Edit working notes"
+        msg = summary.strip() or "Edit Project Notes"
     else:
         store.append_notes_block(target, store.title_for(target), markdown)
         msg = summary.strip() or f"Edit notes: {store.title_for(target)}"
@@ -81,7 +83,7 @@ class NotesJob(Job):
     kind: str = "edit"               # edit | split_destination | split_source_cleanup
     summary: str = ""                # suggested human-approved commit message
     # Optimistic-concurrency token for the document the proposal was generated from. Applying
-    # a proposal after the working notes changed would silently overwrite newer human work.
+    # a proposal after the Project Notes changed would silently overwrite newer human work.
     base_revision: str = ""
     # Live progress as the client renders it: merged text runs + tool calls, arrival order
     # ({kind:'text', text} | {kind:'tool', name, detail}) — same shape as chat job items.
@@ -224,7 +226,7 @@ def start_discussion_update(target: str, thread_id: str | None = None,
     with mutation_lock(target):
         _require_target(target)
         if target == WORKING:
-            raise NotesError("Discussion updates target a paper's notes, not the working notes.")
+            raise NotesError("Discussion updates target a paper's notes, not the Project Notes.")
         current = read(target)
         # The same filter `_paper_discussion_context` uses, because the record shapes are the
         # same trap: assistant records carry `canonical` (never `text` — the first cut read a
@@ -290,9 +292,9 @@ def start_split_destination(
     runner: RunnerFn | None = None,
     allow_busy: bool = False,
 ) -> NotesJob:
-    """Propose working notes for the destination after papers were split/moved into it.
+    """Propose Project Notes for the destination after papers were split/moved into it.
 
-    Unlike a normal edit, the destination may not have working notes yet. Only committed
+    Unlike a normal edit, the destination may not have Project Notes yet. Only committed
     per-paper Notes captured before the relocation are supplied; the model is explicitly
     forbidden from inventing or researching beyond that material.
     """
@@ -303,17 +305,17 @@ def start_split_destination(
         current = read(WORKING)
         action = "integrate into" if current.strip() else "draft"
         instruction = (
-            f"{action.capitalize()} the destination project's working notes from "
+            f"{action.capitalize()} the destination project's Project Notes from "
             f"{len(usable)} paper{'s' if len(usable) != 1 else ''} moved from {source_name}."
         )
         prompt = (
-            "=== CURRENT DESTINATION WORKING NOTES ===\n"
+            "=== CURRENT DESTINATION PROJECT NOTES ===\n"
             f"{current.strip() or '(none yet)'}\n"
-            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== END CURRENT PROJECT NOTES ===\n\n"
             "=== MIGRATED PAPER CONTEXT ===\n"
             f"{_paper_notes_context(usable, include_research_context=True)}\n"
             "=== END MIGRATED PAPER CONTEXT ===\n\n"
-            "Instruction: Produce the COMPLETE destination working-notes document. Integrate "
+            "Instruction: Produce the COMPLETE destination Project Notes document. Integrate "
             "the migrated papers' established findings, methods, relationships, tensions, and "
             "open questions into the current document; if it is empty, create a concise, "
             "well-structured first synthesis. Use ONLY the supplied committed Notes, paper "
@@ -328,7 +330,7 @@ def start_split_destination(
             base_revision=_content_revision(current),
             runner=runner,
             kind="split_destination",
-            summary=f"Integrate {len(usable)} moved paper(s) into working notes",
+            summary=f"Integrate {len(usable)} moved paper(s) into Project Notes",
             reject_running=True,
             allow_busy=allow_busy,
         )
@@ -362,7 +364,7 @@ def start_split_destination_queue(
 
 def resolve_and_advance(job_id: str, *, target: str | None = None) -> dict:
     """Discard a settled proposal and, when it belongs to a relocation queue, start the next
-    paper's proposal against the now-current working notes.
+    paper's proposal against the now-current Project Notes.
 
     Call this only after an Apply has committed the current result, or when the person explicitly
     discards it. A scheduling failure does not undo the already-committed Apply; it is returned
@@ -412,11 +414,11 @@ def start_split_source_cleanup(
     runner: RunnerFn | None = None,
     allow_busy: bool = False,
 ) -> NotesJob:
-    """Propose removing departed papers' contributions from the source working notes."""
+    """Propose removing departed papers' contributions from the source Project Notes."""
     with mutation_lock(WORKING):
         current = read(WORKING)
         if not current.strip():
-            raise NotesError("This project has no working notes to clean up.")
+            raise NotesError("This project has no Project Notes to clean up.")
         usable = _usable_papers(papers)
         if not usable:
             raise NotesError("The moved papers did not have committed Notes to identify.")
@@ -425,13 +427,13 @@ def start_split_source_cleanup(
             f"{'s' if len(usable) != 1 else ''} moved to {destination_name}."
         )
         prompt = (
-            "=== CURRENT SOURCE WORKING NOTES ===\n"
+            "=== CURRENT SOURCE PROJECT NOTES ===\n"
             f"{current.strip()}\n"
-            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== END CURRENT PROJECT NOTES ===\n\n"
             "=== DEPARTED PAPERS AND THEIR COMMITTED NOTES ===\n"
             f"{_paper_notes_context(usable)}\n"
             "=== END DEPARTED PAPER NOTES ===\n\n"
-            "Instruction: Produce the COMPLETE revised source working-notes document. Remove "
+            "Instruction: Produce the COMPLETE revised source Project Notes document. Remove "
             "only claims, evidence, comparisons, and framing attributable exclusively to the "
             "departed papers. Preserve material supported by papers that remain, including "
             "shared insights or cross-paper synthesis that is still valid. Reflow headings and "
@@ -446,7 +448,7 @@ def start_split_source_cleanup(
             base_revision=_content_revision(current),
             runner=runner,
             kind="split_source_cleanup",
-            summary=f"Clean working notes after moving {len(usable)} paper(s)",
+            summary=f"Clean Project Notes after moving {len(usable)} paper(s)",
             reject_running=True,
             allow_busy=allow_busy,
         )

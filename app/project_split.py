@@ -2,7 +2,7 @@
 out of one project into a fresh one.
 
 Phase 1 only (this module): the deterministic, LLM-free, network-free move/copy. The two
-optional LLM working-notes passes (draft the new project's notes; clean the source's notes)
+optional LLM Project Notes passes (draft the new project's notes; clean the source's notes)
 are separate `notes_jobs`-shaped background jobs layered on top.
 
 What travels per selected slug (see docs/project-forking-design.md for the full table):

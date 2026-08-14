@@ -90,7 +90,7 @@ way they did. This is an index, not a substitute for reading them.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
 - `sessions.py` — per-paper session state, transcript JSONL, narration cache, retry branches.
   Transcript-rewriting routes hold `sessions.mutation_lock(slug)`.
-- `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
+- `assembler.py` — builds the per-turn reading context (method, Project Notes, prior notes).
 - `agent.py` — analysis turn (single-shot + streaming), stage-2 narration, the marker parser.
 - `agent_harness.py` — the agentic tool-loop turn via Pydantic AI. The default path; `RC_AGENTIC=0`
   opts out.

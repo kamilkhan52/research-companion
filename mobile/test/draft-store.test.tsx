@@ -48,7 +48,7 @@ test('a local edit made during storage loading is never overwritten by stale dat
 test('an edit-first notes draft restores its proposal conflict metadata', async () => {
   const key = draftKey('project-a', 'notes', 'working', 'manual-edit');
   const value = {
-    markdown: '# Working notes\n\nEdited proposal.',
+    markdown: '# Project Notes\n\nEdited proposal.',
     proposal: {
       baseRevision: 'base-revision',
       jobId: 'notes-job',

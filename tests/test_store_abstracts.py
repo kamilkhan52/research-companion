@@ -2,7 +2,7 @@
 
 An unread paper contributes nothing to a discussion's context except its reading-list line, so
 its abstract is the only substantive thing the agent can know about it. Once the paper is read,
-its Notes block carries that weight and the abstract drops out.
+its Paper Notes block carries that weight and the abstract drops out.
 """
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def test_overview_drops_the_abstract_once_the_paper_has_notes(temp_project):
 
 
 def test_overview_keeps_the_abstract_of_a_read_paper_whose_notes_are_not_written_yet(temp_project):
-    """`read` is a marker in reading-list.md; the Notes block is what actually reaches the
+    """`read` is a marker in reading-list.md; the Paper Notes block is what actually reaches the
     context. Between the two, the abstract is still the only thing the agent has."""
     _write_list(f"**Orca: A Serving System** — *read*\n\nAbstract: {ABSTRACT}\n")
     assert f"  Abstract: {ABSTRACT}" in store.reading_list_overview()

@@ -1,6 +1,6 @@
 """Notes committer + versioning (Sections 4, 8). The single component that writes approved
 changes into the store, as one reviewable change set: flip status to *read*, append the
-Notes block to corpus/<slug>.md, rewrite synthesis.md, and git-commit. Nothing reaches the
+Paper Notes block to corpus/<slug>.md, rewrite synthesis.md, and git-commit. Nothing reaches the
 record without the human's approval (the 'agent proposes, human commits' principle).
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _git(*args: str) -> str:
 
 
 def review(slug: str) -> dict:
-    """Assemble the review payload for the approval screen: the proposed Notes block and the
+    """Assemble the review payload for the approval screen: the proposed Paper Notes block and the
     proposed synthesis, alongside the current synthesis for comparison."""
     proposed = sessions.latest_proposed_commit(slug) or {}
     return {
@@ -38,7 +38,7 @@ def review(slug: str) -> dict:
         "title": store.title_for(slug),
         "summary": proposed.get("summary", ""),
         "notes_block": proposed.get("notes_block", ""),
-        # DR-058: the editor's change plan — review shows it above the working-notes diff as
+        # DR-058: the editor's change plan — review shows it above the Project Notes diff as
         # the stated intent the diff should be judged against. Empty on pre-editor proposals.
         "plan": proposed.get("plan", ""),
         "synthesis_current": store.read_synthesis(),
@@ -79,10 +79,10 @@ def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> d
     title = store.title_for(slug)
     notes_block, synthesis = (notes_block or ""), (synthesis or "")
     if not notes_block.strip() and not synthesis.strip():
-        raise CommitError("Nothing to commit (no notes and no working-notes update).")
+        raise CommitError("Nothing to commit (no notes and no Project Notes update).")
 
-    # A paper commit has a Notes block (append + flip to read); the working-notes review
-    # commit has only the rewritten working notes.
+    # A paper commit has a Paper Notes block (append + flip to read); the Project Notes review
+    # commit has only the rewritten Project Notes.
     if notes_block.strip():
         store.append_notes_block(slug, title, notes_block)
         store.set_status_read(slug)
@@ -94,9 +94,9 @@ def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> d
     if summary.strip():
         msg = summary.strip()
     elif notes_block.strip():
-        msg = f"Read {title}: notes + working-notes update"
+        msg = f"Read {title}: notes + Project Notes update"
     else:
-        msg = "Update working notes"
+        msg = "Update Project Notes"
     try:
         _git("commit", "-q", "-m", msg)
     except CommitError as e:

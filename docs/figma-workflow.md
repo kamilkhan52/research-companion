@@ -57,7 +57,7 @@ The mobile proposal page currently contains these editable frames:
 - `02 · Discover`
 - `03 · Discussion`
 - `04 · Reference Map`
-- `05 · Working Notes`
+- `05 · Project Notes`
 - `06 · Related Works`
 - `07 · External Reference`
 - `08a · Chat main`
@@ -194,7 +194,7 @@ Useful source files for UI state mapping:
 - `mobile/src/app/discover.tsx` — Discover setup, progress, recommendations
 - `mobile/src/app/paper/[slug].tsx` — Discussion and start-reading states
 - `mobile/src/app/graph.tsx` — Reference graph
-- `mobile/src/app/notes/[target].tsx` — Working notes and revisions
+- `mobile/src/app/notes/[target].tsx` — Project Notes and revisions
 - `mobile/src/app/player.tsx` — Full listening mode
 
 If the app opens in the disconnected state, use Settings/connect as live reference and use source files plus existing screenshots for data-backed states.

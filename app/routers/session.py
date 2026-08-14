@@ -195,7 +195,7 @@ def opening_draft(slug: str, thread_id: str = sessions.MAIN_THREAD):
 @project_router.post("/session/{slug}/threads")
 def create_thread(slug: str, req: CreateThreadReq):
     if slug == REVIEW_SLUG:
-        raise HTTPException(status_code=400, detail="The working-notes review has one thread.")
+        raise HTTPException(status_code=400, detail="The Project Notes review has one thread.")
     if not store.get_paper(slug):
         raise HTTPException(status_code=404, detail="Unknown paper")
     if config.project_is_busy(config.active_project_id()):
@@ -445,7 +445,7 @@ def _prep_edit(req: EditReq) -> None:
 
 def _prep_finish(req: FinishReq) -> None:
     _require_session(req.slug)
-    # The review chat folds the discussion into the working notes; a paper drafts its Notes.
+    # The review chat folds the discussion into the Project Notes; a paper drafts its Notes.
     key = "review_finish" if req.slug == REVIEW_SLUG else "finish_instruction"
     instruction = prompts.get(key)
     if req.slug != REVIEW_SLUG:

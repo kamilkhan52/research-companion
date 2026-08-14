@@ -61,13 +61,13 @@ test('renders the proposed notes and synthesis for review', async () => {
   expect(screen.getAllByLabelText('Added line').length).toBeGreaterThan(0);
   expect(screen.getAllByLabelText('Removed line').length).toBeGreaterThan(0);
   expect(screen.getByText('What this paper contributes on its own.')).toBeTruthy();
-  // DR-057: the section is named in the reader's own vocabulary — it IS the working notes.
-  expect(screen.getByText('Working notes')).toBeTruthy();
+  // DR-057: the section is named in the reader's own vocabulary — it IS the Project Notes.
+  expect(screen.getByText('Project Notes')).toBeTruthy();
   // DR-058: the editor's change plan sits above the diff as the intent to judge it against.
   expect(screen.getByText('Change plan')).toBeTruthy();
   expect(screen.getByText(/Fold in the 40% result/)).toBeTruthy();
   expect(screen.getByText(
-    'The proposed rewrite of your working notes — the synthesis across everything read so far.',
+    'The proposed rewrite of your Project Notes — the synthesis across everything read so far.',
   )).toBeTruthy();
   expect(screen.getByText(/Nothing joins the project until you approve/)).toBeTruthy();
 });

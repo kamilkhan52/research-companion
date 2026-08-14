@@ -55,7 +55,7 @@ suite. One uvicorn worker by deliberate choice (invariant 6). Six load-bearing i
 documented in `CLAUDE.md` and enforced structurally; the plan in `10-roadmap.md` preserves all six.
 
 **Storage** — markdown-in-git. Each project under `PROJECTS_ROOT` is its own git repo (reading
-list, method, working notes, `corpus/`, `sessions/`, `.state/`). App-global state (keys, model
+list, method, Project Notes, `corpus/`, `sessions/`, `.state/`). App-global state (keys, model
 picks, prompt overrides, caches) in `.app-state/`. Current volume: **356 MB** across 7 projects,
 plus **2.8 GB** of TTS audio cache.
 

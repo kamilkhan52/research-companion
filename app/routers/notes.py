@@ -1,6 +1,6 @@
 """Per-project committed-notes routes (view / edit / agent-assisted edit), the commit review +
 approve flow, and adding an unread reading-list entry. `target` is a paper slug or "working"
-for the cross-paper working notes; reads and saves are quick plain requests while the agent
+for the cross-paper Project Notes; reads and saves are quick plain requests while the agent
 edit is a job + poll whose result is a PROPOSAL the client applies via the save endpoint. The
 /notes/jobs routes are declared before /notes/{target} so "jobs" is never captured as a target.
 See CLAUDE.md invariant 4 (agent proposes, human commits)."""

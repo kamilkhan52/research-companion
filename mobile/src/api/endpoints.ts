@@ -372,7 +372,7 @@ export const markPreviewPlayed = (pid: string, id: string) =>
   ).then(noting((r) => r.job));
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
-// target = a paper slug, or 'working' for the cross-paper working notes.
+// target = a paper slug, or 'working' for the cross-paper Project Notes.
 
 export const getNotes = (pid: string, target: string) =>
   apiGet<NotesDoc>(`${P(pid)}/notes/${encodeURIComponent(target)}`);
