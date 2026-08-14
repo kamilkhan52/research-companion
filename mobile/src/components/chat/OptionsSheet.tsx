@@ -7,6 +7,7 @@
 import type { ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
+import { DevTestModalTrigger } from '@/components/DevTestModalTrigger';
 import { Icon, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
@@ -58,6 +59,9 @@ export function OptionsSheet({
            see RelatedWorksSheet.tsx for the on-device confirmation of why an ancestor Pressable
            blocks the ScrollView's drag-to-scroll below. */}
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        {/* DR-078: this menu lives in its own OS window, so the base-layer devtest bubble
+            can't float over it — dev builds re-render the trigger here instead. */}
+        <DevTestModalTrigger />
         <View style={styles.card}>
           <ScrollView bounces={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
             {title ? (
