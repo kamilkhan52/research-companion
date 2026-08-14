@@ -149,6 +149,11 @@ way they did. This is an index, not a substitute for reading them.
   unscoped `--reload` would reload-loop forever. A reload is a **full process restart** — it
   drops the in-memory job registries and kills any in-flight background job (invariants 1/6), so
   don't save mid-job when you care about the result. Leave it **off** for the tunnel deployment.
+  **An agent editing `app/` on the live checkout IS a restart** (DR-083: a rename sweep killed
+  Kamil's in-flight Finish turn mid-synthesis, silently — the client shows no trace). Before
+  touching `app/` here, check for active jobs (recent writes under `projects/`, `.dev-feedback/`
+  activity, or ask); do backend edits on a branch/worktree and let the merge fast-forward land
+  them when the server is quiet.
 - **Second instance for verification** (don't disturb the live server): `.env` pins `RC_PORT`
   and `run.sh` exports `.env` last, so bypass it — `RC_ENV=dev .venv/bin/uvicorn app.main:app
   --host 127.0.0.1 --port 8901`. **`RC_ENV` is now required** and bypassing `run.sh` bypasses the
