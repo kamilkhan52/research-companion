@@ -134,7 +134,6 @@ function ThemedShell() {
           </Stack>
         </View>
         <StackNowPlaying />
-        <DevTestOverlay />
         {/* Cross-project duplicate preflight raised by useAddPaper from every add surface. */}
         <ExistingPaperOfferHost />
         {/* Global "start the paper summary?" offer, raised by useAddPaper from any add site. */}
@@ -157,11 +156,18 @@ function AccountScopedApp() {
         <ListeningProvider>
           <GraphSettingsProvider>
           <AudioProvider>
-          <BottomSheetModalProvider>
-          <PaperEntityProvider>
-          <ThemedShell />
-          </PaperEntityProvider>
-          </BottomSheetModalProvider>
+          <View style={{ flex: 1 }}>
+            <BottomSheetModalProvider>
+            <PaperEntityProvider>
+            <ThemedShell />
+            </PaperEntityProvider>
+            </BottomSheetModalProvider>
+            {/* DR-078: the devtest trigger mounts as a LATER SIBLING of the gorhom modal
+                provider, so it paints above the portal host every JS bottom sheet renders
+                into — the bubble used to hide under any open sheet. Native Modals are
+                separate OS windows and are handled by DevTestModalTrigger instead. */}
+            <DevTestOverlay />
+          </View>
           </AudioProvider>
           </GraphSettingsProvider>
         </ListeningProvider>

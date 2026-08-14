@@ -15,7 +15,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePathname } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -43,6 +43,65 @@ try {
 }
 
 export const canScreenshot = () => captureScreen !== null && NativeModules.RNViewShot != null;
+
+// DR-078 — "Dev test bubble hides under menus." Native `Modal`s (OptionsSheet,
+// NotesReviewSheet) open in their own OS window ABOVE the app hierarchy, so nothing in the
+// base layer — whatever its zIndex — can float over them. The fix is inverted: those modal
+// hosts render their own copy of the trigger (`DevTestFloatingTrigger`, via the lazy
+// `DevTestModalTrigger` wrapper) inside their window, and it opens the ONE sheet owned by the
+// root `DevTestBubble` through this module-level opener. The devtest sheet is itself a native
+// Modal, and Android stacks dialogs by presentation order, so it appears above the menu it
+// was opened from. One registration only — there is exactly one DevTestBubble mount.
+let sheetOpener: (() => void) | null = null;
+export function requestDevTestOpen() {
+  sheetOpener?.();
+}
+
+// Whether the root DevTestBubble is currently mounted — the modal-hosted triggers subscribe
+// to this instead of re-running the RC_DEV health query themselves, so they carry no
+// react-query context requirement into their host components (or those components' tests).
+const activeListeners = new Set<() => void>();
+let bubbleMounted = false;
+function setBubbleMounted(next: boolean) {
+  if (next === bubbleMounted) return;
+  bubbleMounted = next;
+  activeListeners.forEach((l) => l());
+}
+
+/** The modal-layer trigger: renders nothing unless the root bubble is live (dev builds
+ *  against a dev server), so Modal hosts can mount it unconditionally. */
+export function DevTestFloatingTriggerIfActive() {
+  const active = useSyncExternalStore(
+    (cb) => {
+      activeListeners.add(cb);
+      return () => activeListeners.delete(cb);
+    },
+    () => bubbleMounted,
+  );
+  if (!active) return null;
+  return <DevTestFloatingTrigger />;
+}
+
+/** The floating clipboard trigger, for rendering INSIDE a native Modal's own window. The
+ *  screenshot taken on open captures the app's main window only (dialogs are separate OS
+ *  windows react-native-view-shot cannot see), so feedback filed from a menu arrives without
+ *  the menu in the shot — still strictly better than having to close the menu to reach the
+ *  bubble at all. */
+export function DevTestFloatingTrigger() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const insets = useSafeAreaInsets();
+  return (
+    <Pressable
+      onPress={requestDevTestOpen}
+      accessibilityRole="button"
+      accessibilityLabel="Open device-test companion"
+      style={[styles.bubble, { bottom: insets.bottom + 96 }]}
+    >
+      <Icon name="clipboard" size={20} color={t.mintInk} />
+    </Pressable>
+  );
+}
 
 /** Tester-facing ordering: verify first (that queue is why the feature exists), then open
  *  work, then everything else collapsed. Exported for tests. */
@@ -214,6 +273,17 @@ export function DevTestBubble() {
     }
     setVerdicts(await loadAllVerdicts().catch(() => ({})));
   }, []);
+
+  // DR-078: triggers hosted inside native Modal windows open this sheet through the
+  // module-level opener above, and render only while this root mount is live.
+  useEffect(() => {
+    sheetOpener = () => void open();
+    setBubbleMounted(true);
+    return () => {
+      sheetOpener = null;
+      setBubbleMounted(false);
+    };
+  }, [open]);
 
   // Exclude the pinned "Just added" item from its normal section — Opus review, PR #371: it
   // used to render there too, a second mounted `ItemCard` for the same item.id sharing one

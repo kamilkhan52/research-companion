@@ -21,6 +21,7 @@ import { finishSteps } from '@/lib/finishSteps';
 import { scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
 import { Markdown } from '@/components/Markdown';
+import { DevTestModalTrigger } from '@/components/DevTestModalTrigger';
 import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -315,6 +316,9 @@ export function NotesReviewSheet({
             </ScrollView>
           </KeyboardAvoidingView>
         )}
+        {/* DR-078: native Modal window — dev builds re-render the devtest trigger inside it
+            so feedback about this review surface can be filed without closing it. */}
+        <DevTestModalTrigger />
       </Screen>
     </Modal>
   );
