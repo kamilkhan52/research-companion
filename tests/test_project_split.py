@@ -51,7 +51,7 @@ def _seed_source(pid):
                                  "<!-- slug: awq -->\n<!-- cites: smooth, core -->")
     rl.write_text(txt)
     store._parse_cache.clear()
-    # give awq a committed Notes block + a session + graph caches
+    # give awq a committed Paper Notes block + a session + graph caches
     store.append_notes_block("awq", "AWQ", "## Notes\n\nKey result: 4-bit works.")
     sessions.set_state("awq", "in_discussion")
     jsonl, _ = sessions.transcript_paths("awq")
@@ -218,16 +218,16 @@ def test_split_route_starts_project_scoped_notes_proposals_after_relocation(
     temp_project, monkeypatch,
 ):
     """R8.3: both LLM passes are real background jobs, admitted after deterministic phase 1
-    but before its reservations release; each worker sees the correct project's working notes."""
+    but before its reservations release; each worker sees the correct project's Project Notes."""
     _seed_source(temp_project)
-    store.write_synthesis("# Working notes\n\nAWQ supports four-bit inference. Core remains.")
+    store.write_synthesis("# Project Notes\n\nAWQ supports four-bit inference. Core remains.")
     monkeypatch.setattr(config, "has_api_key", lambda: True)
 
     def fake_events(target, prompt):
         if "CURRENT DESTINATION" in prompt:
-            yield {"type": "final", "text": "# Working notes\n\nDestination synthesis."}
+            yield {"type": "final", "text": "# Project Notes\n\nDestination synthesis."}
         else:
-            yield {"type": "final", "text": "# Working notes\n\nCore remains."}
+            yield {"type": "final", "text": "# Project Notes\n\nCore remains."}
 
     monkeypatch.setattr(notes_jobs, "_default_events", fake_events)
     admitted_while_reserved = set()

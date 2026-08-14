@@ -475,7 +475,7 @@ def split_project(pid: str, req: SplitReq, request: Request):
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,
-            detail="Source working notes can only be cleaned up when papers leave the source.",
+            detail="Source Project Notes can only be cleaned up when papers leave the source.",
         )
     if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
@@ -582,7 +582,7 @@ def move_papers(pid: str, req: MoveReq, request: Request):
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,
-            detail="Source working notes can only be cleaned up when papers leave the source.",
+            detail="Source Project Notes can only be cleaned up when papers leave the source.",
         )
     if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")

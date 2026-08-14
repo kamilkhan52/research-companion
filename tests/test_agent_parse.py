@@ -81,7 +81,7 @@ Kernel fusion details.
 
 # SYNTHESIS
 
-Updated working notes.
+Updated Project Notes.
 
 # CANONICAL
 
@@ -90,7 +90,7 @@ A short preview for review."""
     assert t.canonical == "A short preview for review."
     assert "Now I have what I need" not in t.canonical
     assert t.proposed_commit["summary"] == "Read DeepSpeed Inference."
-    assert t.proposed_commit["synthesis"] == "Updated working notes."
+    assert t.proposed_commit["synthesis"] == "Updated Project Notes."
 
 
 def test_headings_inside_section_bodies_are_kept():
@@ -153,9 +153,9 @@ def _editor(monkeypatch, raw):
 def test_editor_parses_plan_then_synthesis(monkeypatch):
     plan, synth = _editor(monkeypatch,
         "###PLAN###\nAdd the 40% result; skip the related-work rehash.\n"
-        "###SYNTHESIS###\n## Working notes\nUpdated.\n###END###")
+        "###SYNTHESIS###\n## Project Notes\nUpdated.\n###END###")
     assert plan == "Add the 40% result; skip the related-work rehash."
-    assert synth == "## Working notes\nUpdated."
+    assert synth == "## Project Notes\nUpdated."
 
 
 def test_editor_tolerates_heading_drift_and_missing_plan(monkeypatch):

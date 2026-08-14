@@ -163,7 +163,7 @@ def _parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
     commit = None
     notes, synth, summary = val("NOTES_BLOCK"), val("SYNTHESIS"), val("COMMIT_SUMMARY")
     if allow_proposed_commit and (notes or synth):
-        # Paper commit has both; the review chat has working notes (synth) only. Production
+        # Paper commit has both; the review chat has Project Notes (synth) only. Production
         # callers pass the transcript's last human action here, so a model that drifts on an
         # opening/reply cannot manufacture a notes-approval state the user never requested.
         commit = ProposedCommit(summary=summary or "Notes + working-notes update",
@@ -187,23 +187,23 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
                    paper_title: str, notes_block: str, model: str | None = None) -> tuple[str, str]:
     """DR-058 — the synthesis-editor pass: plan first, then the complete rewritten working
     notes. A SEPARATE call from the finish turn, so the model that just spent its whole context
-    on the paper is not the one deciding how much of the working notes to rewrite: this pass
+    on the paper is not the one deciding how much of the Project Notes to rewrite: this pass
     sees the paper only at committed-notes size, must state its change plan before touching the
     document, and the plan ships to review beside the diff.
 
     Returns (plan, synthesis). Raises AgentError when the output carries no usable SYNTHESIS —
-    the caller fails the turn rather than proposing a commit that would erase the working notes.
+    the caller fails the turn rather than proposing a commit that would erase the Project Notes.
 
     Reasoning stays ON: unlike narration or a profile, planning an edit is exactly the kind of
     task reasoning models are for, and the finish wait already covers the latency (DR-056's
-    "Updating working notes" stage is this pass).
+    "Updating Project Notes" stage is this pass).
     """
     user = (
         f"# Project: {project_name}\n"
         + (f"\n## Research goals\n{goals}\n" if goals.strip() else "")
-        + "\n## CURRENT working notes\n"
+        + "\n## CURRENT Project Notes\n"
         + (current_synthesis.strip() or "(empty — no synthesis yet)")
-        + f"\n\n## Newly finished paper: {paper_title}\n### Its drafted Notes block\n"
+        + f"\n\n## Newly finished paper: {paper_title}\n### Its drafted Paper Notes block\n"
         + notes_block.strip()
     )
     raw = _complete(

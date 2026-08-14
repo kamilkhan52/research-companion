@@ -22,11 +22,11 @@ No code ships with this document.
 
 1. **Remove from source?** (default **on** — the typical case is *moving* off-theme papers
    out). Off = the new project gets copies and the source keeps everything.
-2. **Wipe their contribution to the source's working notes?** (only offered when removing;
+2. **Wipe their contribution to the source's Project Notes?** (only offered when removing;
    default off). An LLM pass proposes the rewrite; the user approves it like any notes
    proposal. Per-paper Notes need no wiping — they live inside the paper's corpus file and
    leave with it.
-3. **Draft the new project's working notes with AI?** (default on). Synthesized from the
+3. **Draft the new project's Project Notes with AI?** (default on). Synthesized from the
    migrated papers' Notes, delivered as a proposal in the new project.
 
 ## What travels
@@ -37,7 +37,7 @@ No code ships with this document.
 | Corpus file incl. committed `## Notes` | moves | copies |
 | Session transcript + retry branches (`sessions/<slug>*`, committed history) | moves (it is work done on that paper) | copies into an independent destination history; source history remains intact |
 | Per-paper graph caches (`.state/reference-graph.json` record, `.state/graph-corpus/<slug>.txt`, cover PNG) | copied either way — cheap files that save a paid re-extraction on the new project's first build | same |
-| Working notes | never move automatically — phases 2/3 below propose changes for humans to approve | same |
+| Project Notes | never move automatically — phases 2/3 below propose changes for humans to approve | same |
 | Usage ledger, whole-graph snapshot, session index | stay; the graph and index rebuild lazily like any new project | same |
 
 `<!-- cites -->` entries pointing at papers that did **not** move are dropped from the
@@ -79,18 +79,18 @@ R8.2 shipped phase 1; R8.3 ships the two proposal jobs and their controls.
      in-app confirmation — the same invariant-4 posture as `DELETE /papers/{slug}`, which
      already git-commits directly on confirmed quick actions.
    - The response returns the new pid; the client switches projects (the R7.5 machinery).
-2. **Destination working notes (background jobs + sequential approval)** — when
-   `draft_destination_notes`: the client immediately enters Working Notes and reviews one
+2. **Destination Project Notes (background jobs + sequential approval)** — when
+   `draft_destination_notes`: the client immediately enters Project Notes and reviews one
    migrated paper at a time. Each background job integrates only that paper's committed Notes
    into the destination's then-current `working-notes.md`; Apply commits it before the next
    paper starts, while Discard advances without writing. For a new project the first pass
    builds on the starter document; for an existing project every pass preserves and extends
    the current synthesis. Nothing reaches the record unapproved (invariant 4).
 3. **Source cleanup (background job + approval)** — when `cleanup_source_notes` (implies
-   remove-on): an LLM pass proposes the source's working notes with the departed papers'
+   remove-on): an LLM pass proposes the source's Project Notes with the departed papers'
    contributions removed. Working-notes content is synthesized without per-paper
    attribution, so titles alone can't identify what to remove — phase 1 therefore
-   **snapshots the departed papers' Notes blocks before migration** and stages that
+   **snapshots the departed papers' Paper Notes blocks before migration** and stages that
    snapshot for this job (`.state/`, working data, never committed). The prompt gets the
    departed titles AND their notes as the reference for what to excise, and forbids
    inventing content — remove and reflow only.
@@ -109,13 +109,13 @@ recoverable through the latest-job endpoint until the user applies or discards t
 - **The sheet:** new-project name; optional one-line goals ("what is this project about?" —
   prefills discovery and grounds profile/lab passes); toggles per the three choices above;
   a summary line stating plainly what will happen ("Move 6 papers and their notes,
-  discussions and caches to '<name>'; propose a cleanup of this project's working notes").
+  discussions and caches to '<name>'; propose a cleanup of this project's Project Notes").
   Confirm → POST → switch to the new project with the notes-draft job visible in the
   existing job-status UI. Completion toasts ride the R6.5 toast machinery.
 - The two AI toggles appear only when at least one selected paper has committed Notes. This is
-  the practical evidence that the paper was read and could have influenced working notes;
+  the practical evidence that the paper was read and could have influenced Project Notes;
   unread metadata-only papers do not trigger a misleading cleanup offer. Source cleanup is
-  additionally hidden for copy operations and safely skips when the source has no working notes.
+  additionally hidden for copy operations and safely skips when the source has no Project Notes.
 - **Second entry point:** the R7.5 project-settings panel gains "Split project…", which
   routes to the Library in selection mode.
 - Web follows only if trivial (the endpoint is client-agnostic).
@@ -127,7 +127,7 @@ recoverable through the latest-job endpoint until the user applies or discards t
   source remains untouched; subsequent conversations and commits diverge per project.
 - **No AI merge of two projects** (the reverse) — out of scope until splitting earns it.
 - **No partial-notes surgery on per-paper Notes** — they are the paper's record and travel
-  atomically with it. Only working notes get LLM-mediated rewrites, always via approval.
+  atomically with it. Only Project Notes get LLM-mediated rewrites, always via approval.
 - The old draft's "archive source papers" option (open question #2) is dropped — the
   clarified use case is thematic relocation, not thinning.
 

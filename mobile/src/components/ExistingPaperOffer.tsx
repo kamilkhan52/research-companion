@@ -269,7 +269,7 @@ export function ExistingPaperOfferHost() {
             <>
               <View style={styles.toggleRow}>
                 <View style={{ flex: 1, paddingRight: space.md }}>
-                  <Text variant="body">Integrate into this project’s working notes</Text>
+                  <Text variant="body">Integrate into this project’s Project Notes</Text>
                   <Text variant="caption" color={t.muted}>
                     Opens a reviewable proposal for this paper immediately after reuse.
                   </Text>
@@ -284,7 +284,7 @@ export function ExistingPaperOfferHost() {
               {removeFromSource ? (
                 <View style={styles.toggleRow}>
                   <View style={{ flex: 1, paddingRight: space.md }}>
-                    <Text variant="body">Clean the source working notes</Text>
+                    <Text variant="body">Clean the source Project Notes</Text>
                     <Text variant="caption" color={t.muted}>
                       Proposes removing contributions tied to the departing paper.
                     </Text>
@@ -301,7 +301,7 @@ export function ExistingPaperOfferHost() {
           ) : notesEligible ? (
             <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
               The paper’s committed Notes still copy. Add an API key to also integrate them
-              into this project’s working notes.
+              into this project’s Project Notes.
             </Text>
           ) : null}
 

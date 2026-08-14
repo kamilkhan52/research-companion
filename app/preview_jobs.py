@@ -169,7 +169,7 @@ def research_sources(slug: str) -> list[dict]:
         "# Prior Notes",
         "# Per-paper Notes",
         "# Significant related works",
-        "# Working notes",
+        "# Project Notes",
         "# This paper's reading-list entry",
         "# The full reading list",
     )

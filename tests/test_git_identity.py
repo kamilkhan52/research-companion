@@ -48,7 +48,7 @@ def test_committer_commit_succeeds_without_ambient_identity(projects_root, no_am
         rl = store._reading_list()
         rl.write_text(rl.read_text() + "\n**Paper One** — *unread*\n<!-- slug: p1 -->\n",
                       encoding="utf-8")
-        result = committer.commit("p1", "## Notes\n\nkey finding", "working notes body", "Read Paper One")
+        result = committer.commit("p1", "## Notes\n\nkey finding", "Project Notes body", "Read Paper One")
         assert result["committed"] is True
         repo = projects.project_path(meta["id"])
         assert _log(repo, "%s") == "Read Paper One"

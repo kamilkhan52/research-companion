@@ -5,8 +5,8 @@
 > several specifics here — e.g. the agentic core runs on **OpenRouter** (not the Claude Agent
 > SDK), the dual output is generated in **two stages** (analysis model → a separate faithful
 > TTS-narration model) and **streamed**, speech uses **OpenAI single-file mp3** behind a
-> pluggable interface, the aggregate notes are now called **working notes** with a dedicated
-> cross-paper **Working Notes Review** chat, and there's an editable-prompt system, a
+> pluggable interface, the aggregate notes are now called **Project Notes** with a dedicated
+> cross-paper **Project Notes Review** chat, and there's an editable-prompt system, a
 > favorite-model switcher, and a neon web UI. Treat this as the founding plan of record; the
 > code and git history reflect the current system.
 
@@ -26,9 +26,9 @@ Four principles shape every decision below.
 
 **Separate the mechanical from the cognitive.** Most of your current workflow is deterministic plumbing — fetching a paper, converting text to speech, capturing a reply, writing to a file. Exactly one part is cognitive: the reading partner itself. The architecture draws a hard line between a *deterministic orchestration spine* and an *agentic core*, so each can be built, tested, and swapped independently.
 
-**The agent proposes; the human commits.** The agent never silently writes to your notes. It drafts Notes blocks and synthesis updates, and the spine commits them only after you approve. Your project file stays trustworthy because nothing enters it without your sign-off.
+**The agent proposes; the human commits.** The agent never silently writes to your notes. It drafts Paper Notes blocks and synthesis updates, and the spine commits them only after you approve. Your project file stays trustworthy because nothing enters it without your sign-off.
 
-**Context economy over context maximalism.** "Feed the whole notes file every session" works for paper three and breaks by paper eighteen. The design keeps the durable record complete but assembles each session's context from a curated slice: a compact running synthesis plus the specific prior Notes blocks that are actually relevant, selected using the citation graph the reading list already encodes.
+**Context economy over context maximalism.** "Feed the whole notes file every session" works for paper three and breaks by paper eighteen. The design keeps the durable record complete but assembles each session's context from a curated slice: a compact running synthesis plus the specific prior Paper Notes blocks that are actually relevant, selected using the citation graph the reading list already encodes.
 
 **Generate for the record and for the ear in one pass.** Your current Gemini rewrite hop disappears. Each agent turn emits two aligned outputs — a canonical scholarly version (equations, quotes, figure references, links) that goes into the record, and a narration script written for listening. One model, one generation, no second vendor, no quality loss, and it is deterministic which version goes to TTS.
 
@@ -45,7 +45,7 @@ stateDiagram-v2
   Retrieving --> InDiscussion: full text ready + opening summary generated
   InDiscussion --> InDiscussion: discussion turns (dual output + TTS)
   InDiscussion --> NotesDrafted: you signal "we're done"
-  NotesDrafted --> Committed: you approve Notes block + synthesis update
+  NotesDrafted --> Committed: you approve Paper Notes block + synthesis update
   NotesDrafted --> InDiscussion: you request changes
   Committed --> [*]
 ```
@@ -81,7 +81,7 @@ flowchart TB
 
   subgraph Store["Persistent Store — git-backed markdown"]
     ReadingList[reading-list.md: index + state + metadata]
-    Corpus[(corpus/: full texts + per-paper Notes blocks)]
+    Corpus[(corpus/: full texts + Paper Notes blocks)]
     Synthesis[synthesis.md: running cross-paper context]
     Sessions[(session logs: canonical + narration + audio refs)]
   end
@@ -119,7 +119,7 @@ This table is the contract between the two halves of the system. If a capability
 | Retrieve, fetch, and clean paper full text | Produce the opening comprehensive summary |
 | Assemble session context per the selection rules | Conduct the scholarly discussion, Q&A, critique |
 | Convert narration scripts to audio (TTS) | Emit the dual output (canonical + narration) each turn |
-| Deliver and cache audio; capture replies | Draft the per-paper Notes block at completion |
+| Deliver and cache audio; capture replies | Draft the Paper Notes block at completion |
 | Manage state transitions and session resume | Propose updates to the running synthesis |
 | Commit approved Notes/synthesis edits, with version history | Identify which prior papers are relevant (hybrid with the spine) |
 | Select relevant prior Notes via the citation graph | — |
@@ -150,7 +150,7 @@ sequenceDiagram
   Note over U: listens on the walk, composes the next reply
 ```
 
-The canonical version is the artifact of record: it carries the equations, the under-15-word quotes, the figure callouts ("see Figure 5"), and any links, and it is what later gets distilled into the Notes block. The narration version is what your ears receive. They are produced together and stay semantically aligned because one model wrote both in the same breath.
+The canonical version is the artifact of record: it carries the equations, the under-15-word quotes, the figure callouts ("see Figure 5"), and any links, and it is what later gets distilled into the Paper Notes block. The narration version is what your ears receive. They are produced together and stay semantically aligned because one model wrote both in the same breath.
 
 ---
 
@@ -167,7 +167,7 @@ Each agent turn returns a small structured object rather than a single blob of p
 }
 ```
 
-The narration script follows explicit rules enforced by the system prompt: render equations in words (for example, "the attention score is the softmax of q-dot-k over the square root of d" rather than a LaTeX line), drop markdown and inline references, convert figure mentions into spoken reminders, and keep sentences short enough to survive text-to-speech prosody. When the agent judges that the paper has been worked through, it sets `state_signal` to `ready_to_draft_notes`; when you approve a draft, the agent's next turn populates `proposed_commit` with the Notes block and any synthesis edit, which the spine routes to the committer.
+The narration script follows explicit rules enforced by the system prompt: render equations in words (for example, "the attention score is the softmax of q-dot-k over the square root of d" rather than a LaTeX line), drop markdown and inline references, convert figure mentions into spoken reminders, and keep sentences short enough to survive text-to-speech prosody. When the agent judges that the paper has been worked through, it sets `state_signal` to `ready_to_draft_notes`; when you approve a draft, the agent's next turn populates `proposed_commit` with the Paper Notes block and any synthesis edit, which the spine routes to the committer.
 
 Producing both in one structured response is what removes the Gemini hop, the second vendor, and the drift between what you read and what you hear.
 
@@ -179,19 +179,19 @@ This is the part that determines whether the system still works at paper eightee
 
 Three tiers of memory:
 
-The **durable record** is the per-paper Notes block plus the cached full text, one file per paper. Nothing is ever lost here.
+The **durable record** is the Paper Notes block plus the cached full text, one file per paper. Nothing is ever lost here.
 
 The **running synthesis** (`synthesis.md`) is a single compact document the agent maintains: the live cross-paper threads (for example, "the disaggregation line versus Sarathi-Serve's chunked-prefill stance"), recurring groups and authors, open questions carried forward, and corrections you have made. It is rewritten, not appended, so it stays short and current rather than growing without bound. This is the closest thing to your "universal context."
 
-The **selected prior Notes** are pulled per session using the citation graph the reading list already encodes. When you start a new paper, the spine reads which list-papers it cites and loads exactly those Notes blocks — which is precisely what the reading method's "situate this paper relative to the others" instruction needs anyway. The selection rule and the reading requirement are the same rule.
+The **selected prior Notes** are pulled per session using the citation graph the reading list already encodes. When you start a new paper, the spine reads which list-papers it cites and loads exactly those Paper Notes blocks — which is precisely what the reading method's "situate this paper relative to the others" instruction needs anyway. The selection rule and the reading requirement are the same rule.
 
-A session's assembled context is therefore: the reading-method system prompt, the running synthesis, the selected prior Notes blocks, the full text of the current paper, and the current session's own history. Not the raw everything. As the corpus grows, only the synthesis and the selected-Notes set grow, and both are bounded by design.
+A session's assembled context is therefore: the reading-method system prompt, the running synthesis, the selected prior Paper Notes blocks, the full text of the current paper, and the current session's own history. Not the raw everything. As the corpus grows, only the synthesis and the selected-Notes set grow, and both are bounded by design.
 
 ```mermaid
 flowchart LR
   A[reading-method system prompt] --> X((Session context))
   B[synthesis.md] --> X
-  C[selected prior Notes blocks<br/>via citation graph] --> X
+  C[selected prior Paper Notes blocks<br/>via citation graph] --> X
   D[current paper full text] --> X
   E[current session history] --> X
   X --> F[Claude agent]
@@ -210,16 +210,16 @@ project/
   reading-list.md         # the index: groups, entries, metadata, status, citation links
   synthesis.md            # running cross-paper context (rewritten each commit)
   corpus/
-    vllm-pagedattention.md # full text + metadata + the Notes block once read
+    vllm-pagedattention.md # full text + metadata + the Paper Notes block once read
     orca.md
     ...
   sessions/
     2026-06-15-vllm.jsonl  # turn-by-turn log: canonical + narration + audio refs
 ```
 
-`reading-list.md` keeps doing what your current project instructions do, with one addition: an explicit, machine-readable citation field per entry (which other list-papers it cites and the relationship), so the spine can drive context selection without re-deriving it each time. Each `corpus/<paper>.md` holds the cleaned full text and, after reading, the appended Notes block — so a paper's notes physically travel with its text. The `sessions/` logs preserve both output channels and the audio artifact references, which makes any past discussion replayable as audio without regenerating it.
+`reading-list.md` keeps doing what your current project instructions do, with one addition: an explicit, machine-readable citation field per entry (which other list-papers it cites and the relationship), so the spine can drive context selection without re-deriving it each time. Each `corpus/<paper>.md` holds the cleaned full text and, after reading, the appended Paper Notes block — so a paper's notes physically travel with its text. The `sessions/` logs preserve both output channels and the audio artifact references, which makes any past discussion replayable as audio without regenerating it.
 
-A commit at paper completion is a single reviewable change set: flip status to `read` in the index, append the Notes block to the paper's file, and rewrite the relevant portion of `synthesis.md`. You approve that change set the way you would approve a pull request.
+A commit at paper completion is a single reviewable change set: flip status to `read` in the index, append the Paper Notes block to the paper's file, and rewrite the relevant portion of `synthesis.md`. You approve that change set the way you would approve a pull request.
 
 ---
 
@@ -229,9 +229,9 @@ A commit at paper completion is a single reviewable change set: flip status to `
 
 **A discussion turn.** Exactly the loop in Section 5, repeated as many times as the paper warrants, possibly spread across several short sessions. Because the backbone resumes paused sessions cleanly, "I'll continue after lunch" costs nothing — the session state, including the assembled context and history, is preserved server-side.
 
-**Completing a paper.** When you signal you are done, the agent drafts the Notes block (key findings and learnings, in the style your reading method specifies) and proposes the synthesis edit. You review both on the desktop surface, request changes if needed, and approve. The committer writes the change set; the paper becomes `Committed` / `read`.
+**Completing a paper.** When you signal you are done, the agent drafts the Paper Notes block (key findings and learnings, in the style your reading method specifies) and proposes the synthesis edit. You review both on the desktop surface, request changes if needed, and approve. The committer writes the change set; the paper becomes `Committed` / `read`.
 
-**Handoff to the next session.** Nothing special is required — the next paper simply assembles its context from the now-updated synthesis and the now-existing Notes blocks. The compounding is automatic: each paper you finish enriches the context the next one starts from.
+**Handoff to the next session.** Nothing special is required — the next paper simply assembles its context from the now-updated synthesis and the now-existing Paper Notes blocks. The compounding is automatic: each paper you finish enriches the context the next one starts from.
 
 ---
 

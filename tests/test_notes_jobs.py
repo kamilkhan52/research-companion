@@ -175,7 +175,7 @@ def test_relocation_pass_rejects_an_existing_running_proposal(temp_project):
 
     def slow(target, prompt):
         release.wait(5)
-        yield {"type": "final", "text": "# Working notes\n\nFirst proposal."}
+        yield {"type": "final", "text": "# Project Notes\n\nFirst proposal."}
 
     first = notes_jobs.start_split_destination(
         [{"slug": "p1", "title": "Paper One", "notes": "## Notes\n\nFirst."}],
@@ -218,7 +218,7 @@ def test_split_destination_drafts_from_committed_notes_when_working_notes_are_em
     def runner(target, prompt):
         captured["target"] = target
         captured["prompt"] = prompt
-        yield {"type": "final", "text": "# Working notes\n\nA grounded synthesis."}
+        yield {"type": "final", "text": "# Project Notes\n\nA grounded synthesis."}
 
     job = notes_jobs.start_split_destination(
         [
@@ -251,7 +251,7 @@ def test_split_destination_receives_full_paper_and_discussion_context(temp_proje
 
     def runner(target, prompt):
         captured["prompt"] = prompt
-        yield {"type": "final", "text": "# Working notes\n\nGrounded integration."}
+        yield {"type": "final", "text": "# Project Notes\n\nGrounded integration."}
 
     job = notes_jobs.start_split_destination(
         [{"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit weights work."}],
@@ -274,10 +274,10 @@ def test_relocation_notes_integrate_and_commit_one_paper_at_a_time(temp_project)
         if "SmoothQuant (slug: smooth)" in prompt:
             yield {
                 "type": "final",
-                "text": "# Working notes\n\nAWQ is integrated.\n\nSmoothQuant is integrated.",
+                "text": "# Project Notes\n\nAWQ is integrated.\n\nSmoothQuant is integrated.",
             }
         else:
-            yield {"type": "final", "text": "# Working notes\n\nAWQ is integrated."}
+            yield {"type": "final", "text": "# Project Notes\n\nAWQ is integrated."}
 
     first = notes_jobs.start_split_destination_queue(
         [
@@ -335,13 +335,13 @@ def test_relocation_notes_integrate_and_commit_one_paper_at_a_time(temp_project)
 def test_split_source_cleanup_is_grounded_in_departed_notes(temp_project):
     notes_jobs.save(
         notes_jobs.WORKING,
-        "# Working notes\n\nAWQ supports fast four-bit inference. Core remains relevant.",
+        "# Project Notes\n\nAWQ supports fast four-bit inference. Core remains relevant.",
     )
     captured = {}
 
     def runner(target, prompt):
         captured["prompt"] = prompt
-        yield {"type": "final", "text": "# Working notes\n\nCore remains relevant."}
+        yield {"type": "final", "text": "# Project Notes\n\nCore remains relevant."}
 
     job = notes_jobs.start_split_source_cleanup(
         [{"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit inference."}],
@@ -359,14 +359,14 @@ def test_split_source_cleanup_is_grounded_in_departed_notes(temp_project):
 def test_stale_notes_proposal_cannot_overwrite_a_newer_document(temp_project):
     from app.routers.notes import NotesSaveReq, save_notes
 
-    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nOriginal.")
     job = notes_jobs.start_edit(
         notes_jobs.WORKING,
         "revise",
-        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nProposal."}]),
+        runner=_sync_runner([{"type": "final", "text": "# Project Notes\n\nProposal."}]),
     )
     finished = _wait_until_settled(job.id)
-    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nNewer human edit.")
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nNewer human edit.")
 
     with pytest.raises(HTTPException) as exc:
         save_notes(
@@ -385,11 +385,11 @@ def test_stale_notes_proposal_cannot_overwrite_a_newer_document(temp_project):
 def test_applying_a_proposal_discards_it_from_latest(temp_project):
     from app.routers.notes import NotesSaveReq, save_notes
 
-    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nOriginal.")
     job = notes_jobs.start_edit(
         notes_jobs.WORKING,
         "revise",
-        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nApplied."}]),
+        runner=_sync_runner([{"type": "final", "text": "# Project Notes\n\nApplied."}]),
     )
     finished = _wait_until_settled(job.id)
 
@@ -410,11 +410,11 @@ def test_applying_a_proposal_discards_it_from_latest(temp_project):
 def test_legacy_apply_without_job_id_discards_an_exact_matching_proposal(temp_project):
     from app.routers.notes import NotesSaveReq, save_notes
 
-    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    notes_jobs.save(notes_jobs.WORKING, "# Project Notes\n\nOriginal.")
     first = notes_jobs.start_edit(
         notes_jobs.WORKING,
         "revise",
-        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nApplied."}]),
+        runner=_sync_runner([{"type": "final", "text": "# Project Notes\n\nApplied."}]),
     )
     finished = _wait_until_settled(first.id)
 
@@ -428,7 +428,7 @@ def test_legacy_apply_without_job_id_discards_an_exact_matching_proposal(temp_pr
     second = notes_jobs.start_edit(
         notes_jobs.WORKING,
         "revise again",
-        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nNext."}]),
+        runner=_sync_runner([{"type": "final", "text": "# Project Notes\n\nNext."}]),
     )
     assert second.id != first.id
     assert _wait_until_settled(second.id).status == "done"

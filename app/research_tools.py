@@ -2,7 +2,7 @@
 harness in a later step). Two families:
 
   * Local, project-scoped: read other papers' cached text / committed notes, list what's in the
-    project, find related papers, read the aggregate working notes. These make no external calls
+    project, find related papers, read the aggregate Project Notes. These make no external calls
     and resolve within the active project via the store layer (config.project_dir()). Paper text
     remains untrusted model input and is returned in a typed provenance envelope.
 
@@ -189,10 +189,10 @@ def related_papers(slug: str) -> str:
 
 
 def read_working_notes() -> str:
-    """Return the project's aggregate working notes (the synthesis across all papers read)."""
+    """Return the project's aggregate Project Notes (the synthesis across all papers read)."""
     notes = store.read_synthesis()
     if not notes.strip():
-        return "The project has no working notes yet."
+        return "The project has no Project Notes yet."
     if len(notes) > MAX_NOTES_CHARS:
         notes = notes[:MAX_NOTES_CHARS] + "\n\n[...truncated...]"
     return model_provenance.frame("working_notes", notes)

@@ -11,11 +11,11 @@ from .models import REVIEW_SLUG
 
 
 def build_review_context() -> str:
-    """Aggregate context for the Working Notes Review chat: the reading method, the current
-    working notes, every per-paper Notes block read so far, and the reading list."""
+    """Aggregate context for the Project Notes Review chat: the reading method, the current
+    Project Notes, every Paper Notes block read so far, and the reading list."""
     parts = ["# Reading method (follow this exactly)\n\n" + store.read_method().strip()]
     parts.append(
-        "# Working notes — the running cross-paper synthesis so far\n\n"
+        "# Project Notes — the running cross-paper synthesis so far\n\n"
         + model_provenance.frame("working_notes", store.read_synthesis().strip())
     )
     notes = store.all_committed_notes()
@@ -48,7 +48,7 @@ def build_context(slug: str) -> str:
     parts.append("# Reading method (follow this exactly)\n\n" + store.read_method().strip())
 
     parts.append(
-        "# Working notes — the running cross-paper synthesis so far\n\n"
+        "# Project Notes — the running cross-paper synthesis so far\n\n"
         + model_provenance.frame("working_notes", store.read_synthesis().strip(), source=slug)
     )
     graph_data = graph_store.load()

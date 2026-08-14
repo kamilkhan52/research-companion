@@ -223,7 +223,7 @@ export interface Review {
   title: string;
   summary: string;
   notes_block: string;
-  /** DR-058: the synthesis editor's change plan — what enriches the working notes, where the
+  /** DR-058: the synthesis editor's change plan — what enriches the Project Notes, where the
    *  paper adds nothing, new questions. Shown above the working-notes diff; empty on
    *  pre-editor proposals and revision turns. */
   plan?: string;
@@ -431,8 +431,8 @@ export interface PreviewJob {
   finished_at: string | null;
 }
 
-/** A committed notes document (GET /notes/{target}): one paper's Notes block, or the
- *  cross-paper working notes when target === 'working'. markdown is '' when none exist yet. */
+/** A committed notes document (GET /notes/{target}): one paper's Paper Notes block, or the
+ *  cross-paper Project Notes when target === 'working'. markdown is '' when none exist yet. */
 export interface NotesDoc {
   target: string;
   title: string;

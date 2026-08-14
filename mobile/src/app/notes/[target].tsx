@@ -1,5 +1,5 @@
-// Notes — view and edit one committed notes document: a paper's Notes block, or the
-// cross-paper working notes (target === 'working'). Three ways in, one focused screen:
+// Notes — view and edit one committed notes document: a paper's Paper Notes block, or the
+// cross-paper Project Notes (target === 'working'). Three ways in, one focused screen:
 //   view  — the markdown rendered for reading (the default; this is a reading surface first)
 //   edit  — the raw markdown in a plain editor; Save commits it to the project's git record
 //   agent — a natural-language instruction runs server-side as a background job (job+poll,
@@ -93,7 +93,7 @@ export default function NotesScreen() {
   const scrollRef = useRef<ScrollView>(null);
 
   const markdown = notes.data?.markdown ?? '';
-  const title = notes.data?.title ?? (target === 'working' ? 'Working notes' : 'Notes');
+  const title = notes.data?.title ?? (target === 'working' ? 'Project Notes' : 'Paper Notes');
   const paper = target === 'working' ? undefined : projectState.data?.papers.find((item) => item.slug === target);
   const paperUrl = paper ? fullPaperUrl(paper) : null;
   const openProposalLink = (href: string) => {
@@ -360,7 +360,7 @@ export default function NotesScreen() {
             ) : (
               <View style={styles.empty}>
                 <Text variant="body" color={t.muted} style={{ textAlign: 'center' }}>
-                  No notes yet{target === 'working' ? ' — the working notes grow as you read.' : ' for this paper.'}
+                  No notes yet{target === 'working' ? ' — the Project Notes grow as you read.' : ' for this paper.'}
                 </Text>
               </View>
             )}

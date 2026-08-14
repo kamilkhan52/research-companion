@@ -12,8 +12,8 @@ export interface FinishStep {
 export function finishSteps(phase: string): FinishStep[] {
   const synthesis = phase === 'synthesis';
   return [
-    { key: 'notes', label: 'Drafting notes', state: synthesis ? 'done' : 'active' },
-    { key: 'synthesis', label: 'Updating working notes', state: synthesis ? 'active' : 'pending' },
+    { key: 'notes', label: 'Drafting Paper Notes', state: synthesis ? 'done' : 'active' },
+    { key: 'synthesis', label: 'Updating Project Notes', state: synthesis ? 'active' : 'pending' },
     { key: 'review', label: 'Opening review', state: 'pending' },
   ];
 }

@@ -67,7 +67,7 @@ class ChatJob(Job):
     #: DR-056 — which section of the marker document the model is currently writing, so the
     #: client can stage the Finish-reading wait honestly: None/'drafting' (canonical preview),
     #: 'notes' (###NOTES_BLOCK### has appeared — the paper's notes are being drafted),
-    #: 'synthesis' (###SYNTHESIS### — the working notes are being rewritten). Derived from the
+    #: 'synthesis' (###SYNTHESIS### — the Project Notes are being rewritten). Derived from the
     #: RAW stream server-side; markers never reach client items (only the canonical prefix
     #: streams), so the server is the only place this can be observed. Forward-only.
     notes_phase: str | None = None
@@ -198,7 +198,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                              "analysis model in Settings.")
         # Stop boundaries around the editor pass: it is the longest post-stream window this
         # worker has (up to the per-attempt ceiling), with no runner events inside it — a Stop
-        # tapped while the card says "Updating working notes…" must be honored at these
+        # tapped while the card says "Updating Project Notes…" must be honored at these
         # checkpoints rather than silently recording a full turn minutes later.
         if job.cancelled:
             _record_cancelled(job, final_text, model_label=model_label)
@@ -487,16 +487,16 @@ def _maybe_edit_synthesis(job: ChatJob, turn, model: str | None = None) -> None:
             and records[-1].get("kind") == "finish"):
         return
     if not proposed.get("notes_block"):
-        # A paper finish that proposed a SYNTHESIS but no Notes block is drift the guard must
+        # A paper finish that proposed a SYNTHESIS but no Paper Notes block is drift the guard must
         # not wave through: skipping the editor here would let the over-weighted single-shot
         # rewrite survive — the exact thing this pass exists to remove.
-        raise AgentError("The model returned no Notes block for this paper. "
+        raise AgentError("The model returned no Paper Notes block for this paper. "
                          "Try Finish reading again.")
     # DR-056's second stage IS this pass now: the finish stream no longer carries a SYNTHESIS
     # marker (the prompt says leave it NONE), so the stage flips here, honestly.
     with _registry.lock:
         job.notes_phase = "synthesis"
-        job.activity = "Updating the working notes…"
+        job.activity = "Updating the Project Notes…"
     pid = config.active_project_id()
     meta = projects._read_meta(pid) if pid else {}
     plan, synthesis = agent.edit_synthesis(

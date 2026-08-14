@@ -373,7 +373,7 @@ def read_records(slug: str, thread_id: str | None = None) -> list[dict]:
 
 def start_session(slug: str, title: str, kind: str = "paper", opening: str | None = None) -> None:
     """Begin (or restart) a discussion. For a paper, corpus full text must already be cached;
-    kind="review" is the cross-paper working-notes review chat. `opening` is the (possibly
+    kind="review" is the cross-paper Project Notes review chat. `opening` is the (possibly
     user-edited) first-prompt template for this session; None falls back to the default."""
     thread_id = active_thread_id()
     with _index_lock:

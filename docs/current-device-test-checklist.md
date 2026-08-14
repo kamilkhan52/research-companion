@@ -190,7 +190,7 @@ For every scenario:
 
 - [x] **D14 — Sequential migration-Notes review** ([#172](https://github.com/kamilkhan52/research-companion/pull/172))
   - Move multiple read papers with committed Notes and request Notes integration.
-  - Working Notes review should open immediately, present one paper at a time, and advance only
+  - Project Notes review should open immediately, present one paper at a time, and advance only
     after Apply or Discard. Each applied proposal should be committed before the next is generated.
   - **Result:** PASS
   - **Notes / evidence:**
@@ -198,8 +198,8 @@ For every scenario:
     - Auto-scroll to the bottom so the active “Preparing a notes revision” state is always visible.
     - Add a simple, robust diff review showing added and removed content.
     - Redesign the bottom review actions; current controls are visually awkward and wrap poorly.
-    - Paper references in Working Notes should be tagged/clickable for fast in-app navigation.
-    - Working Notes agents should receive the same default output/formatting instructions as other Notes agents.
+    - Paper references in Project Notes should be tagged/clickable for fast in-app navigation.
+    - Project Notes agents should receive the same default output/formatting instructions as other Notes agents.
     - Show words drafted rather than characters drafted.
     - Integration should receive full paper text plus relevant discussion/chat context so revisions are as context-aware as the original drafting.
     - Evidence: `/mnt/data/Screenshot_2026-07-21-14-48-56-24_c32734a745be661d33dd70aa24fcce64.jpg`.

@@ -14,6 +14,6 @@ test.each([
 
 test('labels match the decided copy', () => {
   expect(finishSteps('drafting').map((s) => s.label)).toEqual([
-    'Drafting notes', 'Updating working notes', 'Opening review',
+    'Drafting Paper Notes', 'Updating Project Notes', 'Opening review',
   ]);
 });

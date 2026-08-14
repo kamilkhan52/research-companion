@@ -9,7 +9,7 @@ Phase 1 slice of `research-companion-architecture.md`.
 - **Dual output** every turn: a canonical scholarly version (record) + a narration script (ear).
 - **TTS = your phone's built-in voice** (Web Speech API) — zero setup, behind a pluggable interface.
 - **Store = markdown in git**: each project under `projects/<id>/` has `reading-list.md`,
-  `reading-method.md`, `working-notes.md`, `corpus/<paper>.md` (full text + Notes block),
+  `reading-method.md`, `working-notes.md`, `corpus/<paper>.md` (full text + Paper Notes block),
   `sessions/*.jsonl` — its own git repo.
 - **Multiple projects**: keep several independent reading projects (each its own store) and
   switch between them in the UI. App-global keys, model/TTS picks, and caches live in
@@ -35,7 +35,7 @@ Paste your OpenRouter key in **Settings** (gear icon) if you didn't put it in `.
 ### Projects
 
 The library has a project switcher at the top; **+ New** creates another project (its own
-reading list, corpus, sessions, and working notes). On first run after upgrading from a
+reading list, corpus, sessions, and Project Notes). On first run after upgrading from a
 single-project install, migrate the old `project/` store into `projects/`:
 
 ```bash
@@ -103,7 +103,7 @@ iOS you'll also need "Sign in with Apple" (Apple's rule); Android-first means th
    summary (per your reading method) as a dual output.
 2. **Discussion** → read the canonical reply, tap **▶ Listen** to hear the narration, type a
    reply, repeat. Sessions resume cleanly across days.
-3. **Done** → the agent drafts the Notes block + a synthesis edit. Review on the same screen,
+3. **Done** → the agent drafts the Paper Notes block + a synthesis edit. Review on the same screen,
    **Approve** (commits to git, flips status to *read*) or **Request changes**.
 
 ## Reference graph

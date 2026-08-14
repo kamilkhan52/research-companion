@@ -460,11 +460,11 @@ export default function DiscussionScreen() {
     if (!pid || !slug) return;
     try {
       await api.startNotesDiscussionUpdate(pid, slug, activeThread);
-      showToast('Drafting a notes update from the discussion…');
+      showToast('Drafting a Paper Notes update from the discussion…');
       router.push(`/notes/${encodeURIComponent(slug)}`);
     } catch (e) {
       if (presentSpendRefusal(e, { operation: 'other', retry: updateNotesFromDiscussion })) return;
-      showToast((e as Error).message ?? 'Could not start the notes update.');
+      showToast((e as Error).message ?? 'Could not start the Paper Notes update.');
     }
   }
 
@@ -917,7 +917,7 @@ export function OverflowMenu({
   if (showUpdateNotes) {
     options.push({
       key: 'update-notes',
-      title: 'Update notes from discussion',
+      title: 'Update Paper Notes from discussion',
       subtitle: 'Draft a proposal now — you review before anything is saved',
       icon: 'edit-3',
       accent: t.mint,
@@ -926,7 +926,7 @@ export function OverflowMenu({
     });
   }
   if (hasNotes) {
-    options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: t.mint, onPress: onViewNotes });
+    options.push({ key: 'notes', title: 'Paper Notes', icon: 'file-text', accent: t.mint, onPress: onViewNotes });
   }
   // Session configuration (polish plan H.1: model + mode live here, not in the header).
   options.push({

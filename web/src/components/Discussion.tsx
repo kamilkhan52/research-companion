@@ -450,9 +450,9 @@ export function Discussion({ slug, onNavigate }: Props) {
       <div className="discussion"><div className="review-panel">
         <h3>{paperTitle ? `Review — ${paperTitle}` : 'Approve notes'}</h3>
         <p className="muted">{review.summary}</p>
-        <div className="review-sec"><div className="review-label muted">Notes block</div>
+        <div className="review-sec"><div className="review-label muted">Paper Notes block</div>
           <textarea className="review-textarea" value={notesBlock} onChange={(event) => setNotesBlock(event.target.value)} /></div>
-        <div className="review-sec"><div className="review-label muted">Working notes</div>
+        <div className="review-sec"><div className="review-label muted">Project Notes</div>
           <textarea className="review-textarea" value={synthesis} onChange={(event) => setSynthesis(event.target.value)} /></div>
         <div className="btn-row">
           <button className="btn primary" onClick={handleApprove}>Approve & commit</button>

@@ -31,7 +31,7 @@ test('proposal paper references remain tappable inside the diff', async () => {
   expect(onLinkPress).toHaveBeenCalledWith('rc-paper:awq', 'Activation-aware Weight Quantization');
 });
 
-// DR-059 — Kamil: "I still don't see diff for the working notes." Diagnosed: an empty `before`
+// DR-059 — Kamil: "I still don't see diff for the Project Notes." Diagnosed: an empty `before`
 // (a project's first synthesis, or a paper's first notes) diffs as every line added, which is
 // a real diff but reads as a wall of green text with nothing to contrast it against.
 

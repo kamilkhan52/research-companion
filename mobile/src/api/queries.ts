@@ -414,7 +414,7 @@ export function useDiscovery(pid: string | null) {
   });
 }
 
-/** A committed notes document — one paper's Notes block, or 'working' for the working notes. */
+/** A committed notes document — one paper's Paper Notes block, or 'working' for the Project Notes. */
 export function useNotes(pid: string | null, target: string | null) {
   const hasUrl = !!useBaseUrl();
   return useQuery({
