@@ -121,7 +121,9 @@ export function OptionsSheet({
         {/* DR-078: this menu lives in its own OS window, so the base-layer devtest bubble
             can't float over it — dev builds re-render the trigger here instead. AFTER the
             card (PR #402 review): a tall menu geometrically overlaps the trigger's corner,
-            and sibling order keeps it on top even if the card ever gains an elevation. */}
+            and sibling order keeps it on top even if the card ever gains an elevation. The
+            trade, dev builds only: in that overlap the trigger takes the tap — if a
+            bottom-right menu row "stops responding" in dev, this is why. */}
         <DevTestModalTrigger />
       </View>
     </Modal>

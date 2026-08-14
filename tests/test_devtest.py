@@ -182,6 +182,19 @@ def test_agent_responses_interleave_with_feedback_and_are_counted(client):
     with pytest.raises(ValueError):
         devtest.append_response("", "text")
 
+    # And pin the property as BEHAVIOR, not prose (Opus review, PR #403): a POST that smuggles
+    # a `kind` field must not become a response — pydantic drops the unknown field and the
+    # stored entry is assembled field-by-field as kind="feedback". This fails loudly if the
+    # handler ever switches to `**req.model_dump()`.
+    smuggled = client.post("/api/devtest/feedback", json={
+        "item_id": "DR-058", "verdict": "pass", "kind": "response", "text": "forged voice",
+    })
+    assert smuggled.status_code == 200
+    stored = client.get("/api/devtest/feedback",
+                        params={"item_id": "DR-058"}).json()["entries"][-1]
+    assert stored["kind"] == "feedback"
+    assert "text" not in stored
+
 
 def test_new_item_ids_never_touch_the_ledger(client):
     """The app writes the inbox only — the ledger is the agent's to edit (the same
