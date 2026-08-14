@@ -674,6 +674,7 @@ export default function DiscussionScreen() {
           stream={stream}
           paths={paths!}
           transcript={transcript}
+          pendingTurn={session.data?.pending_turn ?? null}
           acceptedDrafts={session.data?.accepted_drafts ?? []}
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
@@ -1330,6 +1331,7 @@ function DiscussionThread({
   stream,
   paths,
   transcript,
+  pendingTurn,
   acceptedDrafts,
   title,
   favorites,
@@ -1348,6 +1350,8 @@ function DiscussionThread({
   stream: ReturnType<typeof useStreamingTurn>;
   paths: ReturnType<typeof turnJobPaths>;
   transcript: TranscriptEntry[];
+  /** DR-083 interim: server-detected user turn whose worker vanished (see Session type). */
+  pendingTurn: { kind: string; ts: string; error: string | null } | null;
   acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
   title: string;
   favorites: FavoriteModel[];
@@ -2120,8 +2124,13 @@ function DiscussionThread({
     styles,
   ]);
 
+  // DR-083 interim: retry a turn whose worker vanished — continue_job re-runs the recorded
+  // user turn (the finish/reply record is already durable) without recording anything new.
+  const retryInterrupted = useCallback(() => {
+    void stream.run(paths.continue, { slug, model: selectedModel ?? undefined });
+  }, [paths.continue, selectedModel, slug, stream]);
+
   const renderChatFooter = useCallback(() => {
-    if (!stream.error && !stream.connectionNotice) return null;
     // The chat footer renders below the message list at the physical bottom, where the composer
     // now floats absolutely (R12.6). Lift it above the composer by its measured height so the
     // terminal error or quiet reconnect status isn't hidden behind the pill.
@@ -2131,13 +2140,41 @@ function DiscussionThread({
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
-    return (
+    if (stream.connectionNotice) return (
       <ConnectionNotice
         message={stream.connectionNotice!}
         style={[styles.connectionNotice, { marginBottom: composerHeight + space.md }]}
       />
     );
-  }, [stream.clearError, stream.connectionNotice, stream.error, styles, theme, composerHeight]);
+    // DR-083 interim: the server found a recorded user turn with no response and no live job
+    // (a restart or a dead worker) — the reader used to return to a silent screen with no
+    // trace. Streaming/reattach suppresses it; a successful retry refetches the session and
+    // the marker disappears with it.
+    if (pendingTurn && !stream.streaming) {
+      const finish = pendingTurn.kind === 'finish';
+      return (
+        <Card style={[styles.errorCard, { marginBottom: composerHeight + space.md }]}>
+          <Text variant="body" color={theme.danger}>
+            {finish
+              ? 'Finishing this paper was interrupted before anything could be saved — the server may have restarted mid-turn.'
+              : 'Your last turn never got its response — the server may have restarted mid-turn.'}
+          </Text>
+          {pendingTurn.error ? (
+            <Text variant="caption" color={theme.muted} style={{ marginTop: space.xs }}>
+              {pendingTurn.error}
+            </Text>
+          ) : null}
+          <Button
+            title={finish ? 'Run Finish again' : 'Retry'}
+            onPress={retryInterrupted}
+            style={{ marginTop: space.sm }}
+          />
+        </Card>
+      );
+    }
+    return null;
+  }, [pendingTurn, retryInterrupted, stream.clearError, stream.connectionNotice, stream.error,
+      stream.streaming, styles, theme, composerHeight]);
 
   const placeholder = editing
     ? 'Edit your message…'

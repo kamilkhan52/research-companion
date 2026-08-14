@@ -288,6 +288,74 @@ def test_runner_failure_is_an_error_job_and_session_is_untouched(temp_project):
     assert sessions.read_records(slug)[-1]["role"] == "user"
 
 
+def _age_last_record(slug: str) -> None:
+    """Rewrite the last record's ts to the distant past — the on-disk shape of a turn whose
+    worker died long ago (records are plain JSONL; there is no writer API on purpose)."""
+    import json as _json
+
+    p = sessions._jsonl(slug)
+    records = sessions.read_records(slug)
+    records[-1]["ts"] = "2020-01-01T00:00:00+00:00"
+    p.write_text("".join(_json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+
+def test_unaccounted_turn_surfaces_a_vanished_worker_and_nothing_else(temp_project):
+    """DR-083 interim: a user turn with no assistant record, no running job, and enough age
+    lands in the session snapshot as `pending_turn`; live turns, answered turns, and freshly
+    recorded turns (the record→registry window) do not."""
+    slug = _session_with_reply()
+
+    # Fresh record, no job: inside the grace window — NOT reported (a poll can land between
+    # record_user and the registry insert).
+    assert chat_jobs.unaccounted_turn(slug) is None
+
+    # Age the record past the grace window, the way a real orphan looks after a restart.
+    _age_last_record(slug)
+    marker = chat_jobs.unaccounted_turn(slug)
+    assert marker is not None
+    assert marker["kind"] == "reply"
+    assert marker["error"] is None  # registry has no memory of it — restart shape
+
+    # A live job for the thread suppresses the marker (clients reattach instead).
+    gate = threading.Event()
+
+    def stalled(slug_, history):
+        gate.wait(5)
+        yield {"type": "text", "text": PROTO}
+
+    job = chat_jobs.start_turn(slug, runner=lambda s, h: stalled(s, h))
+    assert chat_jobs.unaccounted_turn(slug) is None
+    gate.set()
+    _wait_until_settled(job.id)
+
+    # Answered: last record is the assistant — no marker.
+    assert sessions.read_records(slug)[-1]["role"] == "assistant"
+    assert chat_jobs.unaccounted_turn(slug) is None
+
+    # A worker that died with the registry still alive carries its error into the marker.
+    sessions.record_user(slug, "again", kind="finish")
+    _age_last_record(slug)
+
+    def exploding(slug_, history):
+        raise chat_jobs.AgentError("Agentic stream failed: boom")
+        yield  # pragma: no cover
+
+    failed = chat_jobs.start_turn(slug, runner=lambda s, h: exploding(s, h))
+    _wait_until_settled(failed.id)
+    marker = chat_jobs.unaccounted_turn(slug)
+    assert marker is not None
+    assert marker["kind"] == "finish"
+    assert "boom" in (marker["error"] or "")
+
+    # And the snapshot route carries it (the review session avoids reading-list setup).
+    sessions.start_session(session_routes.REVIEW_SLUG, session_routes.REVIEW_TITLE,
+                           kind="review")
+    sessions.record_user(session_routes.REVIEW_SLUG, "review question", kind="reply")
+    _age_last_record(session_routes.REVIEW_SLUG)
+    snap = session_routes._get_session(session_routes.REVIEW_SLUG, sessions.MAIN_THREAD)
+    assert snap["pending_turn"]["kind"] == "reply"
+
+
 def test_failed_parent_suppresses_blocked_preview_before_publishing_error(
     temp_project, monkeypatch,
 ):

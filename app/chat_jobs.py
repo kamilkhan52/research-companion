@@ -110,6 +110,50 @@ def _session_key(slug: str, thread_id: str | None = None) -> str:
     return f"{slug}::{sessions.validate_thread_id(selected)}"
 
 
+def unaccounted_turn(slug: str, thread_id: str | None = None) -> dict | None:
+    """DR-083 interim: a recorded user turn whose worker vanished without a trace.
+
+    The class this covers, confirmed live (the LIMINAL finish): the user record is durable,
+    the worker dies before ``sessions.record_assistant`` — a dev-loop reload, a deploy, an
+    uncaught worker failure after the registry pruned it — and the reader returns to a screen
+    showing NOTHING, because finish/revision records are hidden from the transcript UI and
+    the in-memory job registry did not survive. The durable fix is M6's job persistence and
+    boot reconciliation; until then the session snapshot carries this marker so the client
+    can say honestly "this turn never completed" and offer the retry that already exists
+    (``/continue_job`` re-runs the last user turn without re-recording it).
+
+    Returns ``{kind, ts, error}`` when the LAST transcript record is a user turn, no job is
+    running for the thread, and the record is old enough that the record→registry insertion
+    window cannot explain it. ``error`` carries the latest retained job's failure when the
+    registry still remembers one (worker died with a live registry); after a restart it is
+    None and the copy stays generic. A cooperatively-stopped turn that recorded no partial
+    also lands here — "ended without a response, retry?" is the honest state for it too.
+    """
+    records = sessions.read_records(slug)
+    if not records or records[-1].get("role") != "user":
+        return None
+    if active_for(slug, thread_id):
+        return None  # a live turn; clients reattach via /chat/jobs/active
+    ts = records[-1].get("ts", "")
+    try:
+        from datetime import UTC, datetime
+
+        age = (datetime.now(UTC) - datetime.fromisoformat(ts)).total_seconds()
+    except ValueError:
+        age = None
+    # 30s clears the record_user → registry.put window by orders of magnitude (same grace
+    # rollback_empty_fork uses). An unparsable ts is treated as old: the unanswered turn is
+    # real, and the race window is the rare case.
+    if age is not None and age < 30.0:
+        return None
+    latest = _registry.latest_for(_session_key(slug, thread_id))
+    return {
+        "kind": records[-1].get("kind", "reply"),
+        "ts": ts,
+        "error": latest.error if latest is not None else None,
+    }
+
+
 def active_for(slug: str, thread_id: str | None = None) -> ChatJob | None:
     """The running job for a session, if any — how a client that navigated away and returned
     finds the turn it left mid-flight."""

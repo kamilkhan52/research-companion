@@ -163,6 +163,9 @@ def _get_session(slug: str, thread_id: str):
         "accepted_drafts": sessions.accepted_drafts(slug),
         "thread_id": thread_id,
         "threads": sessions.list_threads(slug),
+        # DR-083 interim: a user turn whose worker died without recording anything — the
+        # client surfaces it instead of an unexplained silent screen; /continue_job retries.
+        "pending_turn": chat_jobs.unaccounted_turn(slug, thread_id),
     }
 
 
