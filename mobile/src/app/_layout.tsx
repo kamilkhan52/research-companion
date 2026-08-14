@@ -47,6 +47,7 @@ import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
+import { PurchasesIdentity } from '@/purchases/PurchasesIdentity';
 import { GraphSettingsProvider } from '@/store/graphSettings';
 import { ThemeProvider, useThemeMode } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
@@ -232,6 +233,9 @@ export default function RootLayout() {
             {/* Portal hosts stay inside query/project/listening/audio contexts. The modal
                 provider remains outside PaperEntityProvider because that provider's app-wide
                 RelatedWorksSheet needs BottomSheetModalInternalContext at launch. */}
+            {/* M4: keeps the RevenueCat App User ID in lockstep with the Supabase UUID.
+                Renders nothing; a no-op on builds without the billing native module. */}
+            <PurchasesIdentity />
             <AccountScopedApp />
             </AuthProvider>
           </QueryClientProvider>
