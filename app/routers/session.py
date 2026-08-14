@@ -578,6 +578,76 @@ def request_changes_job(req: RequestChangesReq):
         return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
+@project_router.post("/session/{slug}/clear_chats")
+def clear_chats(slug: str):
+    """DR-079 — clear every discussion thread of one paper, on explicit confirmation.
+
+    Destructive by design, so the guards mirror project-splitting's posture: refused while
+    any thread's turn is generating or an approval is in flight; every transcript and thread
+    is removed under the paper's admission lock; and the deletion of git-TRACKED transcript
+    files is committed immediately with a pathspec limited to exactly those files (the same
+    invariant-4 posture as project_split — a human-confirmed action, deterministically
+    executed, and the commit is what keeps the cleared chats RECOVERABLE from git history
+    rather than silently swept into the next unrelated approval).
+
+    The paper itself — corpus, covers, committed notes, reading-list entry — is untouched:
+    clearing chats is not removing notes. The client separately OFFERS a Project Notes
+    retraction through the existing notes-agent propose/review flow when the paper had
+    contributed (invariant 4: that removal is a proposal the human approves, never a side
+    effect of this endpoint).
+    """
+    # get_state is thread-scoped and this route runs under the MAIN contextvar — a proxy for
+    # "any chats at all", valid because main is created first and dropped last.
+    if not sessions.get_state(slug):
+        raise HTTPException(status_code=409, detail="No chats to clear for this paper.")
+    if committer.approval_in_flight(slug):
+        raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
+    from .. import projects
+
+    pid = config.active_project_id()
+    root = projects.project_path(pid)
+    with sessions.paper_lock(slug):
+        if chat_jobs.any_active_for_slug(slug):
+            raise HTTPException(
+                status_code=409,
+                detail="A response is still generating — stop it before clearing chats.")
+        # Only paths git already knows about may enter the commit's pathspec (project_split's
+        # lesson: a never-committed transcript errors with "pathspec did not match").
+        # quotePath=false: ls-files otherwise octal-quotes non-ASCII names, which would fail
+        # the exact-membership test and silently drop such a file from the pathspec.
+        tracked = set(
+            projects._git(pid, "-c", "core.quotePath=false", "ls-files").splitlines())
+        rels: list[str] = []
+        for jsonl, _branches in sessions.thread_storage_paths(slug):
+            try:
+                rel = str(jsonl.relative_to(root))
+            except ValueError:
+                continue
+            if rel in tracked:
+                rels.append(rel)
+        sessions.remove_thread_storage(slug)
+        sessions.drop_session(slug)
+        # Git INSIDE the lock (Opus review, PR #406): after release, a fresh chat_start_job
+        # can recreate one of these very paths, and `add -A -- <rel>` would then stage the
+        # NEW transcript's content under a "Clear chats" message. The commit is also
+        # pathspec-limited so a previous failure's staged leftovers can't ride along.
+        if rels:
+            try:
+                projects._git(pid, "add", "-A", "--", *rels)
+                projects._git(pid, "commit", "-q", "-m", f"Clear chats: {slug}", "--", *rels)
+            except projects.ProjectError:
+                # The clear itself succeeded; a failed bookkeeping commit leaves deletions
+                # staged/dirty for the next approval to sweep — annoying, not incorrect.
+                pass
+    paper = store.get_paper(slug)
+    return {
+        "cleared": True,
+        # The client's cue for the second, separate offer: propose retracting this paper's
+        # contribution from the Project Notes (through the notes agent's review flow).
+        "contributed": bool(paper and paper.has_notes),
+    }
+
+
 @project_router.get("/chat/jobs/active/{slug}")
 def chat_job_active(slug: str, thread_id: str = sessions.MAIN_THREAD):
     """The running turn job for a session, if any — lets a client that navigated away (or got

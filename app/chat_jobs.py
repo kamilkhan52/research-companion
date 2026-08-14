@@ -168,6 +168,18 @@ def active_for(slug: str, thread_id: str | None = None) -> ChatJob | None:
     return _registry.active_for(_session_key(slug, thread_id))
 
 
+def any_active_for_slug(slug: str) -> bool:
+    """Whether ANY thread of this paper has a turn generating (DR-079's clear-all-chats must
+    refuse while one runs — active_for is per-thread and would miss the others)."""
+    pid = config.active_project_id()
+    with _registry.lock:
+        return any(
+            job.slug == slug and job.status == "running"
+            and getattr(job, "_rc_project_id", None) == pid
+            for job in _registry.jobs.values()
+        )
+
+
 def request_cancel(job_id: str) -> dict | None:
     """Flag a running turn to stop at its next event boundary (no-op on settled jobs). Returns
     the job's snapshot, or None if the id is unknown. The actual stop happens in the worker
