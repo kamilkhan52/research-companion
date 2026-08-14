@@ -80,7 +80,7 @@ def save(target: str, markdown: str, summary: str = "") -> dict:
 class NotesJob(Job):
     target: str = ""                 # notes document being edited (also the registry dedup key)
     instruction: str = ""
-    kind: str = "edit"               # edit | split_destination | split_source_cleanup
+    kind: str = "edit"               # edit | discussion_update | project_fold | split_destination | split_source_cleanup
     summary: str = ""                # suggested human-approved commit message
     # Optimistic-concurrency token for the document the proposal was generated from. Applying
     # a proposal after the Project Notes changed would silently overwrite newer human work.
