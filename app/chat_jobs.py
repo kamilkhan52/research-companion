@@ -469,8 +469,8 @@ def _maybe_edit_synthesis(job: ChatJob, turn, model: str | None = None) -> None:
     concurrency slots and refuse mid-flight with a ghost 429.
 
     Runs BEFORE record_assistant: a failed editor fails the turn cleanly (retryable, like a
-    parse failure) rather than persisting a proposal whose approval would erase the working
-    notes. The paid first pass is lost on that path — the same cost a parse failure already
+    parse failure) rather than persisting a proposal whose approval would erase the Project
+    Notes. The paid first pass is lost on that path — the same cost a parse failure already
     carries.
     """
     if job.slug == sessions.REVIEW_SLUG:

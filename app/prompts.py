@@ -418,8 +418,8 @@ _REVIEW_OPENING = (
 
 _REVIEW_FINISH = (
     "Based on our discussion, produce the COMPLETE updated Project Notes that fold in the "
-    "synthesis, trends, and connections we've established. Put the entire rewritten working "
-    "notes in the SYNTHESIS section and set NOTES_BLOCK to NONE. In CANONICAL, give me a short "
+    "synthesis, trends, and connections we've established. Put the entire rewritten Project "
+    "Notes in the SYNTHESIS section and set NOTES_BLOCK to NONE. In CANONICAL, give me a short "
     "readable preview of what changed so I can review before approving. Use the exact "
     "###NAME### marker lines for the sections — not markdown headings."
 )

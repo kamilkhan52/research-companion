@@ -185,8 +185,8 @@ _EDITOR_END_RE = re.compile(r"^#{1,6}\s*END\s*#{0,6}\s*$", re.M)
 
 def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
                    paper_title: str, notes_block: str, model: str | None = None) -> tuple[str, str]:
-    """DR-058 — the synthesis-editor pass: plan first, then the complete rewritten working
-    notes. A SEPARATE call from the finish turn, so the model that just spent its whole context
+    """DR-058 — the synthesis-editor pass: plan first, then the complete rewritten Project
+    Notes. A SEPARATE call from the finish turn, so the model that just spent its whole context
     on the paper is not the one deciding how much of the Project Notes to rewrite: this pass
     sees the paper only at committed-notes size, must state its change plan before touching the
     document, and the plan ships to review beside the diff.
