@@ -12,7 +12,7 @@ every agent session.
 
 ---
 
-## What is actually waiting on Kamil, as of 2026-08-09
+## What is actually waiting on Kamil, as of 2026-08-14
 
 Everything in this short list blocks the closed track. Everything below it in this file is either
 done or a later milestone. Read this before the H-numbered sections.
@@ -22,6 +22,11 @@ done or a later milestone. Read this before the H-numbered sections.
    is waiting on him, and merging never closes one. Testers are gated on this, and correctly so.
 2. **H13 — Data safety answers** in Play Console. `02-security-and-privacy.md` holds the
    code-derived inventory the answers must match, and the published policy must match both.
+2b. **Play Console verification** (uploaded 2026-08-13, "a couple of days"). Everything in M4 after
+   it is his too, in order: create the app (H8) → define the products at the agreed $10 Basic /
+   $25 Pro plus annuals (H9) → the RevenueCat Play service credential and `goog_` key (H10) → a
+   dev-client rebuild so the native billing module is actually in the binary. The client half is
+   already merged and inert until then.
 3. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
    route for him: he is in `RC_OPERATOR_USERS`, and it takes effect with no machine restart and so
    cannot kill an in-flight job. `FIRECRAWL_API_KEY` as a Fly secret also works but restarts the
@@ -823,7 +828,24 @@ The app requires login, so Play review needs working test credentials.
 ### H19 — Final release authorization · `todo`
 Promotion to the production track. Never automate this.
 
-### H29 — Brave Search API key for production (optional, recommended) · `todo`
+### H30 — Semantic Scholar API key on production · `done` (2026-08-14)
+Kamil created the free key earlier and had it in dev Settings; it is now also the Fly secret
+`SEMANTIC_SCHOLAR_API_KEY` on production, piped from the dev settings document to `flyctl secrets
+set` without passing through chat. Nothing further is needed from him.
+
+**Why it matters for what is being built:** unauthenticated Semantic Scholar shares a global
+~1 req/s pool and 429s under any real load. The corpus-neighbourhood work
+(`docs/corpus-neighbourhood-spec.md`) makes S2 a per-corpus-paper call — the weekly citer delta and
+the citation-context fetch behind lane-1 significance — so keyless would have been rate-limited in
+normal use rather than only under stress.
+
+### H29 — Brave Search API key for production (optional, recommended) · `done` (2026-08-14)
+Kamil bought the $15/month Search plan and saved the key in dev Settings; it is also set as the Fly
+secret `BRAVE_SEARCH_API_KEY` on production (same key both places, by his decision, so behaviour is
+consistent). The $15 is a usage CAP at the same $5/1,000 rate metering already assumes, not a
+change to per-query cost. Nothing further is needed from him. Original note follows.
+
+#### Original request (kept for the record)
 Create a free account at <https://brave.com/search/api/> (a credit card is required for identity
 verification, but every account gets **$5/month of automatically-applied credit** — at the flat
 $5/1,000-request rate that is ~1,000 free searches a month, more than current usage), then paste
