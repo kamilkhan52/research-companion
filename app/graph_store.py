@@ -6,12 +6,44 @@ recompute from the cache and safe to invalidate independently of extraction.
 Lives in the per-project .state/ dir (gitignored, rebuildable — same convention as
 sessions.json), not in the project's git history: this is a derived cache over the papers'
 own committed text, not authored content.
+
+Concurrent writers (DR-052 PR 1). This is a whole-document JSON file, and it has TWO live
+writer classes that overlap in time: a graph build load-mutate-saves its copy many times over
+minutes, while a Discovery run loads its own copy and saves resolved OpenAlex anchors into
+`openalex_anchors`. A plain whole-document write from either clobbers whatever the other has
+saved since it loaded — real data loss (paid extraction records, or the anchor cache) decided
+by write order. The fix is dirty-tracked merge-on-save: every mutation made through the
+setters below records what it touched under a non-persisted `_dirty` key, and `save()` — for
+a document with any recorded changes — re-reads the file under an in-process lock and applies
+only those changes onto the fresh copy, so each writer owns exactly the entries it wrote.
+
+Two deliberate consequences:
+- A document with NO recorded changes saves wholesale, exactly as before. This is what direct
+  mutators rely on — project_split deletes entries by popping them and saving, and a per-key
+  merge cannot express deletion. Mixing the two styles in one writer (setters plus direct
+  mutation of an unmarked section) would silently drop the direct mutations on save; don't —
+  call `mark_dirty(data, section)` for any section mutated in place.
+- The dirty record is never cleared while the document lives. After one merged save, the
+  in-memory copy does NOT contain other writers' sections (only the file does), so every later
+  save must again be "fresh file + the entries this writer owns". Replaying the accumulated
+  ownership is exact because a writer's own entries are the ones it wrote — which is why
+  KEY-level marks matter for any section two writers can touch: a whole-section mark asserts
+  "everything here is mine" and would overwrite a concurrent writer's entries in it. Prefer
+  `mark_dirty(data, section, key)`; reserve the whole-section form for sections with a single
+  writer class (the graph payload, the annotators' caches — one build per project).
+
+An in-process `threading.Lock` is sufficient — the deployment is a single uvicorn worker by
+invariant (CLAUDE.md #6), so there is no cross-process writer to guard against. The document
+also carries a monotonically increasing `store_revision`, bumped on every save: substrate
+freshness displays (DR-052 PRs 2-4) read it, and it makes "did anything change since I
+loaded" a cheap integer compare rather than a document diff.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 
 from . import config
@@ -34,6 +66,7 @@ def content_hash(text: str) -> str:
 def _empty() -> dict:
     return {
         "version": GRAPH_VERSION,
+        "store_revision": 0,  # bumped on every save; freshness marker, never reused
         "papers": {},        # slug -> PaperExtraction dict (see graph.extract_references_for_paper)
         "graph": None,       # last computed {built_at, model, nodes, edges}
         "recommendations": None,
@@ -43,19 +76,46 @@ def _empty() -> dict:
         # provider refresh never invalidates or re-spends the scholarly analysis cache.
         "providers": {"semantic_scholar": {"papers": {}}},
         "retrievals": {},     # slug -> graph-only derived retrieval status/metadata
+        # slug -> resolved OpenAlex anchor (id/topics); written by Discovery's recall, read by
+        # both features. Formalised here in PR 1 of DR-052 — Discovery previously invented the
+        # key with setdefault, which worked but left the substrate schema implicit.
+        "openalex_anchors": {},
+        # slug -> {citers: [openalex work keys], swept_at, complete, source}: which papers are
+        # known to cite each project paper. The stored id SET is what makes a later forward
+        # sweep a cheap graph DELTA (fetch newest, diff against known) instead of a re-query —
+        # the monitoring design in docs/map-discover-merge-design.md and the Corpus
+        # Neighbourhood spec. `complete: false` marks a set seeded from a top-cited first page
+        # rather than an exhaustive walk.
+        "forward": {},
     }
 
 
-def load() -> dict:
+# Merge granularity per section. Keyed sections merge entry-by-entry (each writer owns the
+# keys it set); whole sections merge as a unit (their internal structure is opaque here, and
+# each has at most one writer class). "providers" is keyed by "provider/slug".
+_KEYED_SECTIONS = frozenset({
+    "papers", "retrievals", "openalex_anchors", "forward",
+})
+_DIRTY = "_dirty"  # non-persisted bookkeeping; stripped before writing
+
+_save_lock = threading.Lock()
+
+
+def _read_document() -> tuple[dict, bool]:
+    """The stored document, and whether it came from a readable file at the current version.
+    A False flag means there is nothing on disk worth preserving — which is what stops a
+    merged save from writing a writer's marked entries onto an empty document and dropping
+    every section it did not mark (a version bump or a wiped .state/ mid-build)."""
     f = _file()
     if not f.exists():
-        return _empty()
+        return _empty(), False
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return _empty()
+        return _empty(), False
     if not isinstance(data, dict) or data.get("version") != GRAPH_VERSION:
-        return _empty()
+        return _empty(), False
+    data.setdefault("store_revision", 0)
     data.setdefault("papers", {})
     data.setdefault("graph", None)
     data.setdefault("recommendations", None)
@@ -64,12 +124,81 @@ def load() -> dict:
     providers = data.setdefault("providers", {})
     providers.setdefault("semantic_scholar", {}).setdefault("papers", {})
     data.setdefault("retrievals", {})
-    return data
+    data.setdefault("openalex_anchors", {})
+    data.setdefault("forward", {})
+    return data, True
+
+
+def load() -> dict:
+    return _read_document()[0]
+
+
+def mark_dirty(data: dict, section: str, key: str | None = None) -> None:
+    """Record that this writer changed `section` (or one entry of it). The setters below call
+    this themselves; call it directly when mutating a section in place (e.g. a cache dict
+    handed to an annotator), or the change will not survive a merged save."""
+    dirty = data.setdefault(_DIRTY, {})
+    keyed = section in _KEYED_SECTIONS or section == "providers"
+    if key is None or not keyed:
+        dirty[section] = True
+    elif dirty.get(section) is not True:  # a whole-section mark already covers every key
+        dirty.setdefault(section, {})[key] = True
+
+
+def pending_changes(data: dict) -> bool:
+    """Whether this document has recorded changes a save would persist. Lets a maybe-writer
+    (Discovery's recall) skip the save entirely when nothing moved."""
+    return bool(data.get(_DIRTY))
+
+
+def _merge_dirty(disk: dict, ours: dict, dirty: dict) -> None:
+    for section, keys in dirty.items():
+        if keys is True:
+            disk[section] = ours.get(section)
+            continue
+        if section == "providers":
+            for compound in keys:
+                provider, _, slug = compound.partition("/")
+                record = (
+                    ours.get("providers", {}).get(provider, {}).get("papers", {}).get(slug)
+                )
+                disk.setdefault("providers", {}).setdefault(provider, {}).setdefault(
+                    "papers", {}
+                )[slug] = record
+            continue
+        src = ours.get(section) or {}
+        dst = disk.setdefault(section, {})
+        for key in keys:
+            if key in src:
+                dst[key] = src[key]
 
 
 def save(data: dict) -> None:
-    data["version"] = GRAPH_VERSION
-    atomic_write_text(_file(), json.dumps(data, ensure_ascii=False, indent=2))
+    """Persist `data`. With recorded changes (see module docstring): re-read the file under the
+    lock and apply only this writer's changes onto the fresh copy. Without any: wholesale
+    write, the legacy semantics deletion-by-pop writers depend on."""
+    dirty = data.get(_DIRTY) or {}
+    with _save_lock:
+        disk, on_disk = _read_document()
+        if dirty and on_disk:
+            out = disk
+            _merge_dirty(out, data, dirty)
+        else:
+            # Nothing recorded (legacy wholesale semantics, which the deletion-by-pop writers
+            # depend on), or nothing readable on disk to preserve.
+            out = data
+        # max() of both sides so a writer holding a stale copy can never move the file's
+        # revision backwards — the counter is a freshness marker and must stay monotonic.
+        revision = max(int(disk.get("store_revision") or 0),
+                       int(data.get("store_revision") or 0)) + 1
+        out["version"] = GRAPH_VERSION
+        out["store_revision"] = revision
+        # The caller's copy is deliberately NOT stamped on the merged path: after a merge it
+        # lacks other writers' sections, so claiming the file's revision would make the
+        # "am I current?" compare answer yes for a stale document. Its next save still moves
+        # the counter forward, because the max() above reads the file too.
+        payload = {k: v for k, v in out.items() if not k.startswith("_")}
+        atomic_write_text(_file(), json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def get_paper_extraction(data: dict, slug: str) -> dict | None:
@@ -78,6 +207,7 @@ def get_paper_extraction(data: dict, slug: str) -> dict | None:
 
 def set_paper_extraction(data: dict, slug: str, extraction: dict) -> None:
     data["papers"][slug] = extraction
+    mark_dirty(data, "papers", slug)
 
 
 def get_provider_paper(data: dict, provider: str, slug: str) -> dict | None:
@@ -86,6 +216,7 @@ def get_provider_paper(data: dict, provider: str, slug: str) -> dict | None:
 
 def set_provider_paper(data: dict, provider: str, slug: str, record: dict) -> None:
     data.setdefault("providers", {}).setdefault(provider, {}).setdefault("papers", {})[slug] = record
+    mark_dirty(data, "providers", f"{provider}/{slug}")
 
 
 def _retrieved_text_file(slug: str) -> Path:
@@ -100,6 +231,7 @@ def get_retrieval(data: dict, slug: str) -> dict | None:
 
 def set_retrieval(data: dict, slug: str, record: dict) -> None:
     data.setdefault("retrievals", {})[slug] = record
+    mark_dirty(data, "retrievals", slug)
 
 
 def write_retrieved_text(slug: str, text: str) -> None:
@@ -116,7 +248,18 @@ def read_retrieved_text(slug: str) -> str:
 
 def set_graph(data: dict, graph_payload: dict) -> None:
     data["graph"] = graph_payload
+    mark_dirty(data, "graph")
 
 
 def set_recommendations(data: dict, recs: list[dict]) -> None:
     data["recommendations"] = recs
+    mark_dirty(data, "recommendations")
+
+
+def get_forward(data: dict, slug: str) -> dict | None:
+    return data.get("forward", {}).get(slug)
+
+
+def set_forward_sweep(data: dict, slug: str, record: dict) -> None:
+    data.setdefault("forward", {})[slug] = record
+    mark_dirty(data, "forward", slug)

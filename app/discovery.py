@@ -39,6 +39,7 @@ from . import (
     graph_store,
     llm,
     logging_config,
+    neighbourhood,
     openalex,
     prompts,
     retriever,
@@ -1473,12 +1474,9 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     from_graph = discovery_recall.graph_recommendations(graph_data)
     audit["graph"] = len(from_graph)
 
-    anchor_cache = graph_data.setdefault("openalex_anchors", {})
-    before = json.dumps(anchor_cache, sort_keys=True, ensure_ascii=False)
     client = openalex.make_client(timeout=discovery_recall.TIMEOUT_S)
     try:
-        anchors = discovery_recall.resolve_anchors(papers, client=client, cache=anchor_cache)
-        discovery_recall.hydrate_anchor_topics(anchors, client=client, cache=anchor_cache)
+        anchors = neighbourhood.ensure_anchors(papers, graph_data, client=client)
         audit["_anchors"] = anchors
         audit["anchors"] = len(anchors)
         from_cites = discovery_recall.chase_citations(anchors, client=client)
@@ -1490,7 +1488,17 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     finally:
         client.close()
 
-    if json.dumps(anchor_cache, sort_keys=True, ensure_ascii=False) != before:
+    # Feed the substrate's per-anchor known-citer sets (DR-052 PR 1) — what turns the next
+    # forward sweep into a delta instead of a re-query. Deliberately OUTSIDE the guard above:
+    # bookkeeping is not worth discarding a successful chase's candidates over, and inside it
+    # a corrupt stored entry would have emptied `from_cites` while `audit["cites"]` still
+    # claimed a full haul.
+    try:
+        neighbourhood.record_forward_sweep(graph_data, from_cites)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not record the forward sweep (%s)", type(e).__name__)
+
+    if graph_store.pending_changes(graph_data):
         try:
             graph_store.save(graph_data)   # anchor ids are free but slow; pay for them once ever
         except Exception:  # noqa: BLE001
