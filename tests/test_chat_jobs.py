@@ -999,3 +999,110 @@ def test_an_ordinary_turn_never_gains_a_notes_phase(temp_project):
     ).id)
     assert finished.notes_phase is None
 
+
+
+# ---- protocol drift on a turn that asked for a proposal (the LIMINAL failure) ----
+# `agent._parse` is deliberately tolerant: a response with no marker lines becomes the canonical
+# answer. That is right for a reply and wrong for a Finish, where it produced a turn that looked
+# like an ordinary success while the notes the reader asked for did not exist.
+
+_NO_MARKERS = "I've had a good look at this paper. Here is a summary of what it argues."
+
+
+def test_a_finish_that_drifts_off_protocol_fails_the_turn(temp_project):
+    """The LIMINAL failure: a Finish whose model ignored the markers must NOT settle as a
+    normal done turn. Recorded live as status=done, error=None, proposed_commit=None."""
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    before = len(sessions.read_records("p"))
+
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": _NO_MARKERS}])).id)
+
+    assert finished.status == "error"
+    assert "ignored the notes output format" in finished.error
+    assert "Try Finish reading again" in finished.error
+    # Nothing recorded: the turn stays retryable, exactly like a parse failure.
+    assert len(sessions.read_records("p")) == before
+    assert sessions.read_records("p")[-1]["kind"] == "finish"
+
+
+def test_a_revision_that_drifts_off_protocol_also_fails(temp_project):
+    """A drifted revision is just as invisible to the reader as a drifted finish."""
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "please revise", kind="revision", authored_text="More detail.")
+
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": _NO_MARKERS}])).id)
+
+    assert finished.status == "error"
+    assert "Request the changes again" in finished.error
+
+
+def test_an_ordinary_reply_without_markers_still_records(temp_project):
+    """The guard must not cost us the tolerant path — protocol drift on a REPLY is exactly what
+    `agent._parse` is meant to absorb, and a reply proposes nothing by definition."""
+    slug = _session_with_reply()
+
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        slug, runner=_sync_runner([{"type": "final", "text": _NO_MARKERS}])).id)
+
+    assert finished.status == "done"
+    assert finished.turn["canonical"] == _NO_MARKERS
+    assert sessions.read_records(slug)[-1]["role"] == "assistant"
+
+
+def test_a_finish_still_succeeds_when_the_model_follows_the_protocol(temp_project, monkeypatch):
+    """Guard placement regression: the drift check sits before the editor pass, so a well-formed
+    Finish must still reach it."""
+    _fake_editor(monkeypatch)
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    proposed = ("###CANONICAL###\nPreview.\n###STATE###\nready_to_draft_notes\n"
+                "###COMMIT_SUMMARY###\nS.\n###NOTES_BLOCK###\n## N\nX.\n###END###")
+
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
+
+    assert finished.status == "done"
+    assert finished.turn["proposed_commit"]["notes_block"]
+
+
+# ---- the wall-clock turn deadline ----
+
+def test_a_turn_past_its_deadline_is_stopped(temp_project, monkeypatch):
+    """The 2h LIMINAL turn: httpx's per-phase timeout is reset by every byte, so a drip-feeding
+    provider is only bounded by a real wall clock."""
+    monkeypatch.setenv("RC_TURN_DEADLINE", "0.05")
+    slug = _session_with_reply()
+
+    def crawling(s2, h):
+        yield {"type": "text", "text": "one token…"}
+        time.sleep(0.15)
+        yield {"type": "final", "text": PROTO}
+
+    finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=crawling).id)
+
+    assert finished.status == "error"
+    assert "was stopped" in finished.error
+    assert sessions.read_records(slug)[-1]["role"] == "user"  # nothing recorded
+
+
+def test_a_turn_inside_its_deadline_is_untouched(temp_project, monkeypatch):
+    monkeypatch.setenv("RC_TURN_DEADLINE", "30")
+    slug = _session_with_reply()
+
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        slug, runner=_sync_runner([{"type": "final", "text": PROTO}])).id)
+
+    assert finished.status == "done"
+
+
+def test_the_deadline_falls_back_to_the_default_when_misconfigured(monkeypatch):
+    """An unparsable or nonsensical override must not silently disable the ceiling."""
+    monkeypatch.setenv("RC_TURN_DEADLINE", "not-a-number")
+    assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
+    monkeypatch.setenv("RC_TURN_DEADLINE", "0")
+    assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
+    monkeypatch.delenv("RC_TURN_DEADLINE")
+    assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
