@@ -123,9 +123,11 @@ def _wait_until_quiet(registry, job):
     """Deterministic quiet point for retention assertions (#399). Polling `job.status` races the
     retention pass: a worker publishes its outcome (status/finished_at) in one lock hold, but its
     FINAL `_prune` runs in a later one — the same critical section that clears the worker-active
-    flag — and `_prune` exempts worker-active jobs, so a status poll can return while the job is
-    still uncounted and its scope one over the cap. Worker-inactive observed UNDER the registry
-    lock cannot race: the flag clears and the final prune run before that lock hold ends."""
+    flag — and `_prune` exempts worker-active jobs from being COUNTED as well as from eviction.
+    So a status poll can return while the job is still uncounted, and a scope reads one over the
+    cap PER worker still unwinding — which is how a cap of 2 produced the reported 4. Worker-
+    inactive observed UNDER the registry lock cannot race: the flag clears and the final prune
+    run before that lock hold ends."""
     from app import jobs as jobs_module
 
     for _ in range(500):
@@ -134,6 +136,19 @@ def _wait_until_quiet(registry, job):
                 return job
         time.sleep(0.01)
     raise AssertionError(f"worker for {job.id} never went quiet")
+
+
+def _wait_until_registry_quiet(registry):
+    """The same quiet point for every job at once — for the tests that release a batch of
+    workers together, where several can be mid-unwind at the moment all statuses read done."""
+    from app import jobs as jobs_module
+
+    for _ in range(500):
+        with registry.lock:
+            if not any(jobs_module._worker_is_active(j) for j in registry.jobs.values()):
+                return
+        time.sleep(0.01)
+    raise AssertionError("the registry never went quiet")
 
 
 def test_pruning_cannot_discard_another_scope_s_finished_job():
@@ -156,12 +171,14 @@ def test_pruning_cannot_discard_another_scope_s_finished_job():
         _finished("bob-project", f"noise-{n}")
 
     assert registry.get(alices.id, project_id="alice-project") is not None
-    # Bob's own scope is still bounded — this is a per-scope cap, not the removal of one.
-    # `max_finished + 1` at rest, not `max_finished`: pruning runs at admission, when the newest
-    # job is still `running` and therefore not yet counted. That was true of the global cap too.
+    # Bob's own scope is still bounded — this is a per-scope cap, not the removal of one. Asserted
+    # EXACTLY, at a quiet registry: the old `<= max_finished + 1` tolerance was there for the
+    # admission-time window (the newest job still running, so not yet counted), which
+    # `_wait_until_quiet` has now closed. A tolerance here would equally have accepted a real
+    # off-by-one in the cap itself.
     bob_finished = [j for j in registry.jobs.values()
                     if getattr(j, "_rc_project_id", None) == "bob-project"]
-    assert len(bob_finished) <= 3, bob_finished
+    assert len(bob_finished) == 2, bob_finished
 
 
 def test_retention_stays_bounded_when_scopes_are_unbounded():
@@ -192,11 +209,7 @@ def test_retention_stays_bounded_when_scopes_are_unbounded():
     # off-by-one in the cap. Wait for the registry to go quiet instead: the marker is cleared and
     # the pruner runs in one critical section, so once no worker is active under the lock, every
     # settled job has been counted and the steady state is exact.
-    for _ in range(200):
-        with registry.lock:
-            if not any(jobs_module._worker_is_active(j) for j in registry.jobs.values()):
-                break
-        time.sleep(0.01)
+    _wait_until_registry_quiet(registry)
 
     with registry.lock:
         scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
@@ -230,16 +243,15 @@ def test_the_ceiling_holds_at_rest_not_only_under_traffic():
 
     # Every scope is admitted while its job is still running, so no cap has bitten yet.
     release.set()
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if all(j.status != "running" for j in started):
-            break
-        time.sleep(0.01)
+    # The most #399-exposed of these tests: 40 workers are released together, so several are
+    # typically mid-unwind — each exempt from the caps — at the moment every status reads done.
+    _wait_until_registry_quiet(registry)
     assert all(j.status != "running" for j in started), "workers never finished"
 
-    # No further admission happens. The ceiling must hold anyway.
-    scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
-    assert len(scopes) <= jobs_module._MAX_SCOPES_RETAINED, len(scopes)
+    # No further admission happens. The ceiling must hold anyway, exactly.
+    with registry.lock:
+        scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
+    assert len(scopes) == jobs_module._MAX_SCOPES_RETAINED, len(scopes)
 
 
 def test_a_long_running_job_is_not_evicted_by_its_own_completion():
@@ -264,15 +276,13 @@ def test_a_long_running_job_is_not_evicted_by_its_own_completion():
     for n in range(jobs_module._MAX_SCOPES_RETAINED + 5):
         job = registry.start_or_join("only", lambda n=n: Job(id=f"fast-{n}"),
                                      lambda _job: None, project_id=f"project-fast-{n:04d}")
-        for _ in range(200):
-            if job.status != "running":
-                break
-            time.sleep(0.01)
+        _wait_until_quiet(registry, job)
 
     release.set()
-    deadline = time.time() + 10
-    while slow.status == "running" and time.time() < deadline:
-        time.sleep(0.01)
+    # Assert AFTER the slow job's own prune has run, not merely after its status flips: the
+    # eviction this test guards against happens inside that pass, so checking earlier could
+    # pass while the job was still exempt.
+    _wait_until_quiet(registry, slow)
     assert slow.status != "running", "the slow worker never finished"
 
     assert registry.get(slow.id, project_id="project-slow") is not None, (
@@ -296,15 +306,10 @@ def test_a_long_running_job_is_not_evicted_by_its_own_completion_within_one_scop
     for n in range(8):
         job = registry.start_or_join(f"fast-{n}", lambda n=n: Job(id=f"fast-{n}"),
                                      lambda _job: None, project_id="one-project")
-        for _ in range(200):
-            if job.status != "running":
-                break
-            time.sleep(0.01)
+        _wait_until_quiet(registry, job)
 
     release.set()
-    deadline = time.time() + 10
-    while slow.status == "running" and time.time() < deadline:
-        time.sleep(0.01)
+    _wait_until_quiet(registry, slow)  # same reason as the sibling test above
     assert slow.status != "running", "the slow worker never finished"
 
     assert registry.get(slow.id, project_id="one-project") is not None, (
