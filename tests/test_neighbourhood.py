@@ -131,3 +131,14 @@ def test_two_overlapping_runs_each_keep_the_anchors_they_resolved(temp_project):
     assert set(anchors) == {"p1", "p2"}
     assert anchors["p1"]["openalex_id"].endswith("W1")
     assert anchors["p2"]["openalex_id"].endswith("W2")
+
+
+def test_substrate_timestamps_keep_the_graph_builds_second_precision(temp_project):
+    """The provider-metadata phase moved modules, and its timestamps land in the same stored
+    records `graph` wrote before the move — so the precision has to match, or a
+    behavior-identical refactor quietly changes the shape of persisted data. (A direct
+    `graph._now` import would cycle, so the two are pinned equal here instead.)"""
+    from app import graph
+
+    assert len(neighbourhood._now()) == len(graph._now())
+    assert "." not in neighbourhood._now()  # no microseconds
