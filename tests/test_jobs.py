@@ -27,6 +27,23 @@ def _settle(reg: JobRegistry, job_id: str, timeout: float = 5.0) -> Job:
     raise TimeoutError(f"job {job_id} did not settle")
 
 
+def _quiet(reg: JobRegistry, job_id: str, timeout: float = 5.0) -> Job:
+    """`_settle` plus the worker's FINAL retention pass (#399). A published outcome is enough
+    for tests that assert on the RESULT, but not for tests that assert on RETENTION: `_prune`
+    exempts a still-unwinding worker's job from the caps, so a status-only wait can count a
+    scope one high per worker in flight."""
+    from app import jobs as jobs_module
+
+    job = _settle(reg, job_id, timeout)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with reg.lock:
+            if not jobs_module._worker_is_active(job):
+                return job
+        time.sleep(0.01)
+    raise TimeoutError(f"job {job_id} never went quiet")
+
+
 def test_runs_work_and_marks_done():
     reg: JobRegistry[SampleJob] = JobRegistry("t")
     job = reg.start_or_join("k", lambda: SampleJob(id=new_id()), lambda j: setattr(j, "value", 42))
@@ -303,17 +320,18 @@ def test_snapshot_of_unknown_id_is_none():
 
 
 def test_pruning_drops_oldest_finished_jobs():
-    # Pruning runs when a new job is registered (while it's still "running", so uncounted), so
-    # the bound is max_finished finished jobs + the one being registered — matches the original
-    # per-module behavior. What matters: it stays bounded and evicts oldest-first.
+    # Asserted at a quiet registry (#399), so the bound is exactly max_finished: the old
+    # `<= max_finished + 1` covered the admission window, where the job being registered is
+    # still running and therefore uncounted, and two overlapping unwinds could exceed even that.
+    # What matters: it stays bounded and evicts oldest-first.
     reg: JobRegistry[SampleJob] = JobRegistry("t", max_finished=3)
     ids = []
     for i in range(6):
         job = reg.start_or_join(f"k{i}", lambda: SampleJob(id=new_id()), lambda j: None)
-        _settle(reg, job.id)
+        _quiet(reg, job.id)
         ids.append(job.id)
     with reg.lock:
-        assert len(reg.jobs) <= 4                 # bounded, not growing with every job
+        assert len(reg.jobs) == 3                 # bounded, not growing with every job
     assert reg.get(ids[0]) is None                # oldest evicted
     assert reg.get(ids[-1]) is not None           # newest kept
 
