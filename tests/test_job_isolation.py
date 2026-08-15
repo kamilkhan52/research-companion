@@ -119,6 +119,23 @@ def test_bob_cannot_poll_alices_job_through_his_own_project(two_users, client_as
     assert response.status_code == 404
 
 
+def _wait_until_quiet(registry, job):
+    """Deterministic quiet point for retention assertions (#399). Polling `job.status` races the
+    retention pass: a worker publishes its outcome (status/finished_at) in one lock hold, but its
+    FINAL `_prune` runs in a later one — the same critical section that clears the worker-active
+    flag — and `_prune` exempts worker-active jobs, so a status poll can return while the job is
+    still uncounted and its scope one over the cap. Worker-inactive observed UNDER the registry
+    lock cannot race: the flag clears and the final prune run before that lock hold ends."""
+    from app import jobs as jobs_module
+
+    for _ in range(500):
+        with registry.lock:
+            if not jobs_module._worker_is_active(job):
+                return job
+        time.sleep(0.01)
+    raise AssertionError(f"worker for {job.id} never went quiet")
+
+
 def test_pruning_cannot_discard_another_scope_s_finished_job():
     """`max_finished` used to apply across every project and user at once, so retention of YOUR
     result depended on how busy everybody else was. For `notes` that is data loss with a price on
@@ -132,11 +149,7 @@ def test_pruning_cannot_discard_another_scope_s_finished_job():
     def _finished(scope: str, key: str) -> Job:
         job = registry.start_or_join(key, lambda: Job(id=f"{scope}-{key}"),
                                      lambda _job: None, project_id=scope)
-        for _ in range(200):
-            if job.status != "running":
-                break
-            time.sleep(0.01)
-        return job
+        return _wait_until_quiet(registry, job)
 
     alices = _finished("alice-project", "proposal")
     for n in range(6):                       # well past the cap, all from another scope
@@ -166,11 +179,7 @@ def test_retention_stays_bounded_when_scopes_are_unbounded():
     def _finished(scope: str, key: str) -> Job:
         job = registry.start_or_join(key, lambda: Job(id=f"{scope}-{key}"),
                                      lambda _job: None, project_id=scope)
-        for _ in range(200):
-            if job.status != "running":
-                break
-            time.sleep(0.01)
-        return job
+        return _wait_until_quiet(registry, job)  # same #399 race as the test above
 
     first = _finished("project-0000", "only")
     for n in range(1, jobs_module._MAX_SCOPES_RETAINED + 12):
