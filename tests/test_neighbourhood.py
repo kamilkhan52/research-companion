@@ -102,3 +102,32 @@ def test_forward_sweep_survives_a_concurrent_build_save(temp_project):
     on_disk = graph_store.load()
     assert on_disk["papers"]["paper-a"]["status"] == "done"
     assert graph_store.get_forward(on_disk, "paper-a")["citers"] == ["W10"]
+
+
+def test_two_overlapping_runs_each_keep_the_anchors_they_resolved(temp_project):
+    """Anchor marks are PER SLUG, not whole-section. Two discovery runs can overlap on one
+    project (the discovery dedup key is per user scope, not bare pid), and PR 2 adds the
+    neighbourhood job as a second writer by design — a whole-section mark would make the
+    later save erase every anchor the earlier one resolved."""
+    first = graph_store.load()
+    second = graph_store.load()
+
+    def responder(work_id):
+        def handler(request):
+            return httpx.Response(200, json={"id": f"https://openalex.org/{work_id}"})
+        return handler
+
+    client = _client(responder("W1"))
+    neighbourhood.ensure_anchors([_Paper("p1", "2401.00001")], first, client=client)
+    client.close()
+    client = _client(responder("W2"))
+    neighbourhood.ensure_anchors([_Paper("p2", "2402.00002")], second, client=client)
+    client.close()
+
+    graph_store.save(first)
+    graph_store.save(second)
+
+    anchors = graph_store.load()["openalex_anchors"]
+    assert set(anchors) == {"p1", "p2"}
+    assert anchors["p1"]["openalex_id"].endswith("W1")
+    assert anchors["p2"]["openalex_id"].endswith("W2")

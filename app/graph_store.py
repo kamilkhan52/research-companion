@@ -25,9 +25,12 @@ Two deliberate consequences:
   call `mark_dirty(data, section)` for any section mutated in place.
 - The dirty record is never cleared while the document lives. After one merged save, the
   in-memory copy does NOT contain other writers' sections (only the file does), so every later
-  save must again be "fresh file + the entries this writer owns". Within one project a given
-  section has at most one live writer (one build job per pid; one discovery run per pid), so
-  replaying the accumulated ownership is exact, not a guess.
+  save must again be "fresh file + the entries this writer owns". Replaying the accumulated
+  ownership is exact because a writer's own entries are the ones it wrote — which is why
+  KEY-level marks matter for any section two writers can touch: a whole-section mark asserts
+  "everything here is mine" and would overwrite a concurrent writer's entries in it. Prefer
+  `mark_dirty(data, section, key)`; reserve the whole-section form for sections with a single
+  writer class (the graph payload, the annotators' caches — one build per project).
 
 An in-process `threading.Lock` is sufficient — the deployment is a single uvicorn worker by
 invariant (CLAUDE.md #6), so there is no cross-process writer to guard against. The document
@@ -98,16 +101,20 @@ _DIRTY = "_dirty"  # non-persisted bookkeeping; stripped before writing
 _save_lock = threading.Lock()
 
 
-def load() -> dict:
+def _read_document() -> tuple[dict, bool]:
+    """The stored document, and whether it came from a readable file at the current version.
+    A False flag means there is nothing on disk worth preserving — which is what stops a
+    merged save from writing a writer's marked entries onto an empty document and dropping
+    every section it did not mark (a version bump or a wiped .state/ mid-build)."""
     f = _file()
     if not f.exists():
-        return _empty()
+        return _empty(), False
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return _empty()
+        return _empty(), False
     if not isinstance(data, dict) or data.get("version") != GRAPH_VERSION:
-        return _empty()
+        return _empty(), False
     data.setdefault("store_revision", 0)
     data.setdefault("papers", {})
     data.setdefault("graph", None)
@@ -119,7 +126,11 @@ def load() -> dict:
     data.setdefault("retrievals", {})
     data.setdefault("openalex_anchors", {})
     data.setdefault("forward", {})
-    return data
+    return data, True
+
+
+def load() -> dict:
+    return _read_document()[0]
 
 
 def mark_dirty(data: dict, section: str, key: str | None = None) -> None:
@@ -168,11 +179,13 @@ def save(data: dict) -> None:
     write, the legacy semantics deletion-by-pop writers depend on."""
     dirty = data.get(_DIRTY) or {}
     with _save_lock:
-        disk = load()
-        if dirty:
+        disk, on_disk = _read_document()
+        if dirty and on_disk:
             out = disk
             _merge_dirty(out, data, dirty)
         else:
+            # Nothing recorded (legacy wholesale semantics, which the deletion-by-pop writers
+            # depend on), or nothing readable on disk to preserve.
             out = data
         # max() of both sides so a writer holding a stale copy can never move the file's
         # revision backwards — the counter is a freshness marker and must stay monotonic.
@@ -180,7 +193,10 @@ def save(data: dict) -> None:
                        int(data.get("store_revision") or 0)) + 1
         out["version"] = GRAPH_VERSION
         out["store_revision"] = revision
-        data["store_revision"] = revision  # keep the caller's copy monotonic too
+        # The caller's copy is deliberately NOT stamped on the merged path: after a merge it
+        # lacks other writers' sections, so claiming the file's revision would make the
+        # "am I current?" compare answer yes for a stale document. Its next save still moves
+        # the counter forward, because the max() above reads the file too.
         payload = {k: v for k, v in out.items() if not k.startswith("_")}
         atomic_write_text(_file(), json.dumps(payload, ensure_ascii=False, indent=2))
 

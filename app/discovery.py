@@ -1481,15 +1481,22 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
         audit["anchors"] = len(anchors)
         from_cites = discovery_recall.chase_citations(anchors, client=client)
         audit["cites"] = len(from_cites)
-        # Feed the substrate's per-anchor known-citer sets (DR-052 PR 1) — what turns the
-        # next forward sweep into a delta instead of a re-query.
-        neighbourhood.record_forward_sweep(graph_data, from_cites)
     except Exception as e:  # noqa: BLE001 — an outage must not fail the run
         log.warning("grounded recall stopped early (%s)", type(e).__name__)
         audit["degraded"].append(f"citation chase stopped early ({type(e).__name__})")
         from_cites = []
     finally:
         client.close()
+
+    # Feed the substrate's per-anchor known-citer sets (DR-052 PR 1) — what turns the next
+    # forward sweep into a delta instead of a re-query. Deliberately OUTSIDE the guard above:
+    # bookkeeping is not worth discarding a successful chase's candidates over, and inside it
+    # a corrupt stored entry would have emptied `from_cites` while `audit["cites"]` still
+    # claimed a full haul.
+    try:
+        neighbourhood.record_forward_sweep(graph_data, from_cites)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not record the forward sweep (%s)", type(e).__name__)
 
     if graph_store.pending_changes(graph_data):
         try:

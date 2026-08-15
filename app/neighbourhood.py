@@ -34,7 +34,9 @@ from .models import Paper
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    # Second precision, matching graph._now() — the timestamps written here land in the same
+    # stored records that module wrote before this phase moved (a direct import would cycle).
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def provider_metadata_events(
@@ -105,11 +107,27 @@ def ensure_anchors(papers: list, data: dict, *, client) -> list[dict]:
     changed, so a caller can make `graph_store.save` conditional on
     `graph_store.pending_changes` — anchor ids are free but slow; pay for them once ever."""
     cache = data.setdefault("openalex_anchors", {})
-    before = json.dumps(cache, sort_keys=True, ensure_ascii=False)
-    anchors = discovery_recall.resolve_anchors(papers, client=client, cache=cache)
-    discovery_recall.hydrate_anchor_topics(anchors, client=client, cache=cache)
-    if json.dumps(cache, sort_keys=True, ensure_ascii=False) != before:
-        graph_store.mark_dirty(data, "openalex_anchors")
+
+    def _fingerprint() -> dict[str, str]:
+        return {
+            slug: json.dumps(entry, sort_keys=True, ensure_ascii=False)
+            for slug, entry in cache.items()
+        }
+
+    before = _fingerprint()
+    try:
+        anchors = discovery_recall.resolve_anchors(papers, client=client, cache=cache)
+        discovery_recall.hydrate_anchor_topics(anchors, client=client, cache=cache)
+    finally:
+        # PER SLUG, and in a finally: marking the whole section would make a save overwrite
+        # every anchor another concurrent writer resolved (two discovery runs can overlap on
+        # one project — the discovery dedup key is per user scope, not bare pid — and PR 2's
+        # neighbourhood job becomes a second writer by design). The finally keeps the old
+        # behaviour of persisting whatever resolved before an interruption.
+        after = _fingerprint()
+        for slug, entry in after.items():
+            if before.get(slug) != entry:
+                graph_store.mark_dirty(data, "openalex_anchors", slug)
     return anchors
 
 

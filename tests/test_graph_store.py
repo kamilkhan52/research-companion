@@ -1,7 +1,7 @@
 """graph_store: pure JSON persistence. No LLM, no network."""
 from __future__ import annotations
 
-from app import graph_store
+from app import config, graph_store
 
 
 def test_content_hash_is_stable_and_sensitive_to_change():
@@ -157,3 +157,97 @@ def test_dirty_bookkeeping_never_reaches_disk(temp_project):
     graph_store.save(data)
     raw = __import__("json").loads(graph_store._file().read_text(encoding="utf-8"))
     assert not any(key.startswith("_") for key in raw)
+
+
+def test_two_writers_of_the_SAME_section_each_keep_their_own_key(temp_project):
+    """The per-key merge, pinned properly: both copies are loaded BEFORE either saves, so
+    neither contains the other's key. A merge that replaced the whole keyed section would
+    pass the interleaved test above (its second writer loaded after the first saved) and
+    fail here."""
+    first = graph_store.load()
+    second = graph_store.load()
+
+    graph_store.set_paper_extraction(first, "paper-a", {"status": "done", "references": []})
+    graph_store.set_paper_extraction(second, "paper-b", {"status": "done", "references": []})
+    graph_store.save(first)
+    graph_store.save(second)
+
+    assert set(graph_store.load()["papers"]) == {"paper-a", "paper-b"}
+
+
+def test_a_merged_save_does_not_claim_the_callers_copy_is_current(temp_project):
+    """A merged save leaves the caller holding a document without the other writer's
+    sections. Stamping it with the file's revision would make the freshness compare the
+    counter exists for answer "current" for a stale copy."""
+    build = graph_store.load()
+    other = graph_store.load()
+    other["citations"]["node-1"] = 42
+    graph_store.mark_dirty(other, "citations")
+    graph_store.save(other)
+
+    graph_store.set_paper_extraction(build, "paper-a", {"status": "done", "references": []})
+    graph_store.save(build)
+
+    assert build["store_revision"] < graph_store.load()["store_revision"]
+    assert build.get("citations") == {}  # it really is missing the other writer's section
+
+
+def test_a_reset_file_does_not_swallow_a_live_writers_unmarked_sections(temp_project):
+    """A version bump or a wiped .state/ mid-build makes the disk read come back empty. The
+    merge must not then write only the marked entries and drop everything else the writer is
+    holding — the wholesale write it replaced kept the lot."""
+    seed = graph_store.load()
+    seed["citations"]["node-1"] = 42
+    graph_store.mark_dirty(seed, "citations")
+    graph_store.save(seed)
+
+    build = graph_store.load()                      # holds citations
+    graph_store._file().unlink()                    # …and the file disappears under it
+    graph_store.set_paper_extraction(build, "paper-a", {"status": "done", "references": []})
+    graph_store.save(build)
+
+    on_disk = graph_store.load()
+    assert on_disk["papers"]["paper-a"]["status"] == "done"
+    assert on_disk["citations"] == {"node-1": 42}
+
+
+def test_a_stale_wholesale_save_cannot_move_the_revision_backwards(temp_project):
+    stale = graph_store.load()          # revision 0
+    for _ in range(3):
+        fresh = graph_store.load()
+        graph_store.set_paper_extraction(fresh, "a", {"status": "done", "references": []})
+        graph_store.save(fresh)
+    high = graph_store.load()["store_revision"]
+
+    graph_store.save(stale)             # no marks: the wholesale path, from an old copy
+    assert graph_store.load()["store_revision"] > high
+
+
+def test_concurrent_saves_serialize_without_losing_an_entry(temp_project):
+    """The lock makes load-merge-write atomic in-process; every racing writer's own key must
+    survive and the counter must advance exactly once per save."""
+    import threading
+
+    pid = config.active_project_id()
+    docs = [graph_store.load() for _ in range(8)]
+    for n, doc in enumerate(docs):
+        graph_store.set_paper_extraction(doc, f"paper-{n}", {"status": "done", "references": []})
+
+    def writer(doc):
+        # Invariant 2: a thread inherits no contextvar, so without this the save lands in the
+        # wrong project and the assertions below read an empty file.
+        token = config.set_active_project(pid)
+        try:
+            graph_store.save(doc)
+        finally:
+            config.reset_active_project(token)
+
+    threads = [threading.Thread(target=writer, args=(doc,)) for doc in docs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    on_disk = graph_store.load()
+    assert set(on_disk["papers"]) == {f"paper-{n}" for n in range(8)}
+    assert on_disk["store_revision"] == 8
