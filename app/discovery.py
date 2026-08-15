@@ -76,6 +76,11 @@ MAX_AFTER_ABSTRACTS = 60
 # automatically worth reading. Same reasoning as the capped citation term below.
 PROVENANCE_BONUS_CITES = 1.0
 PROVENANCE_BONUS_GRAPH = 0.75
+#: A paper that has just STARTED citing one of yours (DR-052). Ranked above the breadth chase's
+#: bonus because it is both more specific (it cites you, and we know when it started) and more
+#: perishable — and because these papers are new, so their citation term is ~0 and the blend
+#: would otherwise bury the lane's whole point beneath well-established work.
+PROVENANCE_BONUS_NEW_CITATION = 1.25
 QUERIES_MAX_TOKENS = 8_000
 SCORING_MAX_TOKENS = 24_000
 LLM_TIMEOUT_S = 240
@@ -1043,6 +1048,12 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
                            if p.get("channel") == "cites" and p.get("anchor_title")), "")
             reasons.append(f"Cites “{anchor[:70]}” from your reading list" if anchor
                            else "Cites a paper on your reading list")
+        if "new_citation" in channels:
+            provenance_term += PROVENANCE_BONUS_NEW_CITATION
+            anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
+                           if p.get("channel") == "new_citation" and p.get("anchor_title")), "")
+            reasons.append(f"New: has started citing “{anchor[:70]}” from your list" if anchor
+                           else "New: has started citing a paper on your reading list")
         if "graph" in channels:
             provenance_term += PROVENANCE_BONUS_GRAPH
             graph_reasons = next((p.get("reasons") or [] for p in candidate.get("provenance") or []
@@ -1109,6 +1120,12 @@ def run_discovery(
     state = dict(checkpoint.get("state") or {}) if checkpoint else {}
     stage = checkpoint.get("stage") if checkpoint else ""
 
+    # Bound before the resume branch: a run that resumes from a checkpoint skips recall entirely,
+    # and the commit below must still have something to read. A resumed run legitimately has
+    # nothing to commit — its recall already happened in the attempt that checkpointed, which
+    # deliberately did not record the sweep either (see `forward_delta`), so those citers stay
+    # reportable until a run actually finishes.
+    pending_forward: dict = {}
     if checkpoint:
         focus = str(state["focus"])
         queries = list(state["queries"])
@@ -1168,8 +1185,10 @@ def run_discovery(
         if cancelled():
             return
         ledger = discovery_ledger.load()
-        grounded, recall_audit = _grounded_candidates(papers, recall_fn=recall_fn)
+        grounded, recall_audit = _grounded_candidates(
+            papers, recall_fn=recall_fn, should_cancel=cancelled)
         anchors = list(recall_audit.pop("_anchors", []))
+        pending_forward = recall_audit.pop("_pending_forward", {})
         wide, wide_audit, frontier_updates = _wide_candidates(
             anchors, queries, ledger, wide_recall_fn=wide_recall_fn,
             allow_network=not injected_search, should_cancel=cancelled)
@@ -1309,6 +1328,10 @@ def run_discovery(
     ranked = blend_and_rank(scored)
     discovery_ledger.apply_frontier_updates(ledger, frontier_updates)
     ledger_saved = _persist_ledger(ledger)
+    # Only now are this run's finds durable, so only now is it safe to remember which citers we
+    # swept. Earlier and a stopped run would suppress them forever; later is fine, because a
+    # repeat report merges harmlessly into the ledger reservoir.
+    _commit_forward_delta(pending_forward)
 
     funnel = {"gathered": len(candidates), **gate_counts,
               "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
@@ -1413,6 +1436,7 @@ def _preview(candidates: list[dict], *, focus: str = "",
         channels = set(candidate.get("channels") or [])
         return (float(candidate.get("score") or candidate.get("relevance") or 0.0),
                 overlap(candidate),
+                1 if "new_citation" in channels else 0,
                 1 if "cites" in channels else 0,
                 1 if "graph" in channels else 0,
                 candidate.get("citation_count") or 0)
@@ -1437,6 +1461,10 @@ def _provenance_line(candidate: dict) -> str:
     """Why this find is on screen, in the reader's terms. Never empty for a grounded candidate:
     a titled row with no explanation is the thing that makes a suggestion feel arbitrary."""
     for entry in candidate.get("provenance") or []:
+        if entry.get("channel") == "new_citation":
+            title = str(entry.get("anchor_title") or "").strip()
+            return (f"New: has started citing “{title[:60]}” from your list" if title
+                    else "New: has started citing a paper on your reading list")
         if entry.get("channel") == "cites":
             title = str(entry.get("anchor_title") or "").strip()
             return (f"Cites “{title[:60]}” from your list" if title
@@ -1445,6 +1473,8 @@ def _provenance_line(candidate: dict) -> str:
             reasons = [str(r) for r in (entry.get("reasons") or []) if r]
             return reasons[0] if reasons else "Ranked by your reference graph"
     channels = set(candidate.get("channels") or [])
+    if "new_citation" in channels:
+        return "New: has started citing a paper on your reading list"
     if "cites" in channels:
         return "Cites a paper on your reading list"
     if "graph" in channels:
@@ -1462,7 +1492,27 @@ def _reading_list(library_fn) -> list:
         return []
 
 
-def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
+def _commit_forward_delta(pending: dict) -> None:
+    """Persist the delta lane's swept citer ids, once the run's results are durable.
+
+    Reloads the substrate rather than reusing the copy recall held: minutes of provider work
+    have happened since, and the merge-on-save path only protects sections this writer marked
+    — a stale whole document would be the wrong thing to hold. Best-effort by contract: failing
+    to remember a sweep costs a repeated report next run, which the ledger reservoir absorbs."""
+    if not pending:
+        return
+    try:
+        data = graph_store.load()
+        neighbourhood.commit_forward_delta(data, pending)
+        if graph_store.pending_changes(data):
+            graph_store.save(data)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not record the new-citation sweep (%s)", type(e).__name__)
+
+
+def _grounded_candidates(papers: list, *, recall_fn,
+                         should_cancel: Callable[[], bool] | None = None,
+                         ) -> tuple[list[dict], dict]:
     """R1+R2+R5, plus the new-citation delta. Injectable as one seam so the suite stays
     network-free."""
     if recall_fn is not None:
@@ -1506,13 +1556,20 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     # same well-cited citers every run — this one answers "what has started citing me since?",
     # and carries the context sentences that say how. Its own guard: an S2 outage costs this
     # lane only, and the OpenAlex-derived candidates still stand.
+    #
+    # Its swept ids are NOT committed here. They travel with the audit and are written where the
+    # ledger is (see `_commit_forward_delta`), because marking a citer known before the run's
+    # results are durable would lose it permanently if the reader stops the run.
     try:
-        fresh, delta_audit = neighbourhood.forward_delta(anchors, papers, graph_data)
+        fresh, delta_audit, pending = neighbourhood.forward_delta(
+            anchors, papers, graph_data, should_cancel=should_cancel)
         audit["new_citations"] = len(fresh)
+        audit["_pending_forward"] = pending
         audit["degraded"].extend(delta_audit.get("degraded") or [])
     except Exception as e:  # noqa: BLE001
         log.warning("the new-citation lane stopped early (%s)", type(e).__name__)
-        audit["degraded"].append(f"new-citation lane stopped early ({type(e).__name__})")
+        audit["degraded"].append(
+            "Could not check for new citations this run; the next run retries")
         fresh = []
 
     if graph_store.pending_changes(graph_data):

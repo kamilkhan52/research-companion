@@ -80,12 +80,20 @@ def _empty() -> dict:
         # both features. Formalised here in PR 1 of DR-052 — Discovery previously invented the
         # key with setdefault, which worked but left the substrate schema implicit.
         "openalex_anchors": {},
-        # slug -> {citers: [openalex work keys], swept_at, complete, source}: which papers are
-        # known to cite each project paper. The stored id SET is what makes a later forward
-        # sweep a cheap graph DELTA (fetch newest, diff against known) instead of a re-query —
-        # the monitoring design in docs/map-discover-merge-design.md and the Corpus
-        # Neighbourhood spec. `complete: false` marks a set seeded from a top-cited first page
-        # rather than an exhaustive walk.
+        # slug -> which papers are known to cite each project paper. The stored id SET is what
+        # makes a later forward sweep a cheap graph DELTA (fetch newest, diff against known)
+        # instead of a re-query — the monitoring design in docs/map-discover-merge-design.md and
+        # docs/corpus-neighbourhood-spec.md §5.
+        #
+        # TWO NAMESPACES, deliberately kept apart, because the two forward lanes identify papers
+        # differently and a `W…` work key can never equal a 40-hex S2 paperId: unioning them into
+        # one list would leave each lane's memory invisible to the other while looking shared.
+        #   {citers: [openalex work keys], swept_at, complete, source}   ← breadth chase
+        #   {s2_citers: [semantic scholar paper ids], s2_swept_at}       ← new-citation delta
+        # `complete: false` marks a set seeded from a top-cited first page rather than an
+        # exhaustive walk. `s2_swept_at` advances on every sweep, including one that found
+        # nothing — "we looked and there was nothing new" is a different fact from "we never
+        # looked", and it is what rotates the delta lane's per-run anchor budget.
         "forward": {},
     }
 
