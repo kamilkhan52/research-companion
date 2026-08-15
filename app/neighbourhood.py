@@ -29,8 +29,10 @@ import json
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 
-from . import discovery_recall, graph_store
+from . import discovery_recall, graph_store, logging_config, semantic_scholar
 from .models import Paper
+
+log = logging_config.get("neighbourhood")
 
 
 def _now() -> str:
@@ -163,3 +165,106 @@ def record_forward_sweep(data: dict, candidates: list[dict]) -> None:
             "complete": False,
             "source": "openalex",
         })
+
+
+# The delta lane's per-anchor page size. One page per anchor per run, newest-first: the stored
+# citer set is the memory, so a sweep only has to reach back far enough to cover what appeared
+# since the last one. 100 is generous for a week of citations on a single paper and still one
+# request.
+FORWARD_PAGE = 100
+MAX_DELTA_ANCHORS = 25
+
+
+def forward_delta(
+    anchors: list[dict],
+    papers: list,
+    data: dict,
+    *,
+    fetch: Callable[[str], list[dict]] | None = None,
+) -> tuple[list[dict], dict]:
+    """Papers that have STARTED citing the reader's papers — the monitoring lane (spec §5).
+
+    A true graph delta, not a re-run of a similarity query: for each anchor we ask the provider
+    for its newest citers and subtract the ids we already stored, so what comes back is exactly
+    "new since we last looked", with the citation contexts that say HOW each one cites us.
+    Litmaps and its neighbours cannot do this — their monitoring re-scores a saved query — and
+    it is what makes a weekly check one cheap call per corpus paper.
+
+    Returns (candidates, audit). Never raises: a provider outage costs this lane, not the run.
+    Each anchor's failure is isolated, so one bad id cannot cost the others.
+    """
+    audit = {"anchors": 0, "new": 0, "known": 0, "degraded": []}
+    if not fetch and not semantic_scholar.api_key():
+        # Unauthenticated Semantic Scholar shares a global ~1 req/s pool and 429s under ordinary
+        # load, and this lane is one call PER corpus paper. Without a key it would spend the
+        # run's time budget collecting rate-limit errors, so it declines to start.
+        audit["degraded"].append("no Semantic Scholar API key; skipped the new-citation lane")
+        return [], audit
+
+    by_slug = {getattr(p, "slug", ""): p for p in papers}
+    fetcher = fetch or (lambda ident: semantic_scholar.citing_papers(
+        ident, limit=FORWARD_PAGE))
+    candidates: list[dict] = []
+
+    for anchor in anchors[:MAX_DELTA_ANCHORS]:
+        slug = anchor.get("slug") or ""
+        paper = by_slug.get(slug)
+        identifier = semantic_scholar.paper_identifier(
+            arxiv_id=getattr(paper, "arxiv_id", "") or "") if paper else None
+        if not identifier:
+            continue
+        try:
+            edges = fetcher(identifier)
+        except Exception as e:  # noqa: BLE001 — one anchor's outage is not the lane's
+            log.info("forward delta failed for %s (%s)", slug, type(e).__name__)
+            audit["degraded"].append(f"{slug}: {type(e).__name__}")
+            continue
+        audit["anchors"] += 1
+
+        record = graph_store.get_forward(data, slug) or {}
+        known = set(record.get("citers") or [])
+        seen_ids = {e["paper_id"] for e in edges}
+        fresh = [e for e in edges if e["paper_id"] not in known]
+        audit["new"] += len(fresh)
+        audit["known"] += len(seen_ids) - len(fresh)
+
+        for edge in fresh:
+            candidates.append(_candidate_from_edge(edge, anchor))
+
+        if seen_ids - known or not record:
+            graph_store.set_forward_sweep(data, slug, {
+                # Union, never replacement: a citer once seen stays known even when it falls
+                # off the newest page, so it can never be re-reported as new.
+                "citers": sorted(known | seen_ids),
+                "swept_at": _now(),
+                "complete": False,
+                "source": "semantic_scholar",
+            })
+    return candidates, audit
+
+
+def _candidate_from_edge(edge: dict, anchor: dict) -> dict:
+    """Shape one inbound edge like every other recall candidate, plus the lane-1 evidence."""
+    return {
+        "title": edge["title"],
+        "abstract": edge.get("abstract") or "",
+        "doi": edge.get("doi") or "",
+        "arxiv_id": edge.get("arxiv_id") or "",
+        "year": edge.get("year"),
+        "citation_count": edge.get("citation_count"),
+        "url": edge.get("url") or "",
+        "authors": edge.get("authors") or [],
+        "publication_types": edge.get("publication_types") or [],
+        "sources": ["semantic_scholar"],
+        "channels": ["new_citation"],
+        "provenance": [{
+            "channel": "new_citation",
+            "anchor_slug": anchor.get("slug"),
+            "anchor_title": anchor.get("title"),
+            # The evidence, carried with the candidate so a suggestion can say HOW it cites you
+            # instead of only that it does. PR 3 classifies these; nothing reads them yet.
+            "contexts": edge.get("contexts") or [],
+            "is_influential": bool(edge.get("is_influential")),
+            "reference_count": edge.get("reference_count"),
+        }],
+    }

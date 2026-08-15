@@ -27,7 +27,13 @@ import re
 from . import discovery_ledger
 
 #: Channels whose candidates carry project-specific evidence and therefore skip the citation floor.
-GROUNDED_CHANNELS = frozenset({"cites", "graph"})
+#: `new_citation` (DR-052 PR 2) is the most grounded of the three and the one the floor would hurt
+#: most: it reports papers that have STARTED citing the reader's own papers, which are new by
+#: construction and therefore have almost no citations of their own. Applying an age-scaled floor
+#: to them would drop exactly the frontier work the lane exists to surface — and they arrive with
+#: the citation contexts naming which of the reader's papers they build on, which is stronger
+#: project-specific evidence than a citation count is a quality signal.
+GROUNDED_CHANNELS = frozenset({"cites", "graph", "new_citation"})
 
 #: Publication types that are never a reading suggestion, whatever they cite.
 EXCLUDED_TYPES = frozenset({

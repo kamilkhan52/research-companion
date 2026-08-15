@@ -1463,10 +1463,12 @@ def _reading_list(library_fn) -> list:
 
 
 def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
-    """R1+R2+R5. Injectable as one seam so the suite stays network-free."""
+    """R1+R2+R5, plus the new-citation delta. Injectable as one seam so the suite stays
+    network-free."""
     if recall_fn is not None:
         return recall_fn(papers)
-    audit: dict = {"anchors": 0, "cites": 0, "graph": 0, "degraded": [], "_anchors": []}
+    audit: dict = {"anchors": 0, "cites": 0, "graph": 0, "new_citations": 0,
+                   "degraded": [], "_anchors": []}
     if not papers:
         return [], audit
 
@@ -1475,6 +1477,7 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     audit["graph"] = len(from_graph)
 
     client = openalex.make_client(timeout=discovery_recall.TIMEOUT_S)
+    anchors: list[dict] = []   # bound before the guard: the delta lane below reads it either way
     try:
         anchors = neighbourhood.ensure_anchors(papers, graph_data, client=client)
         audit["_anchors"] = anchors
@@ -1498,12 +1501,29 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     except Exception as e:  # noqa: BLE001
         log.warning("could not record the forward sweep (%s)", type(e).__name__)
 
+    # The new-citation lane: newest-first per anchor, minus what the substrate already knows.
+    # Distinct from the chase above, which is breadth-first by citation count and re-fetches the
+    # same well-cited citers every run — this one answers "what has started citing me since?",
+    # and carries the context sentences that say how. Its own guard: an S2 outage costs this
+    # lane only, and the OpenAlex-derived candidates still stand.
+    try:
+        fresh, delta_audit = neighbourhood.forward_delta(anchors, papers, graph_data)
+        audit["new_citations"] = len(fresh)
+        audit["degraded"].extend(delta_audit.get("degraded") or [])
+    except Exception as e:  # noqa: BLE001
+        log.warning("the new-citation lane stopped early (%s)", type(e).__name__)
+        audit["degraded"].append(f"new-citation lane stopped early ({type(e).__name__})")
+        fresh = []
+
     if graph_store.pending_changes(graph_data):
         try:
             graph_store.save(graph_data)   # anchor ids are free but slow; pay for them once ever
         except Exception:  # noqa: BLE001
             pass
-    return [*from_cites, *from_graph], audit
+    # Delta candidates lead: they are the most specific thing the pipeline knows (a named paper
+    # of the reader's, newly cited). `_merge_candidate` dedupes by identity downstream, so a
+    # paper both lanes found keeps this lane's provenance and its contexts.
+    return [*fresh, *from_cites, *from_graph], audit
 
 
 def _wide_candidates(anchors: list[dict], queries: list[dict], ledger: dict, *,

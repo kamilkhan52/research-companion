@@ -27,6 +27,29 @@ SEARCH_FIELDS = (
     "paperId,title,abstract,authors,year,venue,externalIds,url,citationCount,"
     "influentialCitationCount,fieldsOfStudy,publicationTypes,publicationDate,openAccessPdf"
 )
+# Inbound-edge fields for the forward delta (DR-052 PR 2). Two things this deliberately does NOT
+# ask for, both measured live 2026-08-14 (docs/corpus-neighbourhood-spec.md §3):
+#
+# - `intents`, S2's own citation-intent labels, look like exactly the significance signal lane 1
+#   wants. Their coverage is ~70% on pre-2024 citing papers and ~18% on 2024+ — 0 of the 300
+#   newest citers of "Attention Is All You Need" carried one — because the classifier needs a
+#   parsed full text and runs a year or two behind. For MONITORING, which is about the newest
+#   papers by construction, that is a signal that is absent exactly when it is needed. We take
+#   the raw `contexts` sentences instead (44-76% even on brand-new citers) and classify them
+#   ourselves in PR 3.
+# - Deep pagination. `/citations` returns newest-first and dies past offset ~10,000, and the
+#   delta only ever needs the newest page per anchor.
+#
+# `citingPaper.*` subfields are listed explicitly on purpose: asking for edge fields alone
+# (`fields=intents`) silently omits the citingPaper object entirely, leaving rows with no way to
+# identify the citer.
+CITATION_FIELDS = (
+    "contexts,isInfluential,"
+    "citingPaper.paperId,citingPaper.title,citingPaper.abstract,citingPaper.year,"
+    "citingPaper.authors,citingPaper.venue,citingPaper.externalIds,citingPaper.url,"
+    "citingPaper.citationCount,citingPaper.referenceCount,citingPaper.publicationTypes,"
+    "citingPaper.publicationDate"
+)
 MIN_REQUEST_INTERVAL_S = 1.1
 MAX_RETRIES = 3
 TIMEOUT_S = 45.0
@@ -487,6 +510,97 @@ def references(
                 raise SemanticScholarError(
                     "Semantic Scholar returned an invalid pagination cursor."
                 ) from exc
+    finally:
+        if own_client:
+            client.close()
+
+
+def _normalize_citation(row: dict[str, Any]) -> dict[str, Any] | None:
+    """One inbound edge: who cites us, and the sentences in which they do it."""
+    citing = row.get("citingPaper")
+    if not isinstance(citing, dict):
+        return None
+    paper_id = str(citing.get("paperId") or "").strip()
+    title = str(citing.get("title") or "").strip()
+    if not paper_id or not title:
+        return None
+    external = citing.get("externalIds") if isinstance(citing.get("externalIds"), dict) else {}
+    authors = [
+        str(a.get("name") or "").strip()
+        for a in (citing.get("authors") or [])
+        if isinstance(a, dict) and str(a.get("name") or "").strip()
+    ]
+    contexts = [
+        str(c).strip() for c in (row.get("contexts") or [])
+        if isinstance(c, (str, int, float)) and str(c).strip()
+    ]
+    return {
+        "paper_id": paper_id,
+        "title": title,
+        "abstract": str(citing.get("abstract") or ""),
+        "year": citing.get("year"),
+        "authors": authors[:12],
+        "venue": str(citing.get("venue") or ""),
+        "doi": str(external.get("DOI") or "").lower(),
+        "arxiv_id": str(external.get("ArXiv") or ""),
+        "url": str(citing.get("url") or ""),
+        "citation_count": citing.get("citationCount"),
+        "reference_count": citing.get("referenceCount"),
+        "publication_types": [t for t in (citing.get("publicationTypes") or []) if t],
+        "publication_date": str(citing.get("publicationDate") or ""),
+        # The lane-1 evidence. `contexts` is what the reader is eventually shown ("cited your
+        # Foo et al. in Methods, as the approach they extend"), and what PR 3 classifies.
+        "contexts": contexts[:8],
+        "is_influential": bool(row.get("isInfluential")),
+    }
+
+
+def citing_papers(
+    identifier: str,
+    *,
+    limit: int = 100,
+    key: str | None = None,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer = _PACER,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """The newest papers citing one resolved paper, with the citation contexts.
+
+    ONE page, newest-first, no pagination — this serves the forward DELTA (DR-052), where the
+    stored citer-id set is the memory and each sweep only has to reach back far enough to cover
+    what has appeared since the last one. Walking the full citer list of a well-cited paper
+    would be both pointless and impossible (the endpoint stops returning rows past offset
+    ~10,000).
+    """
+    if not identifier.strip():
+        raise SemanticScholarError("A Semantic Scholar paper identifier is required.")
+    own_client = client is None
+    client = client or httpx.Client(base_url=BASE_URL, timeout=TIMEOUT_S)
+    encoded = quote(identifier.strip(), safe=":")
+    try:
+        response = _request(
+            client,
+            f"/paper/{encoded}/citations",
+            params={"fields": CITATION_FIELDS, "offset": 0, "limit": max(1, min(limit, 1000))},
+            key=key,
+            pacer=pacer,
+            sleep=sleep,
+        )
+        try:
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("citation response is not an object")
+            rows = payload.get("data") or []
+        except (TypeError, ValueError) as exc:
+            raise SemanticScholarError(
+                "Semantic Scholar returned malformed citation metadata."
+            ) from exc
+        if not isinstance(rows, list):
+            raise SemanticScholarError("Semantic Scholar citations were not a list.")
+        return [
+            edge for row in rows
+            if isinstance(row, dict) and (edge := _normalize_citation(row)) is not None
+        ]
     finally:
         if own_client:
             client.close()
