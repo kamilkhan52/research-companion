@@ -42,6 +42,7 @@ from . import (
     graph_layout,
     graph_store,
     llm,
+    neighbourhood,
     openalex,
     paper_metadata,
     prompts,
@@ -1269,6 +1270,12 @@ def _persist_graph_snapshot(
     combined = merge_reference_sources(papers, extractions, provider_metadata)
     nodes, edges = build_nodes_and_edges(papers, combined)
     if annotate_citations:
+        # These three caches are mutated in place by the annotators below, so their changes
+        # must be declared for the merge-on-save path (graph_store docstring) — the setters
+        # can't see them. Whole-section marks are exact here: one build per project.
+        graph_store.mark_dirty(data, "citations")
+        graph_store.mark_dirty(data, "openalex")
+        graph_store.mark_dirty(data, "llm_affiliations")
         citations.annotate_nodes(nodes, data["citations"])  # best-effort, cached
         # Project-node authors + affiliations (U.9), same enrichment contract: cached,
         # best-effort, network only on this full path. A force rebuild re-fetches every node
@@ -1364,56 +1371,16 @@ def build_graph(papers: list[Paper], force: bool = False,
 
     # Provider metadata is a separate, resumable cache. A missing key disables this phase
     # cleanly; tests and other callers can inject a network-free metadata function explicitly.
+    # The loop itself lives in the substrate module (DR-052 PR 1) — it is the shared
+    # neighbourhood's backward half, not something Map-specific.
     metadata_fetcher = metadata_fn
     if metadata_fetcher is None and semantic_scholar.api_key():
         metadata_fetcher = fetch_semantic_scholar_metadata
     if metadata_fetcher is not None:
-        for paper in papers:
-            source_key = semantic_scholar_source_key(paper)
-            cached_provider = graph_store.get_provider_paper(
-                data, "semantic_scholar", paper.slug
-            )
-            needs_provider = (
-                force
-                or not cached_provider
-                or cached_provider.get("source_key") != source_key
-                or cached_provider.get("status") == "error"
-            )
-            if needs_provider:
-                yield {"type": "metadata", "slug": paper.slug, "title": paper.title}
-                try:
-                    provider_record = metadata_fetcher(paper)
-                    if not isinstance(provider_record, dict):
-                        raise TypeError("metadata provider returned a non-object result")
-                    if provider_record.get("status") not in {"done", "not_found"}:
-                        raise ValueError("metadata provider returned an invalid status")
-                    if (
-                        provider_record.get("status") == "done"
-                        and not isinstance(provider_record.get("references"), list)
-                    ):
-                        raise TypeError("metadata provider references were not a list")
-                    provider_record = {
-                        **provider_record,
-                        "source_key": source_key,
-                        "fetched_at": provider_record.get("fetched_at") or _now(),
-                        "error": str(provider_record.get("error") or "")[:400],
-                    }
-                except Exception as exc:
-                    provider_record = {
-                        "status": "error", "source_key": source_key, "fetched_at": _now(),
-                        "paper": None, "references": [], "error": str(exc)[:400],
-                    }
-                graph_store.set_provider_paper(
-                    data, "semantic_scholar", paper.slug, provider_record
-                )
-                graph_store.save(data)
-            else:
-                provider_record = cached_provider
-            yield {
-                "type": "metadata_progress", "slug": paper.slug,
-                "status": provider_record.get("status"), "cached": not needs_provider,
-                "error": provider_record.get("error") or None,
-            }
+        yield from neighbourhood.provider_metadata_events(
+            papers, data, force=force, fetch=metadata_fetcher,
+            source_key=semantic_scholar_source_key,
+        )
 
     # Publish the cheap metadata/cached-analysis map before any missing-paper downloads or LLM
     # extraction. If the remaining enrichment is interrupted, users still retain this useful,
