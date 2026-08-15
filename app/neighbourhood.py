@@ -189,11 +189,17 @@ def stalest_first(anchors: list[dict], data: dict, limit: int = MAX_DELTA_ANCHOR
     are NEVER monitored; ordering by how long ago each was last swept turns the same budget into
     a rotation, with no cursor to persist — the substrate's own timestamps are the cursor.
     """
-    def last_swept(anchor: dict) -> str:
+    def last_attempt(anchor: dict) -> str:
         record = graph_store.get_forward(data, anchor.get("slug") or "") or {}
-        return str(record.get("s2_swept_at") or "")   # "" (never swept) sorts first
+        # The last ATTEMPT, not the last success. An anchor the provider keeps failing on never
+        # gets an `s2_swept_at`, so ordering by that alone would park it at the head of the queue
+        # on every future run — and 25 such anchors would silently consume the whole per-run
+        # budget forever, sweeping nothing at all. Reading an attempt timestamp too rotates a
+        # persistently failing paper to the back instead of letting it starve the rest.
+        return max(str(record.get("s2_swept_at") or ""),
+                   str(record.get("s2_attempted_at") or ""))   # "" (never tried) sorts first
 
-    ordered = sorted(anchors, key=last_swept)
+    ordered = sorted(anchors, key=last_attempt)
     return ordered[:limit], max(0, len(anchors) - limit)
 
 
@@ -225,7 +231,8 @@ def forward_delta(
     isolated so one bad id cannot cost the others.
     """
     audit = {"anchors": 0, "new": 0, "known": 0, "skipped": 0, "unmonitored": 0, "degraded": []}
-    pending: dict[str, set[str]] = {}
+    # slug -> ids seen this run, or None for "attempted and failed" (see commit_forward_delta)
+    pending: dict[str, set[str] | None] = {}
     if not fetch and not semantic_scholar.api_key():
         # Unauthenticated Semantic Scholar shares a global ~1 req/s pool and 429s under ordinary
         # load, and this lane is one call PER corpus paper. Without a key it would spend the
@@ -236,28 +243,33 @@ def forward_delta(
     cancelled = should_cancel or (lambda: False)
     by_slug = {getattr(p, "slug", ""): p for p in papers}
     candidates: list[dict] = []
-    sweep, audit["unmonitored"] = stalest_first(anchors, data)
-    if audit["unmonitored"]:
-        audit["degraded"].append(
-            f"Checked the {len(sweep)} least-recently-swept papers for new citations; "
-            f"{audit['unmonitored']} more are covered on later runs")
+
+    # Resolve identifiers BEFORE applying the per-run budget. An anchor with no resolvable id can
+    # never be swept, so letting it into the budget would spend a slot on nothing — and since it
+    # never earns a timestamp either, it would take that slot again on every subsequent run.
+    sweepable = []
+    for anchor in anchors:
+        paper = by_slug.get(anchor.get("slug") or "")
+        identifier = semantic_scholar.paper_identifier(
+            arxiv_id=getattr(paper, "arxiv_id", "") or "") if paper else None
+        if identifier:
+            sweepable.append((anchor, identifier))
+    chosen, audit["unmonitored"] = stalest_first(
+        [a for a, _ in sweepable], data, limit=MAX_DELTA_ANCHORS)
+    by_anchor_id = {id(anchor): identifier for anchor, identifier in sweepable}
+    sweep = [(anchor, by_anchor_id[id(anchor)]) for anchor in chosen]
 
     # One client for the whole lane: these are serial calls to a single host through an
     # account-wide pacer, so a fresh connection per anchor would add a TLS handshake to each.
     client = None if fetch else httpx.Client(
         base_url=semantic_scholar.BASE_URL, timeout=semantic_scholar.TIMEOUT_S)
     try:
-        for anchor in sweep:
+        for anchor, identifier in sweep:
             # Checked per anchor, not just per run: the lane is up to 25 serial paced requests,
             # so without this a reader's Stop would sit unanswered for a minute or more.
             if cancelled():
                 break
             slug = anchor.get("slug") or ""
-            paper = by_slug.get(slug)
-            identifier = semantic_scholar.paper_identifier(
-                arxiv_id=getattr(paper, "arxiv_id", "") or "") if paper else None
-            if not identifier:
-                continue
             try:
                 edges = (fetch(identifier) if fetch else
                          semantic_scholar.citing_papers(
@@ -265,6 +277,7 @@ def forward_delta(
             except Exception as e:  # noqa: BLE001 — one anchor's outage is not the lane's
                 log.info("forward delta failed for %s (%s)", slug, type(e).__name__)
                 audit["skipped"] += 1
+                pending[slug] = None      # attempted, no result: rotates to the back
                 continue
             audit["anchors"] += 1
 
@@ -284,6 +297,11 @@ def forward_delta(
     finally:
         if client is not None:
             client.close()
+    if audit["unmonitored"]:
+        # Deliberately NOT in `degraded`: a library larger than one run's budget is the normal
+        # case, not a fault, and a healthy run must not report itself as degraded every time.
+        log.info("new-citation lane checked %d anchors; %d rotate to a later run",
+                 audit["anchors"], audit["unmonitored"])
     if audit["skipped"]:
         audit["degraded"].append(
             f"Could not check {audit['skipped']} paper(s) for new citations "
@@ -291,14 +309,23 @@ def forward_delta(
     return candidates, audit, pending
 
 
-def commit_forward_delta(data: dict, pending: dict[str, set[str]]) -> None:
+def commit_forward_delta(data: dict, pending: dict[str, set[str] | None]) -> None:
     """Mark this run's swept citers known, once its results are durable (see `forward_delta`).
 
     `s2_swept_at` advances even when a sweep found nothing new — "we looked and there was
     nothing" is exactly what a freshness display has to distinguish from "we never looked",
-    and it is also what makes the rotation in `stalest_first` move."""
+    and it is also what makes the rotation in `stalest_first` move.
+
+    A `None` entry is an anchor the provider failed on. It records the ATTEMPT and nothing else:
+    no citers are marked known (that would suppress papers we never saw), but the timestamp
+    stops a permanently failing paper from holding the front of the rotation forever."""
     for slug, seen_ids in pending.items():
         previous = graph_store.get_forward(data, slug) or {}
+        if seen_ids is None:
+            graph_store.set_forward_sweep(data, slug, {
+                **previous, "s2_attempted_at": _now(),
+            })
+            continue
         known = set(previous.get("s2_citers") or [])
         graph_store.set_forward_sweep(data, slug, {
             **previous,                       # keeps the OpenAlex side of the record intact
@@ -306,6 +333,7 @@ def commit_forward_delta(data: dict, pending: dict[str, set[str]]) -> None:
             # the newest page, so it can never be re-reported as new.
             "s2_citers": sorted(known | seen_ids),
             "s2_swept_at": _now(),
+            "s2_attempted_at": _now(),
         })
 
 

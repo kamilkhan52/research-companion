@@ -156,7 +156,10 @@ def test_one_anchors_outage_does_not_cost_the_others(temp_project):
     assert audit["anchors"] == 1 and audit["skipped"] == 1
     # One reader-facing sentence, not one raw exception name per failing anchor.
     assert audit["degraded"] and "Could not check 1 paper" in audit["degraded"][0]
-    assert graph_store.get_forward(data, "p1") is None      # nothing recorded for the failure
+    # The failure records an ATTEMPT (so it rotates) but marks no citer known — nothing the
+    # reader never saw is suppressed.
+    failed = graph_store.get_forward(data, "p1")
+    assert failed["s2_attempted_at"] and "s2_citers" not in failed
     assert graph_store.get_forward(data, "p2")["s2_citers"] == ["S2-b"]
 
 
@@ -194,6 +197,61 @@ def test_the_sweep_rotates_through_a_library_larger_than_one_runs_budget(temp_pr
     chosen, left_over = neighbourhood.stalest_first(anchors, data, limit=2)
     assert [a["slug"] for a in chosen] == ["p3", "p1"]   # never-swept first, then the oldest
     assert left_over == 2
+
+
+def test_an_unsweepable_paper_cannot_hold_the_front_of_the_rotation(temp_project):
+    """Head-of-line starvation, the failure mode the rotation itself introduced: an anchor that
+    can never be swept has no timestamp, so ordering by timestamp alone would hand it the same
+    slot on every future run — and 25 such anchors would silently sweep nothing at all, forever.
+
+    Two kinds: a paper with no resolvable identifier (excluded from the budget entirely) and one
+    the provider keeps failing on (records the attempt, so it rotates to the back)."""
+    data = graph_store.load()
+    anchors = [{"slug": "no-id", "title": "Unresolvable"}, {"slug": "ok", "title": "Fine"}]
+    papers = [_Paper("no-id", arxiv_id=None), _Paper("ok", "2401.00001")]
+
+    # The unresolvable paper does not consume a slot: a budget of one still reaches the real one.
+    fresh, audit, pending = neighbourhood.forward_delta(
+        anchors, papers, data, fetch=lambda _i: [_edge("S2-a", "A citer")])
+    assert [c["title"] for c in fresh] == ["A citer"]
+    assert set(pending) == {"ok"}
+
+    # A failing anchor records the ATTEMPT — no citers marked known, but it stops being first.
+    failing = [{"slug": "flaky", "title": "Flaky"}]
+    failing_papers = [_Paper("flaky", "2402.00002")]
+
+    def boom(_identifier):
+        raise semantic_scholar.SemanticScholarError("HTTP 503")
+
+    _, _, pending2 = neighbourhood.forward_delta(failing, failing_papers, data, fetch=boom)
+    assert pending2 == {"flaky": None}
+    neighbourhood.commit_forward_delta(data, pending2)
+    record = graph_store.get_forward(data, "flaky")
+    assert record["s2_attempted_at"]
+    assert "s2_citers" not in record      # nothing was suppressed on a failed fetch
+    assert not record.get("s2_swept_at")
+
+    # With an attempt recorded, a never-tried paper now outranks it in the rotation.
+    order, _ = neighbourhood.stalest_first(
+        [{"slug": "flaky"}, {"slug": "never-tried"}], data, limit=1)
+    assert [a["slug"] for a in order] == ["never-tried"]
+
+
+def test_a_library_larger_than_one_runs_budget_is_not_a_degradation(temp_project):
+    """Every library over the per-run budget would otherwise report itself as degraded on every
+    healthy run."""
+    data = graph_store.load()
+    anchors = [{"slug": f"p{n}", "title": f"P{n}"} for n in range(3)]
+    papers = [_Paper(f"p{n}", f"240{n}.00001") for n in range(3)]
+    original = neighbourhood.MAX_DELTA_ANCHORS
+    try:
+        neighbourhood.MAX_DELTA_ANCHORS = 1
+        _, audit, _ = neighbourhood.forward_delta(
+            anchors, papers, data, fetch=lambda _i: [])
+    finally:
+        neighbourhood.MAX_DELTA_ANCHORS = original
+    assert audit["unmonitored"] == 2
+    assert audit["degraded"] == []
 
 
 def test_a_sweep_that_finds_nothing_still_advances_its_timestamp(temp_project):

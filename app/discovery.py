@@ -1042,18 +1042,18 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
         reasons: list[str] = []
         if candidate.get("screen_note"):
             reasons.append(candidate["screen_note"])
-        if "cites" in channels:
-            provenance_term += PROVENANCE_BONUS_CITES
-            anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
-                           if p.get("channel") == "cites" and p.get("anchor_title")), "")
-            reasons.append(f"Cites “{anchor[:70]}” from your reading list" if anchor
-                           else "Cites a paper on your reading list")
         if "new_citation" in channels:
             provenance_term += PROVENANCE_BONUS_NEW_CITATION
             anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
                            if p.get("channel") == "new_citation" and p.get("anchor_title")), "")
             reasons.append(f"New: has started citing “{anchor[:70]}” from your list" if anchor
                            else "New: has started citing a paper on your reading list")
+        if "cites" in channels:
+            provenance_term += PROVENANCE_BONUS_CITES
+            anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
+                           if p.get("channel") == "cites" and p.get("anchor_title")), "")
+            reasons.append(f"Cites “{anchor[:70]}” from your reading list" if anchor
+                           else "Cites a paper on your reading list")
         if "graph" in channels:
             provenance_term += PROVENANCE_BONUS_GRAPH
             graph_reasons = next((p.get("reasons") or [] for p in candidate.get("provenance") or []
@@ -1460,11 +1460,17 @@ def _preview(candidates: list[dict], *, focus: str = "",
 def _provenance_line(candidate: dict) -> str:
     """Why this find is on screen, in the reader's terms. Never empty for a grounded candidate:
     a titled row with no explanation is the thing that makes a suggestion feel arbitrary."""
-    for entry in candidate.get("provenance") or []:
+    entries = [e for e in (candidate.get("provenance") or []) if isinstance(e, dict)]
+    # By channel STRENGTH, not by position. `merge_candidates` concatenates provenance in group
+    # order and the ledger reservoir is group 0, so a candidate already known from a `cites` run
+    # carries that entry first — first-entry-wins would then show the weaker line for a paper
+    # whose news is that it just started citing you, contradicting the preview's own tiebreak.
+    for entry in entries:
         if entry.get("channel") == "new_citation":
             title = str(entry.get("anchor_title") or "").strip()
             return (f"New: has started citing “{title[:60]}” from your list" if title
                     else "New: has started citing a paper on your reading list")
+    for entry in entries:
         if entry.get("channel") == "cites":
             title = str(entry.get("anchor_title") or "").strip()
             return (f"Cites “{title[:60]}” from your list" if title
