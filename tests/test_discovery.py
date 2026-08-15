@@ -1207,3 +1207,61 @@ def test_the_reel_is_long_enough_to_scroll_without_visibly_repeating():
             for i in range(40)]
     assert len(discovery._preview(many, focus="Compute Express Link")) == discovery.PREVIEW_FINDS
     assert discovery.PREVIEW_FINDS >= 8
+
+
+# ---------- the new-citation lane's integration (DR-052 PR 2) ----------
+
+def test_a_new_citer_says_why_it_is_on_screen_and_outranks_established_work():
+    """The lane's whole point is perishable: these papers are new, so their citation term is ~0
+    and without a provenance bonus the blend buries them beneath the well-cited work the gate's
+    floor waiver just protected them from. And the early-finds reel renders before any model has
+    scored anything, so the reason line has to come from provenance alone."""
+    new_citer = {"title": "Just started citing you", "channels": ["new_citation"],
+                 "citation_count": 0, "relevance": 5.0,
+                 "provenance": [{"channel": "new_citation", "anchor_slug": "p1",
+                                 "anchor_title": "Your Paper",
+                                 "contexts": ["We extend their method."]}]}
+    established = {"title": "A classic", "channels": ["lexical"],
+                   "citation_count": 20000, "relevance": 5.0}
+
+    ranked = discovery.blend_and_rank([established, new_citer])
+    by_title = {r["title"]: r for r in ranked}
+    # The bonus is worth more than the breadth chase's, and enough to carry a zero-citation
+    # paper past comparably relevant ordinary work. It deliberately does NOT out-weigh the
+    # capped citation term outright: a 20,000-citation paper at the same relevance is also a
+    # real suggestion, and pretending otherwise would be tuning to win a test.
+    assert by_title["Just started citing you"]["score"] > by_title["A classic"]["score"] - 0.3
+    assert any("Your Paper" in r for r in by_title["Just started citing you"]["reasons"])
+
+    ordinary = {"title": "Ordinary work", "channels": ["lexical"],
+                "citation_count": 50, "relevance": 5.0}
+    ranked2 = discovery.blend_and_rank([ordinary, new_citer])
+    assert ranked2[0]["title"] == "Just started citing you"
+
+    finds = discovery._preview([new_citer], focus="citing", provisional=True)
+    assert finds[0]["reason"].startswith("New: has started citing")
+
+
+def test_the_delta_lanes_swept_ids_are_committed_only_with_the_ledger(temp_project):
+    """`_grounded_candidates` hands its swept ids up rather than writing them, so a run that
+    never reaches the ledger cannot suppress papers nobody saw."""
+    from app import graph_store
+
+    discovery._commit_forward_delta({"p1": {"S2-a"}})
+    assert graph_store.load()["forward"]["p1"]["s2_citers"] == ["S2-a"]
+
+    # And it reloads rather than trusting a copy held across minutes of provider work.
+    other = graph_store.load()
+    graph_store.set_paper_extraction(other, "written-meanwhile", {"status": "done"})
+    graph_store.save(other)
+    discovery._commit_forward_delta({"p2": {"S2-b"}})
+    reloaded = graph_store.load()
+    assert reloaded["papers"]["written-meanwhile"]["status"] == "done"
+    assert set(reloaded["forward"]) == {"p1", "p2"}
+
+
+def test_a_stopped_run_never_commits_the_sweep(temp_project):
+    from app import graph_store
+
+    discovery._commit_forward_delta({})       # the cancelled path hands up nothing
+    assert graph_store.load()["forward"] == {}

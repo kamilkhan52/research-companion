@@ -239,3 +239,18 @@ def test_per_project_state_never_resolves_into_the_developers_working_tree():
     resolved = config.state_dir().resolve()
     repo_project = (config.BASE_DIR / "project").resolve()
     assert repo_project not in resolved.parents and resolved != repo_project, resolved
+
+
+def test_a_brand_new_citer_is_not_dropped_by_the_citation_floor():
+    """The delta lane (DR-052 PR 2) reports papers that have just started citing the reader's
+    own work. They are new by construction and so have almost no citations of their own — an
+    age-scaled floor would drop exactly the frontier work the lane exists to surface."""
+    candidate = {
+        "title": "Just cited you", "abstract": "", "year": 2019, "citation_count": 0,
+        "channels": ["new_citation"], "publication_types": [],
+        "provenance": [{"channel": "new_citation", "anchor_slug": "p1",
+                        "contexts": ["We extend their method."]}],
+    }
+    kept, counts = _gate([candidate])
+    assert counts["citation_floor"] == 0
+    assert [c["title"] for c in kept] == ["Just cited you"]
