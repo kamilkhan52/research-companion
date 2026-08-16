@@ -20,6 +20,7 @@ twin of the client's double-tap guard), while independent threads may generate c
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -485,12 +486,18 @@ _DEFAULT_TURN_DEADLINE = 1200.0
 
 
 def turn_deadline() -> float:
-    """The wall-clock ceiling for one turn's event stream, in seconds."""
+    """The wall-clock ceiling for one turn's event stream, in seconds.
+
+    `isfinite` rather than a bare `> 0` (Sol review, PR #411): `float()` happily parses `inf`,
+    `Infinity` and overflowing literals like `1e309`, all of which are positive and would make
+    `elapsed <= turn_deadline()` true forever — silently removing the ceiling. A ceiling that a
+    typo can disable is not one, so an unusable value falls back to the default rather than
+    being honored. NaN fails `isfinite` too (it would also fail `> 0`, but not obviously)."""
     try:
         value = float(os.environ.get("RC_TURN_DEADLINE", _DEFAULT_TURN_DEADLINE))
     except ValueError:
         return _DEFAULT_TURN_DEADLINE
-    return value if value > 0 else _DEFAULT_TURN_DEADLINE
+    return value if math.isfinite(value) and value > 0 else _DEFAULT_TURN_DEADLINE
 
 
 def _check_deadline(job: ChatJob, started: float | None) -> None:
@@ -516,9 +523,14 @@ async def _consume_async(job: ChatJob, events: AsyncIterator[dict],
     sent = 0
     final_text = ""
     async for ev in events:
-        _check_deadline(job, started)
+        # Stop is checked FIRST (Sol review, PR #411). A turn can be past its deadline AND
+        # cancelled at the same event boundary — a reader tapping Stop on a turn that is stalling
+        # is in fact the likeliest way for both to be true at once. Raising the deadline error
+        # there would discard partial text the reader can already see and report a provider stall
+        # for what was their own deliberate action. The explicit human action wins.
         if job.cancelled:
             break  # abandoning the iterator closes it (loop shutdown), ending the model stream
+        _check_deadline(job, started)
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]
@@ -530,9 +542,9 @@ def _consume_sync(job: ChatJob, events: Iterable[dict], started: float | None = 
     sent = 0
     final_text = ""
     for ev in events:
-        _check_deadline(job, started)
-        if job.cancelled:
+        if job.cancelled:  # Stop first — see _consume_async
             break  # abandoning the iterator closes it, ending the model stream
+        _check_deadline(job, started)
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]

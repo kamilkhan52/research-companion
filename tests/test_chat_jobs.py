@@ -1106,3 +1106,56 @@ def test_the_deadline_falls_back_to_the_default_when_misconfigured(monkeypatch):
     assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
     monkeypatch.delenv("RC_TURN_DEADLINE")
     assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
+
+
+# ---- Sol review, PR #411 ----
+
+def test_a_stop_beats_the_deadline_at_the_same_boundary(temp_project, monkeypatch):
+    """Both can be true at one event boundary — a reader tapping Stop on a turn that is stalling
+    is the likeliest way for that to happen. The deadline must not discard partial text the reader
+    can already see, nor report a provider stall for their own deliberate action."""
+    monkeypatch.setenv("RC_TURN_DEADLINE", "0.05")
+    slug = _session_with_reply()
+
+    def stalling(s2, h):
+        yield {"type": "text", "text": "###CANONICAL###\nPartial answer the reader can see."}
+        time.sleep(0.15)                      # now past the deadline
+        job = chat_jobs.active_for(slug)
+        job.cancelled = True                  # ...and the reader taps Stop
+        yield {"type": "text", "text": " more"}
+        yield {"type": "final", "text": PROTO}
+
+    finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=stalling).id)
+
+    assert finished.status == "done", f"Stop was reported as a failure: {finished.error}"
+    assert finished.error is None
+    assert sessions.read_records(slug)[-1]["role"] == "assistant"  # the partial WAS persisted
+
+
+def test_a_deadline_still_fires_when_no_stop_was_requested(temp_project, monkeypatch):
+    """Guard against 'fixing' the ordering by losing the deadline altogether."""
+    monkeypatch.setenv("RC_TURN_DEADLINE", "0.05")
+    slug = _session_with_reply()
+
+    def crawling(s2, h):
+        yield {"type": "text", "text": "one token…"}
+        time.sleep(0.15)
+        yield {"type": "final", "text": PROTO}
+
+    finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=crawling).id)
+    assert finished.status == "error"
+    assert "was stopped" in finished.error
+
+
+@pytest.mark.parametrize("value", ["inf", "Infinity", "-inf", "1e309", "nan", "0", "-5", "abc", ""])
+def test_an_unusable_deadline_override_cannot_disable_the_ceiling(monkeypatch, value):
+    """`float()` parses 'inf' and overflowing literals like 1e309 into positive infinity, which
+    is > 0 — so a bare positivity check left `elapsed <= deadline` true forever. A ceiling a typo
+    can switch off is not a ceiling."""
+    monkeypatch.setenv("RC_TURN_DEADLINE", value)
+    assert chat_jobs.turn_deadline() == chat_jobs._DEFAULT_TURN_DEADLINE
+
+
+def test_a_usable_deadline_override_is_still_honored(monkeypatch):
+    monkeypatch.setenv("RC_TURN_DEADLINE", "42.5")
+    assert chat_jobs.turn_deadline() == 42.5
