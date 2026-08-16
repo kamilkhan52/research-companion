@@ -720,9 +720,14 @@ def _attach_to_default_branch(repo: Path) -> None:
     original ref is left in place; pruning refs a sender chose is a separate call that belongs with
     whoever ships sharing for real, not smuggled into a detached-HEAD fix.
     """
-    current = subprocess.run(["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=str(repo),
+    # The FULL ref, never `--short` (Sol review, PR #412). `--short` is ambiguity-sensitive: with a
+    # tag ALSO named `main` in the repo it returns `heads/main` rather than `main`, so comparing it
+    # to DEFAULT_BRANCH misses, and the `branch -f` below then dies with "cannot force update the
+    # branch 'main' used by worktree" — failing the whole import. A bundle's sender controls its
+    # tags, so that was a crafted bundle away from bricking this path. Verified against real git.
+    current = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=str(repo),
                              capture_output=True, text=True, env=_SAFE_GIT_ENV)
-    if current.returncode == 0 and current.stdout.strip() == DEFAULT_BRANCH:
+    if current.returncode == 0 and current.stdout.strip() == f"refs/heads/{DEFAULT_BRANCH}":
         return
     for args in (["branch", "-f", DEFAULT_BRANCH, "HEAD"],
                  ["symbolic-ref", "HEAD", f"refs/heads/{DEFAULT_BRANCH}"]):

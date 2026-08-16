@@ -633,7 +633,7 @@ def test_an_imported_project_lands_on_the_default_branch(tmp_projects):
     imported = projects.import_bundle(projects.export_bundle(source), "Branch Check")
     pid = imported["id"]
 
-    assert projects._git(pid, "symbolic-ref", "--short", "HEAD") == projects.DEFAULT_BRANCH
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
     assert projects._git(
         pid, "for-each-ref", "--format=%(refname:short)", "refs/heads",
     ).split() == [projects.DEFAULT_BRANCH]
@@ -667,10 +667,10 @@ def test_an_imported_project_can_be_cloned_onto_a_branch(tmp_projects, tmp_path)
     subprocess.run(["git", "clone", "-q", str(projects.project_path(pid)), str(dest)],
                    check=True, capture_output=True)
 
-    head = subprocess.run(["git", "symbolic-ref", "--short", "HEAD"], cwd=str(dest),
+    head = subprocess.run(["git", "symbolic-ref", "HEAD"], cwd=str(dest),
                           capture_output=True, text=True)
     assert head.returncode == 0, "clone landed detached"
-    assert head.stdout.strip() == projects.DEFAULT_BRANCH
+    assert head.stdout.strip() == f"refs/heads/{projects.DEFAULT_BRANCH}"
 
 
 def test_a_bundle_that_already_carries_the_branch_imports_cleanly(tmp_projects, tmp_path):
@@ -692,5 +692,32 @@ def test_a_bundle_that_already_carries_the_branch_imports_cleanly(tmp_projects, 
 
     pid = projects.import_bundle(bundle.read_bytes(), "From Elsewhere")["id"]
 
-    assert projects._git(pid, "symbolic-ref", "--short", "HEAD") == projects.DEFAULT_BRANCH
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
+    assert "A Paper" in (projects.project_path(pid) / "reading-list.md").read_text()
+
+
+def test_a_bundle_whose_tag_shadows_the_branch_name_still_imports(tmp_projects, tmp_path):
+    """Sol review, PR #412. `git symbolic-ref --short HEAD` is ambiguity-sensitive: with a TAG
+    also named `main`, it returns `heads/main`, not `main`. Comparing that to DEFAULT_BRANCH missed,
+    and `git branch -f main` then died with "cannot force update the branch 'main' used by
+    worktree" — failing the entire import. A bundle's sender controls its tags, so this was a
+    crafted bundle away from bricking the import path."""
+    other = tmp_path / "shadowed"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", projects.DEFAULT_BRANCH, str(other)], check=True)
+    (other / "reading-list.md").write_text("# Reading list\n\n- A Paper\n", encoding="utf-8")
+    (other / "working-notes.md").write_text("# Project Notes\n", encoding="utf-8")
+    (other / "reading-method.md").write_text("# Method\n", encoding="utf-8")
+    (other / "project.json").write_text(json.dumps({"id": "x", "name": "Shadowed"}), encoding="utf-8")
+    for args in (["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "x"],
+                 ["tag", projects.DEFAULT_BRANCH]):        # the tag that shadows the branch name
+        subprocess.run(["git", *args], cwd=other, check=True)
+    bundle = tmp_path / "shadowed.bundle"
+    subprocess.run(["git", "bundle", "create", str(bundle), "--all", "HEAD"], cwd=other,
+                   check=True, capture_output=True)
+
+    pid = projects.import_bundle(bundle.read_bytes(), "Shadowed Import")["id"]
+
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
     assert "A Paper" in (projects.project_path(pid) / "reading-list.md").read_text()
