@@ -61,24 +61,17 @@ export function SkeletonGroup({
   }, [opacity, reduceMotion]);
 
   return (
-    <View
+    <Animated.View
       testID={testID}
       accessible
       accessibilityRole="progressbar"
       accessibilityLabel={label}
       accessibilityLiveRegion="polite"
       accessibilityState={{ busy: true }}
-      style={style}
+      style={[style, { opacity }]}
     >
-      <Animated.View
-        accessible={false}
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={{ opacity }}
-      >
-        {children}
-      </Animated.View>
-    </View>
+      {children}
+    </Animated.View>
   );
 }
 

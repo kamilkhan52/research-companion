@@ -1,5 +1,5 @@
 import { renderAsync } from '@testing-library/react-native';
-import { AccessibilityInfo, Animated } from 'react-native';
+import { AccessibilityInfo, Animated, StyleSheet } from 'react-native';
 
 import {
   DiscoverLoadingSkeleton,
@@ -46,6 +46,23 @@ test('one skeleton group owns one native-driver pulse and one accessible loading
 
   await view.unmountAsync();
   expect(stop).toHaveBeenCalledTimes(1);
+});
+
+test('group layout styles apply to the animated container that directly owns the blocks', async () => {
+  jest.restoreAllMocks();
+  jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
+  const view = await renderAsync(
+    <ThemeProvider>
+      <SkeletonGroup label="Loading spaced content" style={{ gap: 13 }} testID="skeleton-group">
+        <Skeleton height={12} />
+        <Skeleton height={12} />
+      </SkeletonGroup>
+    </ThemeProvider>,
+  );
+
+  const group = view.getByTestId('skeleton-group');
+  expect(group.children).toHaveLength(2);
+  expect(StyleSheet.flatten(group.props.style)).toEqual(expect.objectContaining({ gap: 13 }));
 });
 
 test('reduced motion keeps the skeleton static', async () => {
