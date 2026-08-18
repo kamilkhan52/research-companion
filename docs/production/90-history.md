@@ -847,7 +847,10 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    `"package": "com.kamilkhan.researchcompanion"`. **An Android package name is permanent once
    published** — a different package is a different Play listing, with new reviews, new installs,
    and a fresh 12-tester clock. Nothing is published yet, so it is free to change today and frozen
-   forever after the first closed-track upload. Change it to **`io.scholiast.app`** (reverse-DNS of
+   forever after the first closed-track upload. *(Superseded 2026-08-18 — see H8: Play binds the
+   package when the app is CREATED, not on upload, and the shipping package is now
+   `io.scholiast.seminar`. The rename decision below still stands as written at the time.)*
+   Change it to **`io.scholiast.app`** (reverse-DNS of
    a domain we own) in the same PR. `"scheme": "researchcompanion"` should go too — it is the
    deep-link scheme auth redirects return on, changeable later but only in lockstep with Supabase's
    redirect allowlist, so it is far cheaper now.

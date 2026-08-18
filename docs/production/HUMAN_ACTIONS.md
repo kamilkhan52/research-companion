@@ -12,7 +12,7 @@ every agent session.
 
 ---
 
-## What is actually waiting on Kamil, as of 2026-08-14
+## What is actually waiting on Kamil, as of 2026-08-18
 
 Everything in this short list blocks the closed track. Everything below it in this file is either
 done or a later milestone. Read this before the H-numbered sections.
@@ -26,10 +26,14 @@ done or a later milestone. Read this before the H-numbered sections.
    cleared and the app exists (`Seminar: Research Reader`, `io.scholiast.seminar`), but no
    subscription product can be created until a Google Payments merchant account is set up, and
    that needs legal identity, tax details and a bank account, so it is his alone. Everything
-   after it is mechanical and an agent can do it: author the products at the agreed $10 Basic /
-   $25 Pro plus annuals (H9), then the service credential and `goog_` key (H10), then a
-   dev-client rebuild so the native billing module is actually in the binary. The client half is
-   already merged and inert until then.
+   after it is unblocked: **H9 (authoring the products at the agreed $10 Basic / $25 Pro plus
+   annuals) is a form an agent can fill**, since the pricing is already decided; H10 (the service
+   credential and `goog_` key) stays his, because it is credential issuance. Then a dev-client
+   rebuild puts the native billing module in the binary — run `npx expo prebuild --clean` first
+   (the local `mobile/android/` is a stale prebuild still carrying the old package), and
+   **uninstall the old dev build** before installing the new one, or two apps will claim
+   `scholiast://` and sign-in can route to the wrong one. The client half is already merged and
+   inert until then.
 4. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
    route for him: he is in `RC_OPERATOR_USERS`, and it takes effect with no machine restart and so
    cannot kill an in-flight job. `FIRECRAWL_API_KEY` as a Fly secret also works but restarts the
@@ -44,8 +48,10 @@ done or a later milestone. Read this before the H-numbered sections.
    Parallel, PR #290) still stands for the fetch path.
 
 **Not blocking, but decided and worth not re-litigating:** the AAB should NOT be rushed — see the
-correction under "Then the AAB and the closed track" in `10-roadmap.md`. Uploading early freezes the
-Android package name and banks no tester-clock time.
+correction under "Then the AAB and the closed track" in `10-roadmap.md`. It banks no tester-clock
+time. (The old second reason — that uploading freezes the package name — is **wrong** and was
+corrected in H8 on 2026-08-18: the package is bound permanently when the app is CREATED. So an
+early upload buys nothing at all, which makes the conclusion stronger, not weaker.)
 
 ## Blocking now (M1)
 
@@ -454,7 +460,7 @@ because the sign-in never completes, no protected request is ever made, and so n
    `auth: rejected non-allowlisted user id=<uuid>`, added precisely so this needs no dashboard.
    (Supabase dashboard → Authentication → Users also has it.) Set both `RC_ALLOWED_USERS` and
    `RC_OPERATOR_USERS` to that id.
-6. **Google OAuth is separate work (H5) and does not carry across projects.** The staging project
+5. **Google OAuth is separate work (H5) and does not carry across projects.** The staging project
    needs its own provider configuration, and the Google Cloud Web client needs
    `https://iqsiabkdbczvgyccswcy.supabase.co/auth/v1/callback` as an authorized redirect URI plus
    the staging origin as an authorized JavaScript origin. Until then, magic link is the way in.
@@ -599,7 +605,7 @@ Google provider requires, so an Android client cannot satisfy this step.
 see P0-15) will use Supabase's `signInWithOAuth` through `expo-web-browser`, redirecting back via
 the app's `scholiast` scheme — that flow uses the Web client. An Android client is only
 required for the *native* Google ID-token flow. If one is ever created it needs package name
-`io.scholiast.app` (read it from `mobile/app.json`) and the SHA-1 from
+`io.scholiast.seminar` (always read it from `mobile/app.json`) and the SHA-1 from
 `eas credentials`, since EAS holds the signing keystore.
 
 **Why not an agent:** Google Cloud account ownership.

@@ -11,7 +11,8 @@ maps to access. `20-pricing-analysis.md` holds the unit economics behind the num
 - **Entitlement:** `pro` (`PRO_ENTITLEMENT` in `mobile/src/purchases/purchases.ts`). Active ⇒
   the paid tier; absent ⇒ free tier. Tier→allowance mapping is M3's `app/plans.py`
   (`plans.for_user` is already shaped for the per-account lookup M5's entitlements make real).
-- **Products (H9, Kamil):** monthly and annual subscriptions. Pricing decided 2026-08:
+- **Products (H9 — an agent can author these once the merchant profile exists):** monthly and
+  annual subscriptions. Pricing decided 2026-08:
   **$10 Basic / $25 Pro monthly + annuals** — final product IDs and price points are authored
   in Play Console and mirrored in RevenueCat, never hardcoded in the app.
 - **Paywall = the current Offering.** The paywall screen (`mobile/src/app/paywall.tsx`)
@@ -64,10 +65,13 @@ maps to access. `20-pricing-analysis.md` holds the unit economics behind the num
 ## What remains (in order)
 
 1. **H8 remainder (Kamil):** Play payments profile — agreements, tax and banking — required
-   before any subscription product can be created. The app itself was created 2026-08-14
+   before any subscription product can be created. The app itself was created 2026-08-18
+   (`Seminar: Research Reader`, `io.scholiast.seminar`; the 2026-08-14 draft was deleted — it
+   had been bound to a package matching neither the codebase nor any domain Kamil owns)
    (Free — correct and irreversible-by-design for a subscription app; the download is free,
    revenue is in-app).
-2. **H9 (Kamil):** author the subscription products + base plans in Play Console, mirror them
+2. **H9 (agent, once H8's merchant profile exists):** author the subscription products + base
+   plans in Play Console, mirror them
    in RevenueCat, define the `pro` entitlement and the current Offering (monthly + annual
    packages).
 3. **H10 (Kamil):** Play service credential; connect RevenueCat to the Play app; swap the

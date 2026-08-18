@@ -39,7 +39,9 @@ closed.
 
 **M2.5 is code-complete and the app is in continuous production-device review.** What gates the
 AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
-there are testers does not bank closed-test time and prematurely freezes the Android package name.
+there are testers does not bank closed-test time. (It does NOT freeze the package name either —
+that belief was refuted on 2026-08-18: Play binds the package permanently when the app is
+CREATED. See H8. The conclusion is unchanged and stronger — an early upload buys nothing.)
 
 **Fifteen reviewed PRs had accumulated unmerged since 2026-08-01** in two independent stacks; both
 landed on 2026-08-05. Discovery: **#310** cooperative Stop, **#311** slice 2, **#324** the
@@ -154,8 +156,10 @@ never saw it; its guarantee survives on the job path.
    counted per tester and therefore effectively starts when the **twelfth** tester is in — not at
    upload.
 
-   So **uploading an AAB with only Kamil on the track banks no clock time whatsoever.** It buys
-   exactly one thing: permanently freezing `io.scholiast.app`. All cost, no benefit, taken early.
+   So **uploading an AAB with only Kamil on the track banks no clock time whatsoever.** It used
+   to be said that it also froze the package name; that is wrong (2026-08-18 — Play binds the
+   package when the app is created, and ours is already bound as `io.scholiast.seminar`). So an
+   early upload buys literally nothing: all cost, no benefit, taken early.
    What actually starts the clock is recruiting the twelve people (H16) — and they cannot sensibly
    be invited to something that has not passed its own author's sign-off.
 
