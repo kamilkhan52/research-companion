@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Scholiast",
+    "name": "Seminar",
     "slug": "research-companion",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,7 +16,7 @@
       }
     },
     "android": {
-      "package": "io.scholiast.app",
+      "package": "io.scholiast.seminar",
       "permissions": [
         "POST_NOTIFICATIONS"
       ],

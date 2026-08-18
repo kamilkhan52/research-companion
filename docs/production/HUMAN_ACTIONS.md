@@ -22,17 +22,20 @@ done or a later milestone. Read this before the H-numbered sections.
    is waiting on him, and merging never closes one. Testers are gated on this, and correctly so.
 2. **H13 — Data safety answers** in Play Console. `02-security-and-privacy.md` holds the
    code-derived inventory the answers must match, and the published policy must match both.
-2b. **Play Console verification** (uploaded 2026-08-13, "a couple of days"). Everything in M4 after
-   it is his too, in order: create the app (H8) → define the products at the agreed $10 Basic /
-   $25 Pro plus annuals (H9) → the RevenueCat Play service credential and `goog_` key (H10) → a
+3. **The Play payments/merchant profile — the ONE thing now blocking M4** (H8). Verification has
+   cleared and the app exists (`Seminar: Research Reader`, `io.scholiast.seminar`), but no
+   subscription product can be created until a Google Payments merchant account is set up, and
+   that needs legal identity, tax details and a bank account, so it is his alone. Everything
+   after it is mechanical and an agent can do it: author the products at the agreed $10 Basic /
+   $25 Pro plus annuals (H9), then the service credential and `goog_` key (H10), then a
    dev-client rebuild so the native billing module is actually in the binary. The client half is
    already merged and inert until then.
-3. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
+4. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
    route for him: he is in `RC_OPERATOR_USERS`, and it takes effect with no machine restart and so
    cannot kill an in-flight job. `FIRECRAWL_API_KEY` as a Fly secret also works but restarts the
    machine. **Parallel was removed entirely** (PR #290) — its account was out of credit, and its
    key being present was measurably worse than no key, because the keyless anonymous tier works.
-4. **Web search is now Brave → Firecrawl → keyless DuckDuckGo, and METERED (2026-08-12).**
+5. **Web search is now Brave → Firecrawl → keyless DuckDuckGo, and METERED (2026-08-12).**
    Every provider call records a pinned per-call cost into the ledger and the turn's spend
    reservation — this closed §8.4 of the pricing analysis, M3's last unmetered seam. Brave was
    added as the primary because its flat $5/1k-request pricing is the most honestly meterable
@@ -451,7 +454,7 @@ because the sign-in never completes, no protected request is ever made, and so n
    `auth: rejected non-allowlisted user id=<uuid>`, added precisely so this needs no dashboard.
    (Supabase dashboard → Authentication → Users also has it.) Set both `RC_ALLOWED_USERS` and
    `RC_OPERATOR_USERS` to that id.
-5. **Google OAuth is separate work (H5) and does not carry across projects.** The staging project
+6. **Google OAuth is separate work (H5) and does not carry across projects.** The staging project
    needs its own provider configuration, and the Google Cloud Web client needs
    `https://iqsiabkdbczvgyccswcy.supabase.co/auth/v1/callback` as an authorized redirect URI plus
    the staging origin as an authorized JavaScript origin. Until then, magic link is the way in.
@@ -663,15 +666,28 @@ Play Console app exists and its product IDs are authored, and no purchase can be
 build is on a track. The server-side half — per-account plans — does not depend on any of that and
 shipped first.
 
-### H8 — Play Console: create the app, agreements, tax and banking · 🟡 `app created 2026-08-14; payments profile outstanding`
-**The app now exists in Play Console** (Kamil, 2026-08-14), created as **Free — which is
-correct and needs no second-guessing**: "Free" governs only the up-front download price, and
-this product monetizes through in-app subscriptions, which free apps sell. The choice is
-one-way (a free app can never become paid; paid→free can), but a subscription app never wants
-"Paid", so nothing is lost. Verified against Play's own pricing help page 2026-08-14.
+### H8 — Play Console: create the app, agreements, tax and banking · 🟡 `app created 2026-08-18 as Seminar; payments profile outstanding`
+**The app exists in Play Console as `Seminar: Research Reader`, package
+`io.scholiast.seminar`** (created 2026-08-18). It is **Free**, which is correct and needs no
+second-guessing: "Free" governs only the up-front download price, and this product monetizes
+through in-app subscriptions, which free apps sell. The choice is one-way (a free app can never
+become paid; paid→free can), but a subscription app never wants "Paid", so nothing is lost.
 
-The package name freezes on first AAB **upload**, not on app creation — still read it off
-`mobile/app.json` when that day comes.
+**Naming, settled 2026-08-18 (Kamil):** the APP is **Seminar** (store name "Seminar: Research
+Reader"); the COMPANY stays **Scholiast**. The package encodes exactly that — `io.scholiast`
+(the company's domain, reverse-DNS) + `.seminar` (this app), leaving room for a second Scholiast
+app later.
+
+**Correction to the note this replaces:** the package name does NOT freeze on first AAB upload.
+The 2026 Create-app form asks for it directly and binds it at creation, permanently — it cannot
+be changed afterwards and cannot be reused even if the app is deleted. The first attempt
+(2026-08-14) was created as `com.ai.scholiast`, which matched neither the codebase nor any
+domain Kamil owns; that draft was deleted 2026-08-18 and recreated correctly. `com.ai.scholiast`
+remains registered under Android developer verification as a harmless orphan (deleting the app
+does not withdraw the package registration).
+
+**Android developer verification is DONE** — identity verified against Kamil's legal name and
+address, and every package registered.
 
 **What remains of H8:** the **payments/merchant profile — agreements, tax and banking** —
 required before any subscription product can be created (H9 is blocked on it). Play Console →
@@ -681,10 +697,17 @@ Monetize with Play → Products will prompt for merchant setup.
 connected (the client foundation shipped with M4's first PR; see
 `03-monetization-and-entitlements.md` for the remaining order).
 
-### H9 — Author store product IDs and prices · `todo`
+### H9 — Author store product IDs and prices · `todo`, blocked on H8's merchant profile
 Create the monthly and annual subscription products in Play Console and mirror them in RevenueCat.
-**Why not an agent:** pricing is a business decision with financial consequence.
-**Report back:** product IDs, prices, and any trial or intro-offer terms.
+**The pricing decision is already made** (Kamil, 2026-08-14): **$10 Basic, $25 Pro, both with
+annual options**, credits as the headline with project/paper limits and some Map/Discover
+features gated — recorded in `03-monetization-and-entitlements.md`. So this is authoring, not
+deciding, and **an agent can do it once the merchant profile exists**: Play Console →
+Monetize → Subscriptions is a plain form, and creating a product is neither a legal agreement
+nor a financial credential. What an agent must NOT do is the merchant setup itself (H8).
+Confirmed blocked 2026-08-18: the Subscriptions page refuses outright with "You need to set up
+a Google Payments merchant account to access this page."
+**Report back:** "payments profile active" — that one sentence unblocks the rest.
 
 ### H10 — Play service account credential · `todo`
 Generate the Google service account for EAS Submit and grant it the minimum Play Console
