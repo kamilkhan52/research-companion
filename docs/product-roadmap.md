@@ -94,7 +94,7 @@ not competing sources of current truth.
 | U.23 | Audio-loading card: eq bars, warm copy, real progress (Figma 64:157) | [#106](https://github.com/kamilkhan52/research-companion/pull/106) | Complete |
 | U.24 | Project forking — v1 design (`docs/project-forking-design.md`) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Design ready — 3 open questions for Kamil; implementation after sign-off |
 | U.25 | Marketplace/sharing vision recorded (design doc §Later; not scheduled) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Recorded |
-| U.26 | Loading skeleton screens for initial, empty-cache fetches | — | Implemented — Android visual QA passed; device verification remains |
+| U.26 | Loading skeleton screens for initial, empty-cache fetches | [#416](https://github.com/kamilkhan52/research-companion/pull/416) | Implemented — Android visual QA passed; device verification remains |
 
 ### U.26 — Loading skeleton screens
 
