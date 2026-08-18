@@ -1,4 +1,14 @@
-import { discussionChromeLayout } from '@/components/chat/discussionLayout';
+import {
+  discussionChromeLayout,
+  discussionComposerPadding,
+} from '@/components/chat/discussionLayout';
+
+test('the floating composer exposes transcript at its sides and beneath the pill', () => {
+  expect(discussionComposerPadding(24)).toEqual({
+    paddingHorizontal: 36,
+    paddingBottom: 40,
+  });
+});
 
 test('overlay chrome clears both ends without double-counting the header for the keyboard', () => {
   expect(discussionChromeLayout({

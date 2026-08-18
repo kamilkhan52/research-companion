@@ -72,7 +72,10 @@ import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
-import { discussionChromeLayout } from '@/components/chat/discussionLayout';
+import {
+  discussionChromeLayout,
+  discussionComposerPadding,
+} from '@/components/chat/discussionLayout';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { showToast } from '@/ui/Toast';
@@ -2222,7 +2225,7 @@ function DiscussionThread({
           />
           <InputToolbar
             {...props}
-            containerStyle={[styles.toolbar, { paddingBottom: insets.bottom + space.sm }]}
+            containerStyle={[styles.toolbar, discussionComposerPadding(insets.bottom)]}
             primaryStyle={styles.composerCard}
             renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
             renderSend={renderSend}
@@ -3612,9 +3615,7 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: 'transparent',
-    paddingHorizontal: tight ? space.sm : space.md,
     paddingTop: space.xs,
-    paddingBottom: space.sm,
   },
   composerCard: {
     flexDirection: 'row',

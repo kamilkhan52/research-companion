@@ -11,6 +11,18 @@ export interface DiscussionChromeLayoutInput {
  * transparent through the part not covered by list padding, then ramps behind the composer. */
 export const DISCUSSION_BOTTOM_FADE_EXTENSION = 72;
 
+/** ChatGPT-style breathing room around the floating composer. The side inset deliberately
+ * exposes the transcript on both sides; the bottom lift leaves a detectable strip beneath it. */
+export const DISCUSSION_COMPOSER_SIDE_INSET = 36;
+export const DISCUSSION_COMPOSER_BOTTOM_LIFT = 16;
+
+export function discussionComposerPadding(bottomInset: number) {
+  return {
+    paddingHorizontal: DISCUSSION_COMPOSER_SIDE_INSET,
+    paddingBottom: bottomInset + DISCUSSION_COMPOSER_BOTTOM_LIFT,
+  };
+}
+
 /**
  * Geometry shared by the inverted transcript, keyboard avoidance, and scroll-to-latest button.
  *

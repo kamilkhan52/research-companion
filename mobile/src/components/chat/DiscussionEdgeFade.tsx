@@ -3,6 +3,11 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 import { useTheme } from '@/theme/ThemeProvider';
 
+// ChatGPT keeps the transcript faintly perceptible beneath its bottom chrome instead of
+// resolving the scrim to a fully opaque wall. The top edge remains opaque for status contrast.
+export const DISCUSSION_BOTTOM_FADE_SOFT_OPACITY = 0.72;
+export const DISCUSSION_BOTTOM_FADE_EDGE_OPACITY = 0.9;
+
 /**
  * A non-interactive scroll-edge scrim for the immersive discussion canvas.
  *
@@ -47,9 +52,14 @@ export function DiscussionEdgeFade({
           key="soft"
           offset={bottomMidpoint}
           stopColor={theme.bg}
-          stopOpacity={0.9}
+          stopOpacity={DISCUSSION_BOTTOM_FADE_SOFT_OPACITY}
         />,
-        <Stop key="opaque" offset="100%" stopColor={theme.bg} stopOpacity={1} />,
+        <Stop
+          key="edge"
+          offset="100%"
+          stopColor={theme.bg}
+          stopOpacity={DISCUSSION_BOTTOM_FADE_EDGE_OPACITY}
+        />,
       ];
 
   return (

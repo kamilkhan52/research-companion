@@ -1,6 +1,11 @@
 import { renderAsync, screen } from '@testing-library/react-native';
+import { Stop } from 'react-native-svg';
 
-import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import {
+  DiscussionEdgeFade,
+  DISCUSSION_BOTTOM_FADE_EDGE_OPACITY,
+  DISCUSSION_BOTTOM_FADE_SOFT_OPACITY,
+} from '@/components/chat/DiscussionEdgeFade';
 
 test('renders non-interactive edge scrims at both transcript boundaries', async () => {
   await renderAsync(
@@ -31,4 +36,12 @@ test('renders non-interactive edge scrims at both transcript boundaries', async 
     accessibilityElementsHidden: true,
     importantForAccessibility: 'no-hide-descendants',
   });
+
+  const stops = screen.UNSAFE_getAllByType(Stop);
+  expect(stops.slice(-4).map((stop) => stop.props.stopOpacity)).toEqual([
+    0,
+    0,
+    DISCUSSION_BOTTOM_FADE_SOFT_OPACITY,
+    DISCUSSION_BOTTOM_FADE_EDGE_OPACITY,
+  ]);
 });
