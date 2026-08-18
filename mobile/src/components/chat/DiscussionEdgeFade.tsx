@@ -13,8 +13,8 @@ export const DISCUSSION_BOTTOM_FADE_EDGE_OPACITY = 0.9;
  *
  * This is deliberately a real gradient rather than a translucent toolbar: the transcript
  * remains the full-screen base layer and visibly travels beneath the floating header/composer.
- * The fully opaque end protects system/chrome contrast while the transparent end avoids a hard
- * boundary across long-form text.
+ * The high-opacity end protects system/chrome contrast while still leaving the transcript faintly
+ * perceptible; the transparent end avoids a hard boundary across long-form text.
  */
 export function DiscussionEdgeFade({
   edge,

@@ -65,10 +65,11 @@ treatment rather than falling back to an opaque full-width footer.
 - Top scrim: opaque `bg` behind system/header chrome, easing to transparent below it.
 - Transcript: 16px comfortable or 12px tight horizontal inset; assistant surfaces transparent;
   reader bubble maximum width 86%.
-- Bottom scrim: transparent above the message actions, easing to opaque `bg` behind the composer
-  and navigation inset.
-- Composer: elevated pill, 1px `line2`, 24px radius, protected safe-area bottom padding, Mint send
-  action, and existing shadow behavior (no Android elevation rectangle).
+- Bottom scrim: transparent above the message actions, easing to a high-opacity `bg` behind the
+  composer and navigation inset so the transcript remains faintly perceptible beneath the chrome.
+- Composer: elevated pill, 1px `line2`, 24px radius, 36px side reveals, and a 16px lift above the
+  protected safe-area bottom padding; Mint send action and existing shadow behavior (no Android
+  elevation rectangle).
 - Scroll control: circular elevated control above the measured composer, never underneath it.
 
 ## Mockups
