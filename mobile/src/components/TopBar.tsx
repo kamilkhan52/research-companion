@@ -14,7 +14,7 @@ import {
   useThemedStyles,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { fonts, space, type ThemePalette } from '@/theme/tokens';
+import { floatShadow, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function TabHeader({
   title,
@@ -67,29 +67,44 @@ export function TopBar({
   onBack,
   right,
   subtitle,
+  floating = false,
 }: {
   title: string;
   onBack?: () => void;
   right?: ReactNode;
   subtitle?: string;
+  /** Discussion-only content-under-chrome treatment. The caller owns absolute positioning. */
+  floating?: boolean;
 }) {
   const styles = useThemedStyles(makeStyles);
   return (
-    <View style={styles.bar}>
+    <View
+      testID={floating ? 'top-bar-floating' : 'top-bar-standard'}
+      style={[styles.bar, floating && styles.barFloating]}
+      pointerEvents="box-none">
       <View style={styles.side}>
         {onBack ? (
           <UIIconButton name="chevron-left" size={20} onPress={onBack} accessibilityLabel="Back" />
         ) : null}
       </View>
-      <View style={styles.center}>
+      <View
+        testID="top-bar-center"
+        style={[styles.center, floating && styles.centerFloating]}>
         {/* Long paper titles auto-scroll instead of clipping (U.21); short ones stay
             static and centered. The stretch wrapper gives the marquee the full row width
             (styles.center centers its children, which would shrink-wrap it). */}
         <View style={{ alignSelf: 'stretch' }}>
-          <Marquee text={title} align="center" textStyle={styles.titleText} />
+          <Marquee
+            text={title}
+            align="center"
+            textStyle={[styles.titleText, floating && styles.titleTextFloating]}
+          />
         </View>
         {subtitle ? (
-          <Text variant="caption" numberOfLines={1} style={{ marginTop: 1 }}>
+          <Text
+            variant="caption"
+            numberOfLines={1}
+            style={[{ marginTop: 1 }, floating && styles.subtitleFloating]}>
             {subtitle}
           </Text>
         ) : null}
@@ -130,14 +145,38 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderBottomColor: t.line,
     gap: space.sm,
   },
+  barFloating: {
+    borderBottomWidth: 0,
+    paddingTop: space.sm,
+    paddingBottom: space.xs,
+  },
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, minWidth: 0, alignItems: 'center' },
+  centerFloating: {
+    minHeight: 50,
+    justifyContent: 'center',
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.line2,
+    backgroundColor: t.elevatedGlass,
+    ...floatShadow,
+  },
   titleText: {
     fontFamily: fonts.bodySemiBold,
     fontSize: tight ? 14.5 : 15.5,
     lineHeight: tight ? 20 : 21,
     color: t.mint,
+  },
+  titleTextFloating: {
+    color: t.text,
+    fontSize: tight ? 14 : 15,
+    lineHeight: tight ? 19 : 20,
+  },
+  subtitleFloating: {
+    color: t.muted,
   },
   });
 };

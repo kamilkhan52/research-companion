@@ -71,6 +71,8 @@ import { ReportContentSheet, reportReference } from '@/components/ReportContentS
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
+import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import { discussionChromeLayout } from '@/components/chat/discussionLayout';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { showToast } from '@/ui/Toast';
@@ -218,6 +220,8 @@ export async function applyPaperUpdateToActiveSession(
 export default function DiscussionScreen() {
   const router = useRouter();
   const qc = useQueryClient();
+  const insets = useSafeAreaInsets();
+  const styles = useThemedStyles(makeStyles);
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
   const { slug, source, project, thread, autoStart } = useLocalSearchParams<{
@@ -378,6 +382,10 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
+  // Once a real transcript exists, the discussion owns the entire viewport and the header
+  // becomes independent overlay chrome. Pre-discussion/setup/loading states keep the ordinary
+  // in-flow top bar because their forms are not scroll-under reading surfaces.
+  const immersiveDiscussion = !!pid && hasSession && !session.isLoading;
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
@@ -420,11 +428,10 @@ export default function DiscussionScreen() {
       Alert.alert('Could not switch mode', (e as Error).message ?? 'Request failed.');
     }
   }, [activeThread, pid, qc, readingMode, slug]);
-  // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
-  // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
-  // sits above it in this app's layout, so without correcting for that height the composer
-  // stays partly under the keyboard. Measure the real header height and hand back the
-  // corrected total (device inset + header) as the override.
+  // The measured height does two jobs. In ordinary setup states it corrects the chat library's
+  // keyboard offset for the in-flow bar. In an immersive discussion it becomes the list's visual
+  // top inset, so the oldest content can rest below the floating chrome while still scrolling
+  // underneath it.
   const [headerHeight, setHeaderHeight] = useState(0);
 
   // Auto-analysis can fetch and open the first discussion while this screen is elsewhere.
@@ -577,9 +584,22 @@ export default function DiscussionScreen() {
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
     <ExternalRefSheet pid={pid} refItem={externalRef} onClose={() => setExternalRef(null)} />
-    <Screen edges={['top']}>
-      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+    <Screen edges={immersiveDiscussion ? [] : ['top']}>
+      {immersiveDiscussion ? (
+        <DiscussionEdgeFade
+          edge="top"
+          height={headerHeight + 48}
+          style={styles.discussionTopFade}
+        />
+      ) : null}
+      <View
+        onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
+        pointerEvents="box-none"
+        style={immersiveDiscussion
+          ? [styles.discussionHeaderOverlay, { paddingTop: insets.top }]
+          : undefined}>
       <TopBar
+        floating={immersiveDiscussion}
         title={session.data?.paper.title ?? 'Discussion'}
         // Year first: it situates the paper on the timeline before the workflow state (U.17).
         subtitle={
@@ -747,6 +767,7 @@ export default function DiscussionScreen() {
             qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
+          headerOverlays={immersiveDiscussion}
         />
       )}
     </Screen>
@@ -1418,6 +1439,7 @@ function DiscussionThread({
   readingMode,
   onContinue,
   headerHeight,
+  headerOverlays,
   onMutated,
   reviewReadyNonce,
 }: {
@@ -1438,6 +1460,8 @@ function DiscussionThread({
   readingMode: ReadingMode;
   onContinue: () => void;
   headerHeight: number;
+  /** True when the transcript is the base layer and the header floats above it. */
+  headerOverlays: boolean;
   onMutated: () => void;
   /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
   reviewReadyNonce: number;
@@ -1503,11 +1527,17 @@ function DiscussionThread({
   }, [threadId]);
 
   const disabled = stream.streaming;
-  // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
-  // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
-  // the keyboard without this correction.
+  // An in-flow header consumes space above the library and belongs in its keyboard offset.
+  // The immersive header is an overlay, so counting it would shrink the transcript twice.
   const insets = useSafeAreaInsets();
-  const keyboardVerticalOffset = insets.top + headerHeight;
+  const chromeLayout = discussionChromeLayout({
+    topInset: insets.top,
+    headerHeight,
+    composerHeight,
+    headerOverlays,
+    listGap: space.sm,
+    headerGap: space.lg,
+  });
   // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
   // useRef nullability; the cast bridges that without changing runtime behavior.
   const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
@@ -2110,28 +2140,42 @@ function DiscussionThread({
       // Committed is a resting point, not a dead end (polish plan H.2): the quiet inline
       // affordance reopens the composer; the same action lives in the kebab menu.
       return (
-        <View style={styles.committedBar}>
-          <Text variant="caption" style={{ textAlign: 'center' }}>
-            Notes committed to this project's record.
-          </Text>
-          <Button
-            title="Continue discussion"
-            variant="ghost"
-            onPress={onContinue}
-            style={{ alignSelf: 'center', marginTop: space.xs }}
-          />
+        <View
+          style={styles.composerOverlay}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
+          <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+          <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
+            <View style={styles.committedBar}>
+              <Text variant="caption" style={{ textAlign: 'center' }}>
+                Notes committed to this project's record.
+              </Text>
+              <Button
+                title="Continue discussion"
+                variant="ghost"
+                onPress={onContinue}
+                style={{ alignSelf: 'center', marginTop: space.xs }}
+              />
+            </View>
+          </View>
         </View>
       );
     }
     if (state === 'notes_drafted') {
       return (
-        <View style={styles.committedBar}>
-          <Button
-            title="Review notes"
-            onPress={() => setReviewOpen(true)}
-            disabled={stream.streaming}
-            style={{ alignSelf: 'center' }}
-          />
+        <View
+          style={styles.composerOverlay}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
+          <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+          <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
+            <View style={styles.committedBar}>
+              <Button
+                title="Review notes"
+                onPress={() => setReviewOpen(true)}
+                disabled={stream.streaming}
+                style={{ alignSelf: 'center' }}
+              />
+            </View>
+          </View>
         </View>
       );
     }
@@ -2143,33 +2187,36 @@ function DiscussionThread({
       <View
         style={styles.composerOverlay}
         onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-        <SentenceCommentComposer
-          active={annotatingAssistant !== null}
-          comments={sentenceComments}
-          selected={selectedSentence}
-          draft={sentenceCommentText}
-          onChangeDraft={setSentenceCommentText}
-          onSave={saveSentenceComment}
-          onCancelSelection={() => {
-            setSelectedSentence(null);
-            setSentenceCommentText('');
-          }}
-          onOpen={openQueuedComment}
-          onRemove={removeQueuedComment}
-          onDone={() => {
-            setAnnotatingAssistant(null);
-            setSelectedSentence(null);
-            setSentenceCommentText('');
-          }}
-        />
-        <InputToolbar
-          {...props}
-          containerStyle={styles.toolbar}
-          primaryStyle={styles.composerCard}
-          renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
-          renderSend={renderSend}
-          renderAccessory={renderAccessory}
-        />
+        <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+        <View style={styles.composerForeground}>
+          <SentenceCommentComposer
+            active={annotatingAssistant !== null}
+            comments={sentenceComments}
+            selected={selectedSentence}
+            draft={sentenceCommentText}
+            onChangeDraft={setSentenceCommentText}
+            onSave={saveSentenceComment}
+            onCancelSelection={() => {
+              setSelectedSentence(null);
+              setSentenceCommentText('');
+            }}
+            onOpen={openQueuedComment}
+            onRemove={removeQueuedComment}
+            onDone={() => {
+              setAnnotatingAssistant(null);
+              setSelectedSentence(null);
+              setSentenceCommentText('');
+            }}
+          />
+          <InputToolbar
+            {...props}
+            containerStyle={[styles.toolbar, { paddingBottom: insets.bottom + space.sm }]}
+            primaryStyle={styles.composerCard}
+            renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
+            renderSend={renderSend}
+            renderAccessory={renderAccessory}
+          />
+        </View>
       </View>
     );
   }, [
@@ -2186,6 +2233,8 @@ function DiscussionThread({
     state,
     stream.streaming,
     styles,
+    composerHeight,
+    insets.bottom,
   ]);
 
   // DR-083 interim: retry a turn whose worker vanished — continue_job re-runs the recorded
@@ -2270,7 +2319,7 @@ function DiscussionThread({
       }}
       colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
-      keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
+      keyboardAvoidingViewProps={{ keyboardVerticalOffset: chromeLayout.keyboardVerticalOffset }}
       isScrollToBottomEnabled
       // The library's default is a bare "V" text glyph on a white circle — restyle it into
       // the app's circular icon-button idiom.
@@ -2279,7 +2328,7 @@ function DiscussionThread({
       // The button is positioned absolutely against the list's bottom (library default 30px up).
       // The composer now floats there (R12.6), so lift the button above the measured composer so
       // it isn't hidden behind the pill.
-      scrollToBottomStyle={{ bottom: composerHeight + space.sm }}
+      scrollToBottomStyle={{ bottom: chromeLayout.scrollButtonBottom }}
       isDayAnimationEnabled={false}
       renderDay={() => null}
       renderTime={() => null}
@@ -2295,7 +2344,7 @@ function DiscussionThread({
         // The composer floats over the list, so pad the inverted list's visual bottom by the
         // composer's measured height — the newest message scrolls up clear of the pill instead
         // of sitting permanently under it (R12.6). Inverted list ⇒ paddingTop is visual-bottom.
-        contentContainerStyle: { paddingTop: composerHeight },
+        contentContainerStyle: chromeLayout.listContentPadding,
         // The inverted list has no explicit auto-scroll effect (see the library's own
         // MessagesContainer source) — it relies on staying at scroll offset 0 while the
         // streaming message (index 0) grows. Without this, RN's default FlatList still
@@ -3439,6 +3488,14 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   // ---- thread ----
   messagesContainer: { backgroundColor: t.bg },
+  discussionHeaderOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 30,
+  },
+  discussionTopFade: { zIndex: 20 },
   assistantCard: { backgroundColor: t.surface },
   branchRow: {
     flexDirection: 'row',
@@ -3449,31 +3506,21 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   finishSteps: { marginBottom: space.md, marginTop: space.xs },
   assistantBody: {
-    paddingHorizontal: tight ? space.sm : space.md,
-    paddingVertical: tight ? 6 : space.sm,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingTop: tight ? space.sm : 10,
+    paddingBottom: tight ? space.md : space.lg,
   },
-  // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
-  // those read as "floating chat bubble" cues that don't make sense once the tinted card
-  // reaches both screen edges. A top/bottom border is enough to separate turns.
+  // Assistant turns are long-form reading content on the transcript's base layer. They do not
+  // get a card, border, or bubble silhouette; whitespace and the quiet action row separate them.
   analystBubble: {
-    backgroundColor: t.surface,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: t.line,
-    // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
-    // full-width band shows rounded notches against both screen edges.
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     ...SQUARE_CORNERS,
   },
-  // The paper summary is the one turn that is not a reply, so it reads as the document the
-  // discussion is about: a raised fill against the ordinary `surface` bands, and a mint rule
-  // along the top. Only the TOP border is accented — a left/right accent would show as a
-  // rounded notch against the screen edges, which is the same reason `analystBubble` is square.
+  // The opening summary stays identifiable through its semantic label, not a competing panel.
   summaryBubble: {
-    backgroundColor: t.elevated,
-    borderTopWidth: 2,
-    borderTopColor: t.mint,
-    borderBottomWidth: 1,
-    borderBottomColor: t.line,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     ...SQUARE_CORNERS,
   },
   summaryHeader: {
@@ -3545,7 +3592,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     right: 0,
     bottom: 0,
     backgroundColor: 'transparent',
+    zIndex: 10,
   },
+  composerForeground: { zIndex: 1 },
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: 'transparent',
@@ -3587,11 +3636,13 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     paddingVertical: 6,
   },
   committedBar: {
-    borderTopWidth: 1,
-    borderTopColor: t.line,
+    marginHorizontal: tight ? space.sm : space.md,
     padding: tight ? space.sm : space.md,
-    paddingBottom: space.lg,
-    backgroundColor: t.bg,
+    borderWidth: 1,
+    borderColor: t.line2,
+    borderRadius: radius.lg,
+    backgroundColor: t.elevated,
+    ...floatShadow,
   },
   accessoryRow: {
     flexDirection: 'row',
