@@ -99,7 +99,9 @@ import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
+import { PaperSessionLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { TopBar } from '@/components/TopBar';
+import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
@@ -301,6 +303,10 @@ export default function DiscussionScreen() {
     [pid, slug],
   );
   const session = useSession(pid, slug ?? null, activeThread);
+  const showSessionSkeleton = useDelayedInitialSkeleton(
+    session.isLoading,
+    session.data !== undefined,
+  );
   // A remembered thread can go stale (paper moved, project state rebuilt): fall back to main
   // instead of wedging the screen on a 404, and forget the stale id.
   useEffect(() => {
@@ -703,7 +709,7 @@ export default function DiscussionScreen() {
       {!pid ? (
         <Centered text="No active project." />
       ) : session.isLoading ? (
-        <Centered loading />
+        showSessionSkeleton ? <PaperSessionLoadingSkeleton /> : null
       ) : !hasSession ? (
         <ComposeFirst
           pid={pid}
@@ -2433,6 +2439,10 @@ export function ComposeFirst({
   const qc = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const opening = useOpeningDraft(pid, slug);
+  const showOpeningSkeleton = useDelayedInitialSkeleton(
+    opening.isLoading,
+    opening.data !== undefined,
+  );
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
     opening.data?.prompt ?? '',
@@ -2756,7 +2766,11 @@ export function ComposeFirst({
     }
   }
 
-  if (opening.isLoading) return <Centered loading />;
+  if (opening.isLoading) {
+    return showOpeningSkeleton
+      ? <PaperSessionLoadingSkeleton label="Loading paper setup" />
+      : null;
+  }
 
   if (stream.streaming) {
     // The opening turn streams without the composer, so Stop needs its own affordance here
@@ -3346,12 +3360,12 @@ function StreamingTurnBody({
   );
 }
 
-function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+function Centered({ text }: { text?: string }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
-      {loading ? <ActivityIndicator color={t.mint} /> : <Text variant="body" color={t.muted}>{text}</Text>}
+      <Text variant="body" color={t.muted}>{text}</Text>
     </View>
   );
 }

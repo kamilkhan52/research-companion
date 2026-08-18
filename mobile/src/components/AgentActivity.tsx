@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AccessibilityInfo, Animated, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo } from 'react';
+import { Animated, StyleSheet, View } from 'react-native';
 
+import { useReduceMotion } from '@/hooks/useReduceMotion';
 import { Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
@@ -19,13 +20,7 @@ export function AgentActivity({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const dots = useMemo(() => [new Animated.Value(0.35), new Animated.Value(0.35), new Animated.Value(0.35)], []);
-  const [reduceMotion, setReduceMotion] = useState(false);
-
-  useEffect(() => {
-    void AccessibilityInfo.isReduceMotionEnabled().then(setReduceMotion);
-    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
-    return () => subscription.remove();
-  }, []);
+  const reduceMotion = useReduceMotion();
 
   useEffect(() => {
     if (reduceMotion) {

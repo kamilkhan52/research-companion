@@ -26,6 +26,8 @@ export interface ThemePalette {
   elevated: string;
   line: string;
   line2: string;
+  /** Themed fill for loading geometry; animated opacity is applied by SkeletonGroup. */
+  skeleton: string;
   text: string;
   muted: string;
   mint: string;
@@ -64,6 +66,7 @@ const dim: ThemePalette = {
   elevated: '#1B202B',
   line: 'rgba(153, 163, 183, 0.14)',
   line2: 'rgba(153, 163, 183, 0.28)',
+  skeleton: 'rgba(153, 163, 183, 0.22)',
 
   text: '#F3F0E8',
   muted: '#99A3B7',
@@ -94,6 +97,7 @@ const black: ThemePalette = {
   elevated: '#151923',
   line: 'rgba(153, 163, 183, 0.12)',
   line2: 'rgba(153, 163, 183, 0.26)',
+  skeleton: 'rgba(153, 163, 183, 0.20)',
 
   text: '#F3F0E8',
   muted: '#99A3B7',
@@ -124,6 +128,7 @@ const light: ThemePalette = {
   elevated: '#FFFFFF',
   line: 'rgba(64, 74, 94, 0.14)',
   line2: 'rgba(64, 74, 94, 0.28)',
+  skeleton: 'rgba(64, 74, 94, 0.20)',
 
   text: '#1C2129',
   muted: '#5D6879',

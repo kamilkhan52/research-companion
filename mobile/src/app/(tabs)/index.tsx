@@ -6,7 +6,6 @@ import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Linking,
   Pressable,
@@ -36,6 +35,7 @@ import {
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
+import { LibraryLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
 import { MoveToProjectSheet } from '@/components/MoveToProjectSheet';
 import { PaperCover } from '@/components/PaperCover';
@@ -60,6 +60,7 @@ import {
   usePaperSortPreference,
 } from '@/hooks/usePaperSortPreference';
 import { useContinueCardDismissal } from '@/hooks/useContinueCardDismissal';
+import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import {
   Button,
   Card,
@@ -159,6 +160,14 @@ export default function LibraryScreen() {
   }, [baseUrl]);
 
   const stateQuery = useProjectState(activePid);
+  const showProjectsSkeleton = useDelayedInitialSkeleton(
+    projectsQuery.isLoading,
+    projectsQuery.data !== undefined,
+  );
+  const showPapersSkeleton = useDelayedInitialSkeleton(
+    !!activePid && stateQuery.isLoading,
+    stateQuery.data !== undefined,
+  );
   const activeProject = projects?.find((p) => p.id === activePid);
   const removePaper = useRemovePaper(activePid);
   const removePapers = useRemovePapers(activePid);
@@ -457,7 +466,7 @@ export default function LibraryScreen() {
             action={<Button title="Retry" onPress={() => projectsQuery.refetch()} />}
           />
         ) : !activePid && projectsQuery.isLoading ? (
-          <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
+          showProjectsSkeleton ? <LibraryLoadingSkeleton /> : null
         ) : !activePid ? (
           <Empty
             heading={projects && projects.length === 0
@@ -475,7 +484,7 @@ export default function LibraryScreen() {
             }
           />
         ) : stateQuery.isLoading ? (
-          <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
+          showPapersSkeleton ? <LibraryLoadingSkeleton /> : null
         ) : stateQuery.isError ? (
           <Empty
             heading="Couldn't load papers"

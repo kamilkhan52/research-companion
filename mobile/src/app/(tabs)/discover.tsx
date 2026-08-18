@@ -31,10 +31,12 @@ import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { keys, useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
+import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
+import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { discoverProgress } from '@/lib/discoverProgress';
 import { fullPaperUrl } from '@/lib/paperLinks';
@@ -52,6 +54,10 @@ export default function DiscoverScreen() {
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
   const discovery = useDiscovery(pid);
+  const showDiscoverySkeleton = useDelayedInitialSkeleton(
+    discovery.isLoading,
+    discovery.data !== undefined,
+  );
   const runState = useDiscoveryRun(pid);
   const goalsDraft = usePersistedDraft(
     pid ? draftKey(pid, 'discover', 'goals') : null,
@@ -190,6 +196,15 @@ export default function DiscoverScreen() {
               </Text>
               <Button title="Dismiss" variant="ghost" onPress={runState.clearError} style={{ marginTop: space.sm }} />
             </Card>
+          ) : null}
+
+          {/* The query only represents saved results. Keep the real search controls and any
+              reattached job progress visible while its empty cache warms up. */}
+          {discovery.isLoading
+          && discovery.data === undefined
+          && !runState.running
+          && showDiscoverySkeleton ? (
+            <DiscoverLoadingSkeleton />
           ) : null}
 
           {result && !runState.running ? (

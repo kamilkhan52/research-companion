@@ -6,7 +6,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo} from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -34,6 +33,8 @@ import {
 import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
+import { SettingsLoadingSkeleton, UsageLoadingSkeleton } from '@/components/LoadingSkeletons';
+import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -72,6 +73,10 @@ export default function SettingsScreen() {
   const [savingUrl, setSavingUrl] = useState(false);
 
   const settings = useSettings();
+  const showSettingsSkeleton = useDelayedInitialSkeleton(
+    settings.isLoading,
+    settings.data !== undefined,
+  );
   const favorites = useFavoriteModels();
   const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
@@ -305,7 +310,7 @@ export default function SettingsScreen() {
               </Text>
             </>
           ) : settings.isLoading ? (
-            <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
+            showSettingsSkeleton ? <SettingsLoadingSkeleton /> : null
           ) : settings.isError ? (
             <Text variant="caption" color={t.danger} style={{ textAlign: 'center', marginTop: space.lg }}>
               Couldn't reach the server. Check the URL and that the backend is running.
@@ -615,6 +620,10 @@ function UsageSection() {
   const t = useTheme();
   const { activePid } = useActiveProject();
   const usage = useUsage(activePid);
+  const showUsageSkeleton = useDelayedInitialSkeleton(
+    usage.isLoading,
+    usage.data !== undefined,
+  );
 
   if (!activePid) {
     return (
@@ -626,7 +635,7 @@ function UsageSection() {
   return (
     <Section title="Usage (this project)">
       {usage.isLoading ? (
-        <ActivityIndicator color={t.mint} />
+        showUsageSkeleton ? <UsageLoadingSkeleton /> : null
       ) : usage.isError || !usage.data ? (
         <Text variant="caption" color={t.muted}>Usage unavailable.</Text>
       ) : (

@@ -10,7 +10,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Linking,
   Platform,
@@ -26,10 +25,12 @@ import { keys, useNotes, useProjectState } from '@/api/queries';
 import type { StreamItem } from '@/api/types';
 import { Markdown } from '@/components/Markdown';
 import { AgentActivity } from '@/components/AgentActivity';
+import { NotesLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { draftedWordCount, notesAgentPhase, NotesDiff } from '@/components/NotesDiff';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
+import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl, scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
@@ -59,6 +60,10 @@ export default function NotesScreen() {
   const { activePid: pid } = useActiveProject();
 
   const notes = useNotes(pid, target ?? null);
+  const showNotesSkeleton = useDelayedInitialSkeleton(
+    notes.isLoading,
+    notes.data !== undefined,
+  );
   const projectState = useProjectState(pid);
   const agent = useNotesAgent(pid, target ?? null);
   // `string` remains in the read type to migrate drafts written by earlier app versions.
@@ -295,7 +300,7 @@ export default function NotesScreen() {
       {!pid || !target ? (
         <Centered text="No active project." />
       ) : notes.isLoading ? (
-        <Centered loading />
+        showNotesSkeleton ? <NotesLoadingSkeleton /> : null
       ) : notes.isError ? (
         <Centered text={(notes.error as Error)?.message ?? 'Could not load notes.'} />
       ) : mode === 'edit' ? (
@@ -483,18 +488,14 @@ function ErrorCard({ text, onDismiss }: { text: string; onDismiss: () => void })
   );
 }
 
-function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+function Centered({ text }: { text?: string }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
-      {loading ? (
-        <ActivityIndicator color={t.mint} />
-      ) : (
-        <Text variant="body" color={t.muted} style={{ textAlign: 'center' }}>
-          {text}
-        </Text>
-      )}
+      <Text variant="body" color={t.muted} style={{ textAlign: 'center' }}>
+        {text}
+      </Text>
     </View>
   );
 }
