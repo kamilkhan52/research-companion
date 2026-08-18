@@ -10,12 +10,25 @@ test('renders non-interactive edge scrims at both transcript boundaries', async 
     </>,
   );
 
-  expect(screen.getByTestId(
+  const top = screen.getByTestId(
     'discussion-top-edge-fade',
     { includeHiddenElements: true },
-  ).props.height).toBe(144);
-  expect(screen.getByTestId(
+  );
+  const bottom = screen.getByTestId(
     'discussion-bottom-edge-fade',
     { includeHiddenElements: true },
-  ).props.height).toBe(120);
+  );
+
+  expect(top.props).toMatchObject({
+    height: 144,
+    pointerEvents: 'none',
+    accessibilityElementsHidden: true,
+    importantForAccessibility: 'no-hide-descendants',
+  });
+  expect(bottom.props).toMatchObject({
+    height: 120,
+    pointerEvents: 'none',
+    accessibilityElementsHidden: true,
+    importantForAccessibility: 'no-hide-descendants',
+  });
 });

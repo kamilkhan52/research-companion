@@ -2143,7 +2143,11 @@ function DiscussionThread({
         <View
           style={styles.composerOverlay}
           onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-          <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+          <DiscussionEdgeFade
+            edge="bottom"
+            height={chromeLayout.bottomFadeHeight}
+            transparentInset={chromeLayout.bottomFadeTransparentInset}
+          />
           <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
             <View style={styles.committedBar}>
               <Text variant="caption" style={{ textAlign: 'center' }}>
@@ -2165,7 +2169,11 @@ function DiscussionThread({
         <View
           style={styles.composerOverlay}
           onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-          <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+          <DiscussionEdgeFade
+            edge="bottom"
+            height={chromeLayout.bottomFadeHeight}
+            transparentInset={chromeLayout.bottomFadeTransparentInset}
+          />
           <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
             <View style={styles.committedBar}>
               <Button
@@ -2187,7 +2195,11 @@ function DiscussionThread({
       <View
         style={styles.composerOverlay}
         onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-        <DiscussionEdgeFade edge="bottom" height={composerHeight + 72} />
+        <DiscussionEdgeFade
+          edge="bottom"
+          height={chromeLayout.bottomFadeHeight}
+          transparentInset={chromeLayout.bottomFadeTransparentInset}
+        />
         <View style={styles.composerForeground}>
           <SentenceCommentComposer
             active={annotatingAssistant !== null}
@@ -2234,6 +2246,8 @@ function DiscussionThread({
     stream.streaming,
     styles,
     composerHeight,
+    chromeLayout.bottomFadeHeight,
+    chromeLayout.bottomFadeTransparentInset,
     insets.bottom,
   ]);
 

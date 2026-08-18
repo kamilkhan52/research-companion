@@ -9,10 +9,12 @@ test('overlay chrome clears both ends without double-counting the header for the
     listGap: 8,
     headerGap: 24,
   })).toEqual({
-    keyboardVerticalOffset: 34,
+    keyboardVerticalOffset: 0,
     // Inverted list: paddingTop is the visual composer edge; paddingBottom is the visual header.
     listContentPadding: { paddingTop: 92, paddingBottom: 92 },
     scrollButtonBottom: 92,
+    bottomFadeHeight: 156,
+    bottomFadeTransparentInset: 64,
   });
 });
 
@@ -28,5 +30,25 @@ test('an in-flow header remains part of the keyboard offset', () => {
     keyboardVerticalOffset: 102,
     listContentPadding: { paddingTop: 92, paddingBottom: 8 },
     scrollButtonBottom: 92,
+    bottomFadeHeight: 156,
+    bottomFadeTransparentInset: 64,
   });
+});
+
+test('the bottom scrim remains transparent through the newest-item clearance', () => {
+  const layout = discussionChromeLayout({
+    topInset: 34,
+    headerHeight: 68,
+    composerHeight: 84,
+    headerOverlays: true,
+    listGap: 8,
+    headerGap: 24,
+  });
+
+  expect(
+    layout.listContentPadding.paddingTop + layout.bottomFadeTransparentInset,
+  ).toBe(layout.bottomFadeHeight);
+  expect(layout.scrollButtonBottom + layout.bottomFadeTransparentInset).toBe(
+    layout.bottomFadeHeight,
+  );
 });

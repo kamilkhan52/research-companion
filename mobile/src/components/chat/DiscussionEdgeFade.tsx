@@ -14,14 +14,43 @@ import { useTheme } from '@/theme/ThemeProvider';
 export function DiscussionEdgeFade({
   edge,
   height = 112,
+  transparentInset = 0,
   style,
 }: {
   edge: 'top' | 'bottom';
   height?: number;
+  /** Bottom-edge pixels that remain fully transparent before the fade begins. */
+  transparentInset?: number;
   style?: StyleProp<ViewStyle>;
 }) {
   const theme = useTheme();
   const gradientId = `discussion-${edge}-edge-fade`;
+  const transparentOffset = height > 0
+    ? Math.max(0, Math.min(1, transparentInset / height))
+    : 0;
+  const bottomMidpoint = transparentOffset + (1 - transparentOffset) * 0.55;
+  const gradientStops = edge === 'top'
+    ? [
+        <Stop key="opaque" offset="0%" stopColor={theme.bg} stopOpacity={1} />,
+        <Stop key="soft" offset="46%" stopColor={theme.bg} stopOpacity={0.9} />,
+        <Stop key="clear" offset="100%" stopColor={theme.bg} stopOpacity={0} />,
+      ]
+    : [
+        <Stop key="clear-start" offset="0%" stopColor={theme.bg} stopOpacity={0} />,
+        <Stop
+          key="clear-end"
+          offset={transparentOffset}
+          stopColor={theme.bg}
+          stopOpacity={0}
+        />,
+        <Stop
+          key="soft"
+          offset={bottomMidpoint}
+          stopColor={theme.bg}
+          stopOpacity={0.9}
+        />,
+        <Stop key="opaque" offset="100%" stopColor={theme.bg} stopOpacity={1} />,
+      ];
 
   return (
     <Svg
@@ -35,13 +64,7 @@ export function DiscussionEdgeFade({
     >
       <Defs>
         <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0%" stopColor={theme.bg} stopOpacity={edge === 'top' ? 1 : 0} />
-          <Stop
-            offset={edge === 'top' ? '46%' : '54%'}
-            stopColor={theme.bg}
-            stopOpacity={0.9}
-          />
-          <Stop offset="100%" stopColor={theme.bg} stopOpacity={edge === 'top' ? 0 : 1} />
+          {gradientStops}
         </LinearGradient>
       </Defs>
       <Rect width="100%" height="100%" fill={`url(#${gradientId})`} />
