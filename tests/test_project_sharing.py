@@ -617,3 +617,107 @@ def test_an_imported_project_ignores_state_even_if_the_bundle_said_otherwise(tmp
     # And the imported working state is genuinely untracked, which is the property that matters.
     projects._git(pid, "add", "-A")
     assert ".state/" not in projects._git(pid, "diff", "--cached", "--name-only")
+
+
+def test_an_imported_project_lands_on_the_default_branch(tmp_projects):
+    """A bundle carries `HEAD` and never `refs/heads/*` (export is deliberately not `--all`), so
+    `git clone` has no branch to adopt and lands DETACHED with zero branch refs.
+
+    Found live 2026-08-15: five of six real projects were sitting detached with no branch, every
+    one traceable to a bundle import, while the only natively created project was on `main`.
+    Nothing was broken by it — but `create_project` guarantees this shape and the import path was
+    quietly not, and the detachment propagates to any clone of the project directory."""
+    source = _make_project(tmp_projects)
+    projects._git(source, "commit", "-q", "--allow-empty", "-m", "A commit")
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Branch Check")
+    pid = imported["id"]
+
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
+    assert projects._git(
+        pid, "for-each-ref", "--format=%(refname:short)", "refs/heads",
+    ).split() == [projects.DEFAULT_BRANCH]
+
+
+def test_attaching_the_branch_moves_neither_head_nor_the_tree(tmp_projects):
+    """`branch -f` + `symbolic-ref` rather than a checkout, precisely so this cannot disturb what
+    the import already materialized — including the working state written into the checkout."""
+    source = _make_project(tmp_projects)
+    (projects.project_path(source) / "reading-list.md").write_text(
+        "# Reading list\n\n- A Paper\n", encoding="utf-8")
+    projects._git(source, "add", "-A")
+    projects._git(source, "commit", "-q", "-m", "Add a paper")
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Tree Check")
+    pid = imported["id"]
+
+    # HEAD resolves to the same commit the history ends on, and the file is intact.
+    assert projects._git(pid, "rev-parse", "HEAD") == projects._git(pid, "rev-parse", projects.DEFAULT_BRANCH)
+    assert "A Paper" in (projects.project_path(pid) / "reading-list.md").read_text()
+
+
+def test_an_imported_project_can_be_cloned_onto_a_branch(tmp_projects, tmp_path):
+    """The propagation this fixes: cloning a branchless repo used to hand you another branchless
+    repo, spreading the state to every backup and copy."""
+    source = _make_project(tmp_projects)
+    projects._git(source, "commit", "-q", "--allow-empty", "-m", "A commit")
+    pid = projects.import_bundle(projects.export_bundle(source), "Clone Check")["id"]
+
+    dest = tmp_path / "cloned"
+    subprocess.run(["git", "clone", "-q", str(projects.project_path(pid)), str(dest)],
+                   check=True, capture_output=True)
+
+    head = subprocess.run(["git", "symbolic-ref", "HEAD"], cwd=str(dest),
+                          capture_output=True, text=True)
+    assert head.returncode == 0, "clone landed detached"
+    assert head.stdout.strip() == f"refs/heads/{projects.DEFAULT_BRANCH}"
+
+
+def test_a_bundle_that_already_carries_the_branch_imports_cleanly(tmp_projects, tmp_path):
+    """A bundle built elsewhere with `--all` arrives already ON `main`, and `git branch -f` refuses
+    to force a checked-out branch. Attaching must be a no-op there, not a failed import."""
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", projects.DEFAULT_BRANCH, str(other)], check=True)
+    (other / "reading-list.md").write_text("# Reading list\n\n- A Paper\n", encoding="utf-8")
+    (other / "working-notes.md").write_text("# Project Notes\n", encoding="utf-8")
+    (other / "reading-method.md").write_text("# Method\n", encoding="utf-8")
+    (other / "project.json").write_text(json.dumps({"id": "x", "name": "Elsewhere"}), encoding="utf-8")
+    for args in (["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "x"]):
+        subprocess.run(["git", *args], cwd=other, check=True)
+    bundle = tmp_path / "all.bundle"
+    subprocess.run(["git", "bundle", "create", str(bundle), "--all", "HEAD"], cwd=other,
+                   check=True, capture_output=True)
+
+    pid = projects.import_bundle(bundle.read_bytes(), "From Elsewhere")["id"]
+
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
+    assert "A Paper" in (projects.project_path(pid) / "reading-list.md").read_text()
+
+
+def test_a_bundle_whose_tag_shadows_the_branch_name_still_imports(tmp_projects, tmp_path):
+    """Sol review, PR #412. `git symbolic-ref --short HEAD` is ambiguity-sensitive: with a TAG
+    also named `main`, it returns `heads/main`, not `main`. Comparing that to DEFAULT_BRANCH missed,
+    and `git branch -f main` then died with "cannot force update the branch 'main' used by
+    worktree" — failing the entire import. A bundle's sender controls its tags, so this was a
+    crafted bundle away from bricking the import path."""
+    other = tmp_path / "shadowed"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", projects.DEFAULT_BRANCH, str(other)], check=True)
+    (other / "reading-list.md").write_text("# Reading list\n\n- A Paper\n", encoding="utf-8")
+    (other / "working-notes.md").write_text("# Project Notes\n", encoding="utf-8")
+    (other / "reading-method.md").write_text("# Method\n", encoding="utf-8")
+    (other / "project.json").write_text(json.dumps({"id": "x", "name": "Shadowed"}), encoding="utf-8")
+    for args in (["add", "-A"],
+                 ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "x"],
+                 ["tag", projects.DEFAULT_BRANCH]):        # the tag that shadows the branch name
+        subprocess.run(["git", *args], cwd=other, check=True)
+    bundle = tmp_path / "shadowed.bundle"
+    subprocess.run(["git", "bundle", "create", str(bundle), "--all", "HEAD"], cwd=other,
+                   check=True, capture_output=True)
+
+    pid = projects.import_bundle(bundle.read_bytes(), "Shadowed Import")["id"]
+
+    assert projects._git(pid, "symbolic-ref", "HEAD") == f"refs/heads/{projects.DEFAULT_BRANCH}"
+    assert "A Paper" in (projects.project_path(pid) / "reading-list.md").read_text()

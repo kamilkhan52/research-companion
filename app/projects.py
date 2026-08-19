@@ -397,7 +397,7 @@ def create_project(
     (root / ".gitignore").write_text(".state/\n", encoding="utf-8")
     meta = {"id": pid, "name": name, "created_at": _now()}
     _write_meta(pid, meta)
-    _git(pid, "init", "-q", "-b", "main")
+    _git(pid, "init", "-q", "-b", DEFAULT_BRANCH)
     _git(pid, "add", "-A")
     _git(pid, "commit", "-q", "-m", f"Initialize project: {name}")
     return meta
@@ -428,6 +428,11 @@ MAX_BUNDLE_BYTES = 200 * 1024 * 1024
 #: caps) applies to it unchanged — choosing an archive format here would reintroduce exactly the
 #: path-traversal bug class that picking bundles avoided.
 WORKING_STATE_REF = "refs/rc/working-state"
+
+#: The branch every project repo lives on. Named once because it is an invariant two separate paths
+#: have to uphold — `create_project` plants it at `git init`, and `_attach_to_default_branch` plants
+#: it after a bundle import, which otherwise lands detached with no branch at all.
+DEFAULT_BRANCH = "main"
 
 #: What counts as working state worth moving. `.state/` is emphatically NOT one thing, and the
 #: sizes are what settle it (measured on a real project):
@@ -682,6 +687,56 @@ def _ensure_state_ignored(repo: Path) -> None:
     atomic_write_text(path, (existing.rstrip() + "\n" if existing.strip() else "") + ".state/\n")
 
 
+def _attach_to_default_branch(repo: Path) -> None:
+    """Put an imported repo on `DEFAULT_BRANCH`, the way a natively created one already is.
+
+    `export_bundle` bundles `HEAD` (plus `WORKING_STATE_REF`) and deliberately never `--all`, so a
+    bundle carries no `refs/heads/*`. `git clone` then has no branch to adopt and lands on a
+    DETACHED HEAD with zero branch refs — reproduced exactly: `bundle create X HEAD` gives
+    `branches=[]`, while adding `refs/heads/main` to the same command gives `branches=[main]`.
+
+    Confirmed live on 2026-08-15: five of Kamil's six projects sat detached with no branch at all,
+    every one of them traceable to `clone: from …/incoming.bundle` on 2026-07-29, while the only
+    natively created project was on `main`. Nothing had broken — commits work fine detached, HEAD
+    keeps the history reachable from gc, and export re-bundles `HEAD` — but `create_project` does
+    `git init -b main`, so the import path was quietly breaking a shape the rest of the code
+    guarantees, and the detachment PROPAGATES to any clone of the project directory.
+
+    Fixed on the IMPORT side rather than the export side on purpose: this also repairs bundles that
+    already exist, and any a future sharing feature receives from an older sender. It normalizes the
+    branch NAME too, which is a small hardening — the sender no longer gets to choose it.
+
+    Deliberately not `checkout`: `branch -f` + `symbolic-ref` cannot touch the index or working
+    tree, and by this point the checkout above has already materialized files. HEAD does not move —
+    the branch is planted where HEAD already is.
+
+    The early return is load-bearing, not an optimization. A bundle built elsewhere with `--all`
+    DOES carry `refs/heads/*`, so its clone arrives already on `main` — and `git branch -f` refuses
+    to force a branch that is currently checked out. Without this, such a bundle failed the import
+    with a raw git error instead of the shape check's proper refusal (caught by
+    `test_a_valid_bundle_that_is_not_a_project_is_refused`).
+
+    A foreign bundle carrying some OTHER branch name is renamed onto `DEFAULT_BRANCH` but its
+    original ref is left in place; pruning refs a sender chose is a separate call that belongs with
+    whoever ships sharing for real, not smuggled into a detached-HEAD fix.
+    """
+    # The FULL ref, never `--short` (Sol review, PR #412). `--short` is ambiguity-sensitive: with a
+    # tag ALSO named `main` in the repo it returns `heads/main` rather than `main`, so comparing it
+    # to DEFAULT_BRANCH misses, and the `branch -f` below then dies with "cannot force update the
+    # branch 'main' used by worktree" — failing the whole import. A bundle's sender controls its
+    # tags, so that was a crafted bundle away from bricking this path. Verified against real git.
+    current = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=str(repo),
+                             capture_output=True, text=True, env=_SAFE_GIT_ENV)
+    if current.returncode == 0 and current.stdout.strip() == f"refs/heads/{DEFAULT_BRANCH}":
+        return
+    for args in (["branch", "-f", DEFAULT_BRANCH, "HEAD"],
+                 ["symbolic-ref", "HEAD", f"refs/heads/{DEFAULT_BRANCH}"]):
+        done = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", *args], cwd=str(repo),
+                              capture_output=True, text=True, env=_SAFE_GIT_ENV)
+        if done.returncode != 0:
+            raise ProjectError(f"Could not import the bundle: {done.stderr.strip()}")
+
+
 def _materialize_working_state(repo: Path, bundle: Path) -> int:
     """Write the working-state ref's files into the checkout. Returns how many landed.
 
@@ -861,6 +916,8 @@ def import_bundle(
                                   cwd=str(repo), capture_output=True, text=True, env=_SAFE_GIT_ENV)
         if checkout.returncode != 0:
             raise ProjectError(f"Could not import the bundle: {checkout.stderr.strip()}")
+
+        _attach_to_default_branch(repo)
 
         # The sender controls HEAD, including its `.gitignore`. `_reject_hostile_tree` refuses a
         # bundle that TRACKS `.state/`, but a `.gitignore` that simply omits (or negates) it is
