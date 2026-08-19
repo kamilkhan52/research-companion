@@ -8,4 +8,12 @@ feedparser>=6.0
 python-dotenv>=1.0
 python-multipart>=0.0.9   # FastAPI file/form uploads (user-supplied paper PDFs)
 psycopg[binary,pool]>=3.2  # Postgres: ownership + index only; content stays in git (app/db.py)
-pydantic-ai-slim[openai]>=2.2,<3   # agentic analyst tool loop (app/agent_harness.py)
+# PINNED to 2.2.x, deliberately narrow. `>=2.2,<3` let CI resolve 2.32.0 while every developer
+# venv still held 2.2.0, and main went red on 2026-08-19 with no code change that could explain
+# it: 13 spend-ceiling tests plus 2 privacy-routing tests, in two shapes — dispatch counts that
+# no longer zero out ("settles at its maximum"), and `ModelAPIError: Connection error` where a
+# stubbed transport used to be honoured. `app/spend_ceiling.py` attaches its metering hooks to
+# pydantic-ai INTERNALS, so a thirty-minor-version drift is not a compatible upgrade for us even
+# inside one major. Upgrading is real work — re-fit the hooks, re-verify that a refused request
+# is still not charged — so it is a deliberate task, not something a fresh CI install decides.
+pydantic-ai-slim[openai]>=2.2,<2.3   # agentic analyst tool loop (app/agent_harness.py)
