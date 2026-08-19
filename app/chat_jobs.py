@@ -20,6 +20,8 @@ twin of the client's double-tap guard), while independent threads may generate c
 from __future__ import annotations
 
 import asyncio
+import math
+import os
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -244,10 +246,14 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                 }
         history = sessions.build_history(job.slug)
         events = runner(job.slug, history)
+        # One clock for the WHOLE turn, started here rather than per leg: the agentic run and the
+        # single-shot fallback it may buy on top are one wait as far as the reader is concerned,
+        # and it was the two of them in series that made LIMINAL a two-hour turn.
+        started = time.monotonic()
         if hasattr(events, "__aiter__"):
-            final_text = asyncio.run(_consume_async(job, events))
+            final_text = asyncio.run(_consume_async(job, events, started))
         else:
-            final_text = _consume_sync(job, events)
+            final_text = _consume_sync(job, events, started)
         if job.cancelled:
             _record_cancelled(job, final_text, model_label=model_label)
             return
@@ -267,6 +273,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if job.cancelled:
             _record_cancelled(job, final_text, model_label=model_label)
             return
+        _guard_proposal_drift(job, turn)
         _maybe_edit_synthesis(job, turn, model=model)
         if job.cancelled:
             _record_cancelled(job, final_text, model_label=model_label)
@@ -456,26 +463,88 @@ def _default_events(slug: str, history: list, model: str | None = None):
     return _single_shot_events(slug, history, model)
 
 
-async def _consume_async(job: ChatJob, events: AsyncIterator[dict]) -> str:
+#: Wall-clock ceiling on ONE turn's whole event stream, across both legs (an agentic run and the
+#: single-shot fallback it may buy on top). Env-overridable as `RC_TURN_DEADLINE`.
+#:
+#: A real deadline is needed because the timeouts underneath are not one. `llm.py`'s is httpx's
+#: PER-PHASE budget — measured per socket read, reset by every byte — so a provider that drips
+#: output indefinitely never trips it, and `stream` stops retrying once the first token lands.
+#: `graph.py` hit the same wall and wrapped extraction in `EXTRACTION_HARD_DEADLINE` for exactly
+#: this reason; the turn path never grew the equivalent.
+#:
+#: Observed live on LIMINAL (2026-08-13, job `da3819dc`): the agentic leg ran ~3,754s before
+#: erroring, the single-shot fallback ran a further 3,601s and returned an EMPTY response — 2h 2m
+#: of wall clock, a paid pending usage record, and nothing to show the reader.
+#:
+#: 1,200s is sized off measured successful turns, not guessed: 188s for the LIMINAL turn that did
+#: complete, 447s and 533s for full-context replays of the same turn. That leaves better than 2x
+#: headroom over the slowest success while cutting the observed failure by 3x. Checked at event
+#: boundaries rather than by a watchdog thread — every runner here is a generator, so abandoning
+#: the iterator closes it and tears down the model stream, the same teardown Stop already uses.
+#: A stream emitting NOTHING is already covered by httpx's per-read timeout underneath.
+_DEFAULT_TURN_DEADLINE = 1200.0
+
+
+def turn_deadline() -> float:
+    """The wall-clock ceiling for one turn's event stream, in seconds.
+
+    `isfinite` rather than a bare `> 0` (Sol review, PR #411): `float()` happily parses `inf`,
+    `Infinity` and overflowing literals like `1e309`, all of which are positive and would make
+    `elapsed <= turn_deadline()` true forever — silently removing the ceiling. A ceiling that a
+    typo can disable is not one, so an unusable value falls back to the default rather than
+    being honored. NaN fails `isfinite` too (it would also fail `> 0`, but not obviously)."""
+    try:
+        value = float(os.environ.get("RC_TURN_DEADLINE", _DEFAULT_TURN_DEADLINE))
+    except ValueError:
+        return _DEFAULT_TURN_DEADLINE
+    return value if math.isfinite(value) and value > 0 else _DEFAULT_TURN_DEADLINE
+
+
+def _check_deadline(job: ChatJob, started: float | None) -> None:
+    """Raise once a turn has outrun `turn_deadline()`. No-op when `started` is None (the seam
+    tests use to consume a canned event list without a clock)."""
+    if started is None:
+        return
+    elapsed = time.monotonic() - started
+    if elapsed <= turn_deadline():
+        return
+    log.warning("turn exceeded its deadline chat=%s in %.1fs (limit %.0fs)",
+                job.id[:8], elapsed, turn_deadline())
+    raise AgentError(
+        f"The response took longer than {turn_deadline() / 60:.0f} minutes and was stopped. "
+        "This usually means the model or provider is stalling — try again, or switch the "
+        "analysis model in Settings."
+    )
+
+
+async def _consume_async(job: ChatJob, events: AsyncIterator[dict],
+                         started: float | None = None) -> str:
     pieces: list[str] = []
     sent = 0
     final_text = ""
     async for ev in events:
+        # Stop is checked FIRST (Sol review, PR #411). A turn can be past its deadline AND
+        # cancelled at the same event boundary — a reader tapping Stop on a turn that is stalling
+        # is in fact the likeliest way for both to be true at once. Raising the deadline error
+        # there would discard partial text the reader can already see and report a provider stall
+        # for what was their own deliberate action. The explicit human action wins.
         if job.cancelled:
             break  # abandoning the iterator closes it (loop shutdown), ending the model stream
+        _check_deadline(job, started)
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]
     return final_text or "".join(pieces)
 
 
-def _consume_sync(job: ChatJob, events: Iterable[dict]) -> str:
+def _consume_sync(job: ChatJob, events: Iterable[dict], started: float | None = None) -> str:
     pieces: list[str] = []
     sent = 0
     final_text = ""
     for ev in events:
-        if job.cancelled:
+        if job.cancelled:  # Stop first — see _consume_async
             break  # abandoning the iterator closes it, ending the model stream
+        _check_deadline(job, started)
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]
@@ -513,6 +582,44 @@ def _advance_notes_phase(job: ChatJob, full: str, delta_len: int = 0) -> None:
     elif job.notes_phase is None and _NOTES_MARKER_RE.search(tail):
         with _registry.lock:
             job.notes_phase = "notes"
+
+
+def _guard_proposal_drift(job: ChatJob, turn) -> None:
+    """A Finish/revision turn that came back with NO proposal at all must fail, not record.
+
+    `agent._parse` treats a response containing no marker lines as protocol drift and files the
+    whole thing as the canonical answer (`in_discussion`, no `proposed_commit`). For an ordinary
+    reply that is exactly right. For a Finish it is the worst available outcome: the job settles
+    `done` with no error, the session stays `in_discussion`, no approval card appears, and the
+    reader is left looking at an ordinary-seeming summary with no way to tell that the thing they
+    asked for never happened.
+
+    Observed live on LIMINAL (2026-08-15, job `0bfd0be9`): 188s, `status=done`, `error=None`,
+    `proposed_commit=None`, `notes_phase=None` — a clean 13.6k-char summary and nothing to
+    approve. Confirmed as MODEL drift rather than a parser bug by replaying that exact turn: the
+    account default emitted 0 of 5 markers, a stronger model 5 of 5. So the parser's tolerance is
+    right and this is the layer that has to notice.
+
+    `_maybe_edit_synthesis` below already refuses the sibling shape (a SYNTHESIS with no Paper
+    Notes block). This covers "nothing was proposed at all", and covers it for BOTH actions that
+    authorize a proposal — a drifted revision is just as invisible as a drifted finish, and only
+    the editor pass has a reason to treat the two differently.
+
+    Runs before `record_assistant` (and after the Stop checkpoints, so a cancelled turn — which
+    legitimately has no markers — is never reported as drift), leaving the turn retryable exactly
+    like a parse failure.
+    """
+    records = sessions.read_records(job.slug)
+    if not records or records[-1].get("role") != "user":
+        return
+    kind = records[-1].get("kind")
+    if kind not in ("finish", "revision") or turn.proposed_commit:
+        return
+    retry = "Try Finish reading again" if kind == "finish" else "Request the changes again"
+    raise AgentError(
+        f"The model replied without proposing any notes — it ignored the notes output format, "
+        f"so there is nothing to review. {retry}, or switch the analysis model in Settings."
+    )
 
 
 def _maybe_edit_synthesis(job: ChatJob, turn, model: str | None = None) -> None:
