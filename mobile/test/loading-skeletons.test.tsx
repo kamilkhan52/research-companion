@@ -11,6 +11,7 @@ import {
 } from '@/components/LoadingSkeletons';
 import { Skeleton, SkeletonGroup } from '@/components/Skeleton';
 import { ThemeProvider } from '@/theme/ThemeProvider';
+import { radius } from '@/theme/tokens';
 
 beforeEach(() => {
   jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);
@@ -99,4 +100,32 @@ test.each([
 
   expect(view.getAllByRole('progressbar')).toHaveLength(1);
   expect(view.getByRole('progressbar').props.accessibilityLabel).toBe(label);
+});
+
+test('library skeleton mirrors the loaded library hierarchy and card geometry', async () => {
+  jest.restoreAllMocks();
+  jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
+  const view = await renderAsync(
+    <ThemeProvider>
+      <LibraryLoadingSkeleton />
+    </ThemeProvider>,
+  );
+
+  expect(view.getByTestId('library-continue-card-skeleton')).toBeTruthy();
+  expect(view.getByTestId('library-progress-card-skeleton')).toBeTruthy();
+  expect(view.getByTestId('library-filter-skeleton').children).toHaveLength(4);
+  expect(view.getAllByTestId('library-paper-card-skeleton')).toHaveLength(4);
+
+  const cover = view.getByTestId('library-cover-skeleton', { includeHiddenElements: true });
+  expect(StyleSheet.flatten(cover.props.style)).toEqual(expect.objectContaining({
+    width: 84,
+    height: 104,
+  }));
+
+  const firstPaper = view.getAllByTestId('library-paper-card-skeleton')[0];
+  expect(firstPaper.children).toHaveLength(2);
+  expect(StyleSheet.flatten(firstPaper.props.style)).toEqual(expect.objectContaining({
+    borderWidth: 1,
+    borderRadius: radius.lg,
+  }));
 });

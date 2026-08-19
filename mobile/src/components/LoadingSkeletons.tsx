@@ -1,37 +1,89 @@
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, type DimensionValue } from 'react-native';
 
 import { Skeleton, SkeletonGroup } from '@/components/Skeleton';
-import { radius, space } from '@/theme/tokens';
+import { useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
+import { radius, space, type ThemePalette } from '@/theme/tokens';
 
-function PaperRowSkeleton() {
+function LibraryPaperCardSkeleton({
+  styles,
+  titleWidths,
+}: {
+  styles: ReturnType<typeof makeLibraryStyles>;
+  titleWidths: [DimensionValue, DimensionValue];
+}) {
   return (
-    <View style={styles.paperRow}>
-      <Skeleton width={54} height={70} radius={radius.md} />
-      <View style={styles.grow}>
-        <Skeleton width="88%" height={18} />
-        <Skeleton width="62%" height={13} />
-        <Skeleton width="42%" height={11} />
+    <View style={styles.paperCard} testID="library-paper-card-skeleton">
+      <View style={styles.paperCopy} testID="library-paper-copy-skeleton">
+        <Skeleton width="38%" height={12} />
+        <Skeleton width={titleWidths[0]} height={19} />
+        <Skeleton width={titleWidths[1]} height={19} />
+        <Skeleton width="31%" height={12} />
+      </View>
+      <View style={styles.paperAction} testID="library-paper-action-skeleton">
+        <Skeleton width={30} height={30} radius={radius.pill} />
+        <Skeleton width={48} height={13} />
+        <Skeleton width={11} height={14} />
       </View>
     </View>
   );
 }
 
 export function LibraryLoadingSkeleton() {
+  const libraryStyles = useThemedStyles(makeLibraryStyles);
+
   return (
-    <SkeletonGroup label="Loading your library" style={styles.stack} testID="library-loading-skeleton">
-      <View style={styles.card}>
+    <SkeletonGroup
+      label="Loading your library"
+      style={libraryStyles.stack}
+      testID="library-loading-skeleton">
+      <View style={libraryStyles.continueCard} testID="library-continue-card-skeleton">
+        <View style={styles.between}>
+          <Skeleton width="44%" height={26} />
+          <Skeleton width={42} height={42} radius={radius.pill} />
+        </View>
+        <View style={libraryStyles.continueBody}>
+          <Skeleton
+            width={84}
+            height={104}
+            radius={radius.md}
+            testID="library-cover-skeleton"
+          />
+          <View style={libraryStyles.continueCopy}>
+            <Skeleton width="96%" height={22} />
+            <Skeleton width="88%" height={22} />
+            <Skeleton width="64%" height={22} />
+            <Skeleton width="72%" height={12} />
+            <View style={libraryStyles.continueActions}>
+              <Skeleton width={126} height={42} radius={radius.pill} />
+              <Skeleton width={42} height={42} radius={radius.pill} />
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <View style={libraryStyles.progressCard} testID="library-progress-card-skeleton">
         <View style={styles.between}>
           <Skeleton width="38%" height={18} />
           <Skeleton width="28%" height={12} />
         </View>
         <Skeleton height={6} radius={radius.pill} />
       </View>
-      <View style={styles.chips}>
-        <Skeleton width={68} height={32} radius={radius.pill} />
-        <Skeleton width={82} height={32} radius={radius.pill} />
-        <Skeleton width={94} height={32} radius={radius.pill} />
+
+      <View style={libraryStyles.filters} testID="library-filter-skeleton">
+        <Skeleton width={64} height={34} radius={radius.pill} />
+        <Skeleton width={82} height={34} radius={radius.pill} />
+        <Skeleton width={102} height={34} radius={radius.pill} />
+        <Skeleton width={68} height={34} radius={radius.pill} />
       </View>
-      {[0, 1, 2, 3].map((key) => <PaperRowSkeleton key={key} />)}
+
+      {([
+        ['92%', '66%'],
+        ['84%', '76%'],
+        ['95%', '58%'],
+        ['88%', '70%'],
+      ] as [DimensionValue, DimensionValue][]).map((titleWidths, key) => (
+        <LibraryPaperCardSkeleton key={key} styles={libraryStyles} titleWidths={titleWidths} />
+      ))}
     </SkeletonGroup>
   );
 }
@@ -124,15 +176,6 @@ const styles = StyleSheet.create({
   stack: { gap: space.md },
   card: { gap: space.sm, padding: space.md },
   between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  chips: { flexDirection: 'row', gap: space.sm, paddingHorizontal: space.xs },
-  paperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    minHeight: 94,
-    padding: space.md,
-  },
-  grow: { flex: 1, gap: space.sm },
   sectionGap: { marginTop: space.md },
   notes: { padding: space.lg, gap: space.sm },
   paper: { padding: space.lg, gap: space.sm },
@@ -141,3 +184,56 @@ const styles = StyleSheet.create({
   usage: { gap: space.sm, paddingVertical: space.xs },
   userBubble: { alignItems: 'flex-end', marginVertical: space.lg },
 });
+
+const makeLibraryStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  const cardPadding = tight ? space.md : space.lg;
+  const sectionGap = tight ? space.sm : space.md;
+
+  return StyleSheet.create({
+    stack: { gap: sectionGap },
+    continueCard: {
+      gap: sectionGap,
+      padding: cardPadding,
+      backgroundColor: t.surface,
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: t.line2,
+    },
+    continueBody: { flexDirection: 'row', gap: tight ? space.md : space.lg },
+    continueCopy: { flex: 1, minWidth: 0, gap: 5 },
+    continueActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-end',
+      gap: space.sm,
+      marginTop: space.xs,
+    },
+    progressCard: {
+      gap: sectionGap,
+      padding: cardPadding,
+      backgroundColor: t.surface,
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: t.line,
+    },
+    filters: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: space.sm,
+    },
+    paperCard: {
+      minHeight: tight ? 112 : 124,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: space.sm,
+      padding: cardPadding,
+      backgroundColor: t.surface,
+      borderRadius: radius.lg,
+      borderWidth: 1,
+      borderColor: t.line,
+    },
+    paperCopy: { flex: 1, minWidth: 0, gap: 6 },
+    paperAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  });
+};

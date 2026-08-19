@@ -168,6 +168,10 @@ export default function LibraryScreen() {
     !!activePid && stateQuery.isLoading,
     stateQuery.data !== undefined,
   );
+  const libraryIsInitiallyLoading = activePid
+    ? stateQuery.isLoading
+    : projectsQuery.isLoading;
+  const showLibrarySkeleton = activePid ? showPapersSkeleton : showProjectsSkeleton;
   const activeProject = projects?.find((p) => p.id === activePid);
   const removePaper = useRemovePaper(activePid);
   const removePapers = useRemovePapers(activePid);
@@ -389,7 +393,9 @@ export default function LibraryScreen() {
         // (filter/sort UI) survives re-renders; "tidying" it into `() => (…)` would make it a
         // new component type each render and remount the header on every keystroke.
         ListHeaderComponent={
-          <>
+          libraryIsInitiallyLoading ? (
+            showLibrarySkeleton ? <LibraryLoadingSkeleton /> : null
+          ) : <>
         {continueSession ? (
           <ContinueCard
             session={continueSession}
@@ -466,7 +472,7 @@ export default function LibraryScreen() {
             action={<Button title="Retry" onPress={() => projectsQuery.refetch()} />}
           />
         ) : !activePid && projectsQuery.isLoading ? (
-          showProjectsSkeleton ? <LibraryLoadingSkeleton /> : null
+          null
         ) : !activePid ? (
           <Empty
             heading={projects && projects.length === 0
@@ -484,7 +490,7 @@ export default function LibraryScreen() {
             }
           />
         ) : stateQuery.isLoading ? (
-          showPapersSkeleton ? <LibraryLoadingSkeleton /> : null
+          null
         ) : stateQuery.isError ? (
           <Empty
             heading="Couldn't load papers"
