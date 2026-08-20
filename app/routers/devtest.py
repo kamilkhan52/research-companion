@@ -193,9 +193,39 @@ def list_items():
     return {"items": items}
 
 
+def _save_screenshot(b64: str, item_id: str) -> tuple[str | None, str | None]:
+    """Decode, validate and persist one screenshot. Returns (repo-relative path, error) —
+    exactly one of the two is set. A bad image is an error string, never an exception: the
+    tester's words must be recorded regardless of the pixels (both callers rely on that)."""
+    raw = b""
+    if len(b64) > MAX_SCREENSHOT_B64:
+        return None, "screenshot too large"
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None, "screenshot not valid base64"
+    # Image magic only (PNG/JPEG/WebP): this is an open-auth dev server reachable over the
+    # tunnel, and an arbitrary-bytes sink named .png is a write primitive nobody needs.
+    if not (raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"\xff\xd8\xff"
+            or raw[:4] == b"RIFF"):
+        return None, "screenshot is not an image"
+    safe_item = re.sub(r"[^A-Za-z0-9-]", "_", item_id)[:40]
+    # A uuid suffix: one capture attached to several remarks in the same second must
+    # not overwrite — a screenshot field pointing at someone else's pixels is worse
+    # for triage than none.
+    name = (f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_item}-"
+            f"{uuid.uuid4().hex[:6]}.png")
+    (_dir() / "screenshots" / name).write_bytes(raw)
+    return f".dev-feedback/screenshots/{name}", None
+
+
 class NewItemReq(BaseModel):
     title: str
     description: str | None = None
+    #: DR-088: a screenshot belongs on the issue at creation. Making it a second step (a
+    #: remark after creating) is what caused the accidental Pass verdicts.
+    screenshot_b64: str | None = None
+    route: str | None = None
 
 
 @router.post("/api/devtest/items")
@@ -206,11 +236,18 @@ def create_item(req: NewItemReq):
     title = req.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="A title is required.")
+    new_id = f"NEW-{int(time.time())}"
+    shot_path = shot_error = None
+    if req.screenshot_b64:
+        shot_path, shot_error = _save_screenshot(req.screenshot_b64, new_id)
     entry = _append_feedback({
         "kind": "new_item",
-        "id": f"NEW-{int(time.time())}",
+        "id": new_id,
         "title": title[:300],
         "description": (req.description or "").strip()[:2000],
+        "route": (req.route or "")[:200],
+        "screenshot": shot_path,
+        **({"screenshot_error": shot_error} if shot_error else {}),
     })
     return {"item": {"id": entry["id"], "title": entry["title"],
                      "state": "new — untriaged", "raised": entry["ts"][:10],
@@ -234,36 +271,16 @@ def record_feedback(req: FeedbackReq):
     if req.verdict not in ("pass", "fail", "remark"):
         raise HTTPException(status_code=400, detail="verdict must be pass, fail or remark")
     comment = (req.comment or "").strip()
-    if req.verdict == "remark" and not comment:
-        raise HTTPException(status_code=400, detail="A remark needs a comment.")
+    # DR-088: a screenshot IS a remark — requiring words on top of it pushed the tester toward
+    # whichever button didn't complain, which is how issues got accidental Pass verdicts.
+    if req.verdict == "remark" and not comment and not req.screenshot_b64:
+        raise HTTPException(status_code=400,
+                            detail="A remark needs a comment or a screenshot.")
     # The verdict and comment are the reader's input; a bad IMAGE must never discard them.
-    # Every screenshot failure below records the entry anyway, with the reason in its place.
-    shot_path = None
-    shot_error = None
+    # A screenshot failure records the entry anyway, with the reason in its place.
+    shot_path = shot_error = None
     if req.screenshot_b64:
-        raw = b""
-        if len(req.screenshot_b64) > MAX_SCREENSHOT_B64:
-            shot_error = "screenshot too large"
-        else:
-            try:
-                raw = base64.b64decode(req.screenshot_b64, validate=True)
-            except (binascii.Error, ValueError):
-                shot_error = "screenshot not valid base64"
-        # Image magic only (PNG/JPEG/WebP): this is an open-auth dev server reachable over the
-        # tunnel, and an arbitrary-bytes sink named .png is a write primitive nobody needs.
-        if raw and not (raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"\xff\xd8\xff"
-                        or raw[:4] == b"RIFF"):
-            shot_error = "screenshot is not an image"
-            raw = b""
-        if raw:
-            safe_item = re.sub(r"[^A-Za-z0-9-]", "_", req.item_id)[:40]
-            # A uuid suffix: one capture attached to several remarks in the same second must
-            # not overwrite — a screenshot field pointing at someone else's pixels is worse
-            # for triage than none.
-            name = (f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_item}-"
-                    f"{uuid.uuid4().hex[:6]}.png")
-            (_dir() / "screenshots" / name).write_bytes(raw)
-            shot_path = f".dev-feedback/screenshots/{name}"
+        shot_path, shot_error = _save_screenshot(req.screenshot_b64, req.item_id)
     entry = _append_feedback({
         "kind": "feedback",
         "item_id": req.item_id,

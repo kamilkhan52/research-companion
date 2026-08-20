@@ -34,7 +34,7 @@ const ITEM: DevTestItem = {
 test('an in-progress remark survives the card unmounting and remounting', async () => {
   const first = render(<ItemCard item={ITEM} shot={null} route="/discover" />);
   fireEvent.press(first.getByText(ITEM.title));
-  const input = await first.findByPlaceholderText('Comment (optional for pass/fail, required for remark)');
+  const input = await first.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
   fireEvent.changeText(input, 'The search stopped but the indicator kept spinning.');
   // usePersistedDraft debounces its AsyncStorage write (real setTimeout, no fake timers in this
   // suite) — wait for the write to actually land, not just for the input's own state to update,
@@ -69,7 +69,7 @@ test('a submitted verdict clears the ephemeral fields but keeps the verdict mark
   const item = { ...ITEM, id: 'DR-998' };
   const screen = render(<ItemCard item={item} shot={null} route="/discover" />);
   fireEvent.press(screen.getByText(item.title));
-  const input = await screen.findByPlaceholderText('Comment (optional for pass/fail, required for remark)');
+  const input = await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
   fireEvent.changeText(input, 'Confirmed working.');
   await waitFor(async () => {
     const raw = await AsyncStorage.getItem(draftKey('devtest-item', item.id));
@@ -242,7 +242,7 @@ test('a fail verdict, then a separate remark, keeps the Failed indication', asyn
   // A later remark on the same item is a note, not a new verdict — it must not clear or
   // overwrite the Failed marker.
   fireEvent.press(screen.getByText(item.title));
-  const input = await screen.findByPlaceholderText('Comment (optional for pass/fail, required for remark)');
+  const input = await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
   fireEvent.changeText(input, 'Adding more context.');
   fireEvent.press(screen.getByText('Remark'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalledTimes(2));
