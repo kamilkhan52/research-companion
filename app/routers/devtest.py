@@ -209,13 +209,21 @@ def _save_screenshot(b64: str, item_id: str) -> tuple[str | None, str | None]:
     if not (raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"\xff\xd8\xff"
             or raw[:4] == b"RIFF"):
         return None, "screenshot is not an image"
+    if raw[:4] == b"RIFF" and raw[8:12] != b"WEBP":
+        # RIFF alone admits WAV/AVI/anything in a RIFF envelope, not just WebP.
+        return None, "screenshot is not an image"
     safe_item = re.sub(r"[^A-Za-z0-9-]", "_", item_id)[:40]
     # A uuid suffix: one capture attached to several remarks in the same second must
     # not overwrite — a screenshot field pointing at someone else's pixels is worse
     # for triage than none.
     name = (f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_item}-"
             f"{uuid.uuid4().hex[:6]}.png")
-    (_dir() / "screenshots" / name).write_bytes(raw)
+    try:
+        (_dir() / "screenshots" / name).write_bytes(raw)
+    except OSError as e:
+        # Disk full / permissions: the caller records the entry with this in place — a 500
+        # here would discard the tester's words, the one thing this helper must never do.
+        return None, f"screenshot write failed: {e}"
     return f".dev-feedback/screenshots/{name}", None
 
 
@@ -249,9 +257,13 @@ def create_item(req: NewItemReq):
         "screenshot": shot_path,
         **({"screenshot_error": shot_error} if shot_error else {}),
     })
+    # The screenshot outcome rides the response so the client's confirmation can be honest —
+    # a toast claiming "with screenshot" from request intent hides a dropped image.
     return {"item": {"id": entry["id"], "title": entry["title"],
                      "state": "new — untriaged", "raised": entry["ts"][:10],
-                     "how_to_test": entry.get("description", ""), "feedback_count": 0}}
+                     "how_to_test": entry.get("description", ""), "feedback_count": 0},
+            "screenshot": shot_path,
+            **({"screenshot_error": shot_error} if shot_error else {})}
 
 
 class FeedbackReq(BaseModel):
@@ -271,16 +283,21 @@ def record_feedback(req: FeedbackReq):
     if req.verdict not in ("pass", "fail", "remark"):
         raise HTTPException(status_code=400, detail="verdict must be pass, fail or remark")
     comment = (req.comment or "").strip()
-    # DR-088: a screenshot IS a remark — requiring words on top of it pushed the tester toward
-    # whichever button didn't complain, which is how issues got accidental Pass verdicts.
-    if req.verdict == "remark" and not comment and not req.screenshot_b64:
-        raise HTTPException(status_code=400,
-                            detail="A remark needs a comment or a screenshot.")
     # The verdict and comment are the reader's input; a bad IMAGE must never discard them.
     # A screenshot failure records the entry anyway, with the reason in its place.
     shot_path = shot_error = None
     if req.screenshot_b64:
         shot_path, shot_error = _save_screenshot(req.screenshot_b64, req.item_id)
+    # DR-088: a screenshot IS a remark — requiring words on top of it pushed the tester toward
+    # whichever button didn't complain, which is how issues got accidental Pass verdicts.
+    # Gated on the SAVED screenshot, not the request field: a remark whose only content failed
+    # validation has no words to lose, so refusing it loses nothing — while recording it would
+    # append a contentless entry and tell the tester their evidence landed when it didn't.
+    if req.verdict == "remark" and not comment and not shot_path:
+        detail = (f"The screenshot did not land ({shot_error}); a remark needs a comment "
+                  "or a screenshot." if shot_error
+                  else "A remark needs a comment or a screenshot.")
+        raise HTTPException(status_code=400, detail=detail)
     entry = _append_feedback({
         "kind": "feedback",
         "item_id": req.item_id,

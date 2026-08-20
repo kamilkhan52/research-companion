@@ -110,6 +110,14 @@ def test_screenshot_alone_is_a_valid_remark(client):
     # With neither a comment nor a screenshot, a remark is still refused.
     assert client.post("/api/devtest/feedback",
                        json={"item_id": "DR-001", "verdict": "remark"}).status_code == 400
+    # A remark whose ONLY content is a screenshot that fails validation is refused too —
+    # there are no words to lose, and recording it would append a contentless entry while
+    # telling the tester their evidence landed.
+    r = client.post("/api/devtest/feedback",
+                    json={"item_id": "DR-001", "verdict": "remark",
+                          "screenshot_b64": "not-base64!!!"})
+    assert r.status_code == 400
+    assert "did not land" in r.json()["detail"]
 
 
 def test_new_issue_carries_its_screenshot_from_creation(client, tmp_path):

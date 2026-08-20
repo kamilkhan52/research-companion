@@ -34,7 +34,7 @@ test('a new issue sends the captured screen when attach is checked', async () =>
     <NewItemForm shot="B64SHOT" route="/paper/x" onDone={onDone} />,
   );
   fireEvent.changeText(getByPlaceholderText("What's wrong / what's the idea?"), 'Fetch fails');
-  fireEvent.press(getByLabelText('Attach the captured screen to this issue'));
+  fireEvent.press(getByLabelText('Attach the captured screen'));
   fireEvent.press(getByText('Create'));
   await waitFor(() => expect(onDone).toHaveBeenCalled());
   expect(api.createDevTestItem).toHaveBeenCalledWith('Fetch fails', undefined, {
