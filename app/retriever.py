@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from difflib import SequenceMatcher
+from urllib.parse import urlsplit
 
 import feedparser
 import httpx
@@ -153,7 +154,22 @@ def _clean(text: str) -> str:
 
 
 def _extract_pdf(data: bytes) -> str:
-    reader = PdfReader(io.BytesIO(data))
+    # A client-supplied link often points at a web page rather than a PDF (DR-087: an
+    # arxiv.org/html/ URL). pypdf's own failure for HTML bytes is the cryptic "Stream has
+    # ended unexpectedly", which surfaced verbatim on the device — so refuse non-PDF bytes
+    # here with a message that tells the reader what to paste instead. The %PDF- marker may
+    # legitimately sit after up to 1024 bytes of junk (the spec's own allowance).
+    if b"%PDF-" not in data[:1024]:
+        looks_like_html = b"<html" in data[:1024].lower() or data[:256].lstrip()[:1].startswith(b"<")
+        what = "a web page" if looks_like_html else "something that is not a PDF"
+        raise RetrievalError(
+            f"That link returned {what}, not a PDF. "
+            "Paste a direct PDF link, or the paper's arXiv page (abs/pdf/html all work).")
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except Exception as e:
+        # Truncated or malformed PDFs otherwise surface pypdf internals as the job error.
+        raise RetrievalError(f"Could not parse the downloaded PDF ({e}).") from e
     pages = []
     for page in reader.pages:
         try:
@@ -257,6 +273,25 @@ def _is_arxiv_host(url: str) -> bool:
     return host == "arxiv.org" or host.endswith(".arxiv.org")
 
 
+def _arxiv_id_from_url(url: str) -> str | None:
+    """The arXiv id in `url`'s PATH, if `url` is a real arXiv paper URL in any flavor —
+    abs, pdf, or html, with or without a version suffix. None otherwise.
+
+    Host-validated first (`_is_arxiv_host`, the same predicate `_fetch` routes on) and parsed
+    from the urlsplit path, so `?ref=arxiv.org`, `#arxiv.org` and path-segment lookalikes on
+    other hosts never match. Exists because a pasted `arxiv.org/html/<id>` link used to fall
+    through as a raw pdf_url: the HTML page bytes went to pypdf, whose truncated-stream error
+    surfaced verbatim on the device (DR-087)."""
+    if not _is_arxiv_host(url):
+        return None
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return None
+    m = re.match(r"^/(?:abs|pdf|html)/(\d{4}\.\d{4,5}(?:v\d+)?)", path)
+    return m.group(1) if m else None
+
+
 def _fetch(url: str) -> bytes:
     # arXiv PDF downloads share the same throttling as the query API, so route them through the
     # paced/retrying getter rather than safe_fetch. Still validated first, and still byte-capped:
@@ -307,6 +342,13 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     carries the raw downloaded PDF so a caller can reuse it (e.g. render a cover) without a second
     download; it's absent on the needs-confirmation branch.
     """
+    if pdf_url:
+        # A pasted arXiv link of any flavor (abs/html/pdf) canonicalizes to the id path below:
+        # the abs and html pages are not PDFs, and even a pdf link benefits from the id branch's
+        # metadata resolution.
+        aid = _arxiv_id_from_url(pdf_url)
+        if aid:
+            arxiv_id, pdf_url = aid, None
     if pdf_url:
         data = _fetch(pdf_url)
         return {"full_text": _extract_pdf(data), "arxiv_id": None,

@@ -2373,8 +2373,11 @@ function DiscussionThread({
 
 // Interpret a pasted source string: an arXiv link or bare id resolves by id (an /abs/ page
 // isn't a PDF, so never fetch it as one); any other URL is treated as a direct PDF link.
-function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
-  const arxiv = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i);
+export function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
+  // abs, pdf AND html: an /html/ link sent as a raw pdf_url made the server parse the HTML
+  // page as a PDF (DR-087). The server now canonicalizes too; this keeps the id visible
+  // client-side. Version suffixes tolerated, id kept versionless as before.
+  const arxiv = s.match(/arxiv\.org\/(?:abs|pdf|html)\/(\d{4}\.\d{4,5})(?:v\d+)?/i);
   if (arxiv) return { arxiv_id: arxiv[1] };
   if (/^https?:\/\//i.test(s)) return { pdf_url: s };
   return { arxiv_id: s };
