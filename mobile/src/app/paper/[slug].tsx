@@ -14,7 +14,6 @@ import {
   Bubble,
   Chat,
   InputToolbar,
-  MessageText,
   type BubbleProps,
   type InputToolbarProps,
   type LeftRightStyle,
@@ -214,10 +213,6 @@ export async function applyPaperUpdateToActiveSession(
     qc.invalidateQueries({ queryKey: keys.projectState(pid) }),
   ]);
 }
-// MessageText's own container has a built-in inset (marginVertical: 5, marginHorizontal: 10)
-// we don't want stacking with our own padding on user-message text (see userText style).
-const ZERO_INSET: ViewStyle = { marginVertical: 0, marginHorizontal: 0 };
-
 export default function DiscussionScreen() {
   const router = useRouter();
   const qc = useQueryClient();
@@ -1444,21 +1439,6 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName, discussionTextScale } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
-  // DR-068: "user-message text" is explicitly in scope. userText's own fontSize/lineHeight
-  // mirror the `body` variant exactly (see the style def below) — scaled the same way
-  // Markdown.tsx scales serifBody, just against this style object instead of a themed one.
-  // Opus review: computed once here (not inline inside renderMessageText, a useCallback body
-  // where a hook can't legally live) so it keeps a stable reference across renders that don't
-  // actually change the scale or density.
-  const scaledUserText = useMemo(() => (
-    discussionTextScale === 1 ? styles.userText : [
-      styles.userText,
-      {
-        fontSize: styles.userText.fontSize * discussionTextScale,
-        lineHeight: styles.userText.lineHeight * discussionTextScale,
-      },
-    ]
-  ), [styles.userText, discussionTextScale]);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -2043,17 +2023,18 @@ function DiscussionThread({
         />
       );
     }
+    // DR-009 (Kamil, 2026-08-20): the reader's own sent bubble renders as Markdown, so a
+    // sentence-comment reply — blockquoted passages plus the preamble — reads as quoted
+    // passages instead of literal '>' markup. This replaces the chat library's plain-text
+    // MessageText for user messages entirely (which also retires the margin-zeroing dance its
+    // built-in container needed); the DR-068 text-size multiplier now reaches user text
+    // through Markdown's own textScale, same as the assistant side.
     return (
-      <MessageText
-        {...props}
-        // Zero the library's own container margin (MessageText.js: marginVertical: 5,
-        // marginHorizontal: 10) so userText's padding is the only inset — otherwise the two
-        // stack and user text sits at a different inset than assistantBody's.
-        containerStyle={{ left: ZERO_INSET, right: ZERO_INSET }}
-        textStyle={{ left: scaledUserText, right: scaledUserText }}
-      />
+      <View style={styles.userBody}>
+        <Markdown text={msg?.text ?? ''} textScale={discussionTextScale} />
+      </View>
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, scaledUserText]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -3499,13 +3480,8 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderRadius: radius.lg,
     borderBottomRightRadius: 6,
   },
-  userText: {
-    color: t.text,
-    fontFamily: fonts.body,
-    fontSize: tight ? 14 : 15.5,
-    lineHeight: tight ? 21 : 24,
-    // MessageText's own margin is zeroed (ZERO_INSET) so this padding is the only inset,
-    // matching assistantBody's — otherwise the two insets would stack.
+  // DR-009: the user bubble's Markdown body needs only the inset — typography is Markdown's.
+  userBody: {
     paddingHorizontal: tight ? space.sm : space.md,
     paddingVertical: tight ? 6 : space.sm,
   },
