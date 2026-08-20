@@ -40,10 +40,10 @@ router = APIRouter()
 # policy requires and the support address on the store listing; it is deliberately not a personal
 # address, and deliberately not configurable by environment — a policy document whose contact
 # details vary by deployment is not a policy document.
-APP_NAME = "Scholiast"
+APP_NAME = "Seminar"
 DEVELOPER = "Kamil Khan"
 SUPPORT_EMAIL = "thelocalscientist@gmail.com"
-LAST_UPDATED = "30 July 2026"
+LAST_UPDATED = "20 August 2026"
 
 _PAGES_DIR = Path(__file__).resolve().parent.parent / "legal"
 
