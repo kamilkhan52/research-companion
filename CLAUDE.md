@@ -281,6 +281,23 @@ open); completed milestones and dated handoffs are in `90-history.md`.
   generates or runs minutes-long must be a job (invariant 1). See `mobile/src/api/endpoints.ts`
   — the `turnJobPaths` comment spells this out.
 
+## Session start (standing, 2026-08-20)
+
+Orient from the LIVE sources, in this order, before trusting any doc's claim: `git log` +
+`gh pr list` (recent work and what's already in flight), `docs/device-review-ledger.md` (what
+Kamil raised and what awaits him), `.dev-feedback/` (untriaged device feedback — triage it
+first if present), then `docs/production/10-roadmap.md` for the milestone position.
+
+**Doc hygiene is part of the first pass, every session.** Docs here are layered, dated
+records, and drift accumulates between sessions. When a doc's claim contradicts the code, git
+history, or a later dated note: fix the OBVIOUS cases directly in a small docs PR (stale
+"current position" dates, superseded facts, references to files that no longer exist, a
+default that demonstrably changed) — citing the evidence in the commit; and collect the
+GENUINELY ambiguous ones (where two readings are defensible or the resolution is a product
+call) into direct questions to Kamil in chat, each with a recommendation. Never silently work
+around discovered drift and leave it for the next session to re-discover — that is how the
+same confusion gets paid for repeatedly.
+
 ## Working with Kamil (standing instructions, 2026-08-12)
 
 - **Anything waiting on Kamil gets asked in chat, not filed in a doc.** When work hits a decision

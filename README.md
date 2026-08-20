@@ -1,20 +1,30 @@
-# Research Reading Companion
+# Research Reading Companion (the app is **Seminar**, by Scholiast)
 
-Read a paper corpus *with* Claude: scholarly discussion, listen-friendly audio, and
-notes that compound into the context for the next paper. Implements the Phase 0 / early
-Phase 1 slice of `research-companion-architecture.md`.
+Read a paper corpus *with* an LLM: scholarly discussion, listen-friendly audio, and notes
+that compound into the context for the next paper. This repo is the FastAPI backend plus the
+clients; the shipping product is **Seminar** ("Seminar: Research Reader" on Google Play,
+package `io.scholiast.seminar`) from the company **Scholiast**. The repo keeps its historical
+name. `CLAUDE.md` carries the working invariants; `docs/` carries the design records and the
+live ledgers.
 
-**Phase 0 choices (this build):**
-- LLM via **OpenRouter** (one key, every model) — default a top Claude model, switchable in the UI.
+**Core choices (current build):**
+- LLM via **OpenRouter** (one key, every model), switchable in the UI; an agentic tool-loop
+  turn (Pydantic AI) is the default path. Analysis default is currently GPT 5.6 Luna; the
+  model families self-update via the catalogue (`app/routers/catalogue.py`).
 - **Dual output** every turn: a canonical scholarly version (record) + a narration script (ear).
-- **TTS = your phone's built-in voice** (Web Speech API) — zero setup, behind a pluggable interface.
+- **TTS = OpenAI `tts-1`** behind a swappable interface (`app/tts.py`) — character pricing
+  makes audio cost computable before synthesis. Device voice remains the free fallback.
 - **Store = markdown in git**: each project under `projects/<id>/` has `reading-list.md`,
-  `reading-method.md`, `working-notes.md`, `corpus/<paper>.md` (full text + Paper Notes block),
-  `sessions/*.jsonl` — its own git repo.
+  `reading-method.md`, `working-notes.md` (surfaced in the UI as **Project Notes**),
+  `corpus/<paper>.md` (full text + **Paper Notes** block), `sessions/*.jsonl` — its own git repo.
 - **Multiple projects**: keep several independent reading projects (each its own store) and
   switch between them in the UI. App-global keys, model/TTS picks, and caches live in
   `.app-state/`; prompts can be authoritative Markdown in an Obsidian vault.
 - **Agent proposes, you commit**: notes + synthesis edits land only after you approve.
+- **Every long or LLM-touching operation is a background job + polling** — never a blocking
+  request (see invariant 1 in `CLAUDE.md`).
+- **Production is live** on Fly.io behind Supabase auth with per-account plans, exact-cost
+  metering, and a monthly spend ceiling; see `docs/production/`.
 
 ## Quick start
 
@@ -66,7 +76,9 @@ two vault subdirectories independently.
 
 ### Auth setup (Supabase — Google + email)
 
-Auth is **off by default** (open, fine behind a private tunnel). To require real user login
+Auth is **off by default in `RC_ENV=dev` only** (open, fine behind a private tunnel);
+`staging`/`prod` refuse to start without Supabase auth and an allowlist
+(`app.auth.assert_environment_safe`). To require real user login
 with Google and email magic-links, wire up Supabase once. The backend verifies the user's JWT
 locally against Supabase's JWKS — no server-side Supabase library, low lock-in.
 
@@ -111,15 +123,15 @@ iOS you'll also need "Sign in with Apple" (Apple's rule); Android-first means th
 Each project can build a citation graph over its own papers: how they cite each other, which
 outside papers they lean on, and a ranked recommendation for which outside papers to add next
 (weighted by how many project papers cite it, how *significantly*, and whether it bridges
-otherwise-separate citing papers). One OpenRouter call per paper (DeepSeek V4 Pro by default —
-override with `RC_GRAPH_LLM_MODEL`) reads its cached full text and returns structured
-references, body-text citation contexts, and a significance verdict in one pass; matching/
-dedup/analysis is deterministic Python, no further LLM calls. Cached per paper by content
-hash and saved incrementally (survives an interrupted build), so rebuilding only spends
-tokens on papers that changed since last time.
+otherwise-separate citing papers). One OpenRouter call per paper (DeepSeek V4 Flash by
+default since 2026-08-07 — override with `RC_GRAPH_LLM_MODEL`) reads its cached full text and
+returns structured references, body-text citation contexts, and a significance verdict in one
+pass; matching/dedup/analysis is deterministic Python, no further LLM calls. Cached per paper
+by content hash and saved incrementally (survives an interrupted build), so rebuilding only
+spends tokens on papers that changed since last time.
 
 - `GET /api/projects/{pid}/graph`, `POST /api/projects/{pid}/graph/build` (`{"force": bool}`,
-  SSE progress), `GET /api/projects/{pid}/graph/recommendations`.
+  a background job polled via the graph snapshot), `GET /api/projects/{pid}/graph/recommendations`.
 - `POST /api/projects/{pid}/papers` adds a recommended paper to the reading list (unread;
   full text stays lazily retrieved like any other paper).
 - See `app/graph.py` for the pipeline and `app/graph_store.py` for the per-project cache
@@ -131,14 +143,14 @@ tokens on papers that changed since last time.
 ## Mobile app
 
 `mobile/` is the React Native + Expo client (Android-first) — the actively developed client
-day-to-day; `web/` still works but doesn't get new features first. See `mobile/README.md` for
-building/running it.
+day-to-day; `web/` is being rebuilt as a React+Vite SPA (see `docs/web-rebuild-plan.md`).
+See `mobile/README.md` for building/running the mobile client.
 
 ## Layout
 
 ```
 app/         FastAPI backend (the deterministic spine + agent client + reference graph)
-web/         mobile-first single-page client (legacy; see mobile/ for the active client)
+web/         React+Vite SPA, being rebuilt (see mobile/ for the active client)
 mobile/      React Native + Expo client (Android-first)
 projects/    per-project git-backed stores (reading list, method, working-notes, corpus, sessions)
 .app-state/  app-global: keys/settings, legacy prompt overrides, last-valid state, derived caches
