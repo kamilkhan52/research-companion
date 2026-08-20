@@ -44,6 +44,7 @@ from . import (
     prompts,
     retriever,
     semantic_scholar,
+    significance,
     store,
 )
 from .fileio import atomic_write_text
@@ -81,6 +82,22 @@ PROVENANCE_BONUS_GRAPH = 0.75
 #: perishable — and because these papers are new, so their citation term is ~0 and the blend
 #: would otherwise bury the lane's whole point beneath well-established work.
 PROVENANCE_BONUS_NEW_CITATION = 1.25
+#: A new citer whose classified label says the citation is load-bearing (EXTENDS/USES/CONTRASTS,
+#: see app/significance.py). Stacks on the lane bonus: "cites us significantly" is the spec's
+#: whole differentiator, and the honest prior says only 5-15% of edges earn it.
+SIGNIFICANT_CITER_BONUS = 1.0
+#: Corpus connectivity (spec §4): a candidate whose edges reach SEVERAL reading-list papers, per
+#: distinct anchor beyond the first (the first is already the cites/new_citation bonus). Capped
+#: below the single-edge bonuses so breadth refines rather than dominates.
+CONNECTIVITY_BONUS_STEP = 0.35
+CONNECTIVITY_BONUS_CAP = 1.05
+#: Momentum (spec §§3-4): a recency-adjusted citation rate so the blend stops structurally
+#: favouring 2019. Applies only to papers from the last MOMENTUM_YOUNG_YEARS — an old paper's
+#: velocity is already priced into the capped citation term, and double-counting it would
+#: re-create exactly the bias this corrects, in the other direction.
+MOMENTUM_CAP = 1.0
+MOMENTUM_SCALE = 0.5
+MOMENTUM_YOUNG_YEARS = 3
 QUERIES_MAX_TOKENS = 8_000
 SCORING_MAX_TOKENS = 24_000
 LLM_TIMEOUT_S = 240
@@ -1043,6 +1060,36 @@ def _clamped_score(raw: object) -> float:
     return max(0.0, min(10.0, value))
 
 
+def _momentum_term(candidate: dict, cites: int) -> float:
+    """Momentum (spec §§3-4): citations per year, log-scaled and capped, for YOUNG papers only.
+
+    The capped log citation term structurally favours old work — a 2019 paper with 600 citations
+    maxes it while a six-week-old paper with 40 sits near zero, though the young one is
+    accumulating faster. Where the OpenAlex lanes fetched `counts_by_year` (a free select field),
+    the velocity is the last two calendar years' actual counts; S2-sourced candidates fall back
+    to lifetime count over age. Old papers get nothing here on purpose: their velocity is already
+    priced into the citation term, and rewarding it twice would recreate the bias inverted.
+    """
+    year = candidate.get("year")
+    if not isinstance(year, int):
+        return 0.0
+    now = datetime.now(UTC).year
+    age = max(0.5, now - year + 0.5)      # a paper published this year is ~half a year old
+    if now - year > MOMENTUM_YOUNG_YEARS:
+        return 0.0
+    counts = candidate.get("counts_by_year")
+    if isinstance(counts, list) and counts:
+        recent = sum(int(row.get("cited_by_count") or 0) for row in counts
+                     if isinstance(row, dict) and isinstance(row.get("year"), int)
+                     and row["year"] >= now - 1)
+        velocity = recent / min(age, 2.0)
+    else:
+        velocity = (cites or 0) / age
+    if velocity <= 0:
+        return 0.0
+    return min(MOMENTUM_CAP, MOMENTUM_SCALE * math.log10(1 + velocity))
+
+
 def blend_and_rank(candidates: list[dict]) -> list[dict]:
     """Deterministic final ordering, reusing the constants the old pipeline was tuned with."""
     out = []
@@ -1054,12 +1101,26 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
         reasons: list[str] = []
         if candidate.get("screen_note"):
             reasons.append(candidate["screen_note"])
+        significance = candidate.get("significance") or {}
         if "new_citation" in channels:
             provenance_term += PROVENANCE_BONUS_NEW_CITATION
             anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
                            if p.get("channel") == "new_citation" and p.get("anchor_title")), "")
-            reasons.append(f"New: has started citing “{anchor[:70]}” from your list" if anchor
-                           else "New: has started citing a paper on your reading list")
+            if significance.get("significant"):
+                # The lane's evidence line (spec §4's output rule): what the citer DID with the
+                # reader's paper, in its own words, never just "new relevant paper".
+                provenance_term += SIGNIFICANT_CITER_BONUS
+                verb = {"EXTENDS": "extends", "USES": "uses",
+                        "CONTRASTS": "challenges"}[significance["label"]]
+                mentions = significance.get("mentions") or 0
+                times = f" {mentions}×" if mentions > 1 else ""
+                note = str(significance.get("note") or "").rstrip(".")
+                line = f"Significant: {verb} “{anchor[:70]}”{times}" if anchor else \
+                    f"Significant: {verb} a paper on your reading list{times}"
+                reasons.append(f"{line} — {note}" if note else line)
+            else:
+                reasons.append(f"New: has started citing “{anchor[:70]}” from your list" if anchor
+                               else "New: has started citing a paper on your reading list")
         if "cites" in channels:
             provenance_term += PROVENANCE_BONUS_CITES
             anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
@@ -1071,6 +1132,18 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
             graph_reasons = next((p.get("reasons") or [] for p in candidate.get("provenance") or []
                                   if p.get("channel") == "graph"), [])
             reasons.extend(str(r) for r in graph_reasons[:2])
+        # Corpus connectivity (spec §4): distinct reading-list papers this candidate's edges
+        # reach. Deterministic and explainable — Litmaps surfaces the same number as "Map
+        # Connectivity" but never scores on it.
+        anchors = {p.get("anchor_slug") for p in candidate.get("provenance") or []
+                   if p.get("channel") in ("cites", "new_citation") and p.get("anchor_slug")}
+        connectivity_term = 0.0
+        if len(anchors) > 1:
+            connectivity_term = min(CONNECTIVITY_BONUS_CAP,
+                                    CONNECTIVITY_BONUS_STEP * (len(anchors) - 1))
+            reasons.append(f"Connects to {len(anchors)} papers on your reading list")
+
+        momentum_term = _momentum_term(candidate, cites)
         if cites >= 100:
             reasons.append(f"~{cites:,} citations overall — a well-established work")
 
@@ -1079,7 +1152,8 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
             **candidate,
             "relevance": relevance,
             "credibility": 0.0,
-            "score": round(relevance + citation_term + provenance_term, 3),
+            "score": round(relevance + citation_term + provenance_term
+                           + connectivity_term + momentum_term, 3),
             "reasons": list(dict.fromkeys(r for r in reasons if r))[:4],
         })
     out.sort(key=lambda c: (c["score"], c["relevance"], c.get("citation_count") or 0),
@@ -1327,6 +1401,24 @@ def run_discovery(
         scored = list(state["scored"])
         abstract_audit = state["abstract_audit"]
 
+    # Lane-1 significance (DR-052 PR 3): classify HOW the new citers cite, on the survivors
+    # only. Runs on both checkpoint branches — a resumed run skipped the paid scoring above,
+    # but this stage's ledger cache (keyed on the context sentences, not the profile) makes a
+    # repeat classification free, so re-entering here re-buys nothing that didn't change.
+    def _record_significance(candidate: dict, *, label: str, note: str, model: str,
+                             contexts_hash: str) -> None:
+        entry = discovery_ledger.get(ledger, _candidate_key(candidate))
+        if entry is not None:
+            discovery_ledger.record_citation_significance(
+                entry, label=label, note=note, model=model,
+                contexts_hash=contexts_hash, today=today)
+
+    if cancelled():
+        return
+    significance_audit = significance.classify(
+        scored, cheap_llm, ledger=ledger, cheap_model=CHEAP_MODEL,
+        get_entry=discovery_ledger.get, record_entry=_record_significance)
+
     ranked_so_far = blend_and_rank(scored)
     yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
     if cancelled():
@@ -1372,7 +1464,8 @@ def run_discovery(
         },
         "funnel": funnel,
         "audit": {"recall": recall_audit, "gate": gate_counts,
-                  "title_triage": triage_audit, "abstract_scoring": abstract_audit},
+                  "title_triage": triage_audit, "abstract_scoring": abstract_audit,
+                  "citation_significance": significance_audit},
         "degraded": degraded,
         "top_n": TOP_SUGGESTIONS,
         "suggestions": ranked,
