@@ -50,6 +50,10 @@ _CANDIDATE_SCALARS = (
 _CANDIDATE_LISTS = (
     "authors", "author_ids", "fields_of_study", "publication_types", "sources", "channels",
     "provenance",
+    # Momentum's per-year table (DR-052 PR 3): already trimmed to 3 rows at recall. Without it
+    # the reservoir round-trip silently downgrades a returning candidate to the lifetime-rate
+    # fallback, so its score would change between runs with unchanged data.
+    "counts_by_year",
 )
 
 

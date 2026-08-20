@@ -72,6 +72,35 @@ def test_reference_scarcity_counts():
     assert short_list > long_list
 
 
+def test_parse_artifact_reference_counts_do_not_admit_passing_mentions():
+    """S2 reports referenceCount 1-5 when bibliography extraction failed; scarcity alone must
+    never push a single plain mention into the paid slice."""
+    score, _ = significance.prescore(_candidate(["See [12]."], reference_count=2))
+    assert score < significance.PRESCORE_THRESHOLD
+
+
+def test_edges_are_scored_separately_and_the_strongest_wins_attribution():
+    """One citer, two reading-list papers, different intent: the cue about paper B must not be
+    pooled with paper A's passing mention — and the features (anchor, count) must be B's."""
+    candidate = {
+        "title": "Mixed Intent Citer", "abstract": "", "arxiv_id": "2608.00002", "year": 2026,
+        "channels": ["new_citation"],
+        "provenance": [
+            {"channel": "new_citation", "anchor_slug": "paper-a", "anchor_title": "Paper A",
+             "contexts": ["Prior work includes [12]."], "is_influential": False,
+             "reference_count": 40},
+            {"channel": "new_citation", "anchor_slug": "paper-b", "anchor_title": "Paper B",
+             "contexts": ["We build on the method of [7].", "Following [7] we train end-to-end."],
+             "is_influential": False, "reference_count": 40},
+        ],
+    }
+    score, features = significance.prescore(candidate)
+    assert score >= significance.PRESCORE_THRESHOLD
+    assert features["anchor_title"] == "Paper B"
+    assert features["mentions"] == 2
+    assert all("build on" in c or "Following" in c for c in features["contexts"])
+
+
 # ---------- classification ----------
 
 def _llm_replying(lines):
@@ -158,18 +187,35 @@ def test_stale_cache_wrong_model_reclassifies():
 
 # ---------- the blend ----------
 
-def test_significant_citer_outranks_and_carries_the_evidence_line():
-    base = dict(_candidate(["We extend [12]."]), relevance=7.0, citation_count=0)
+def test_significant_citer_outranks_and_leads_with_the_evidence_line():
+    base = dict(_candidate(["We extend [12]."]), relevance=7.0, citation_count=0,
+                screen_note="a screen note")
     plain = dict(base)
     winner = dict(base, title="Significant One",
                   significance={"label": "EXTENDS", "significant": True,
                                 "note": "extends the method to sparse graphs",
+                                "anchor_title": "Attention Is All", "anchor_slug": "attention",
                                 "mentions": 3, "prescore": 1.2})
     ranked = discovery.blend_and_rank([plain, winner])
     assert ranked[0]["title"] == "Significant One"
     assert ranked[0]["score"] - ranked[1]["score"] == discovery.SIGNIFICANT_CITER_BONUS
-    line = next(r for r in ranked[0]["reasons"] if r.startswith("Significant"))
+    # reasons[0], not merely present: clients render the first reason, and the classified line
+    # is the one this stage paid for. The anchor comes from the significance block itself.
+    line = ranked[0]["reasons"][0]
+    assert line.startswith("Significant")
     assert "extends" in line and "3×" in line and "sparse graphs" in line
+    assert "Attention Is All" in line
+
+
+def test_unknown_significant_label_degrades_to_the_plain_line():
+    """A label added in significance.py before the blend learns its verb must fall back to the
+    lane wording, never raise mid-run."""
+    candidate = dict(_candidate(["We replicate [12]."]), relevance=7.0, citation_count=0,
+                     significance={"label": "REPLICATES", "significant": True,
+                                   "note": "x", "anchor_title": "A", "mentions": 1})
+    ranked = discovery.blend_and_rank([candidate])
+    assert any(r.startswith("New: has started citing") for r in ranked[0]["reasons"])
+    assert not any(r.startswith("Significant") for r in ranked[0]["reasons"])
 
 
 def test_connectivity_bonus_needs_more_than_one_anchor():
@@ -199,6 +245,23 @@ def test_momentum_lifts_a_young_fast_paper_but_never_an_old_one():
     # Capped: absurd velocity cannot swamp relevance.
     surge = {"year": year, "citation_count": 100_000}
     assert discovery._momentum_term(surge, 100_000) == discovery.MOMENTUM_CAP
+    # "Last 3 years" means exactly 3 calendar years, and a provider mis-date in the future
+    # (a "forthcoming" journal version) must not turn lifetime citations into velocity.
+    assert discovery._momentum_term({"year": year - discovery.MOMENTUM_YOUNG_YEARS,
+                                     "citation_count": 100}, 100) == 0.0
+    assert discovery._momentum_term({"year": year + 1, "citation_count": 40}, 40) == 0.0
+
+
+def test_momentum_stale_counts_window_falls_back_to_lifetime_rate():
+    """The same paper must score alike whichever lane found it: counts_by_year rows that lag
+    (or fall outside the window) fall back to the lifetime rate, not to zero."""
+    from datetime import UTC, datetime
+    year = datetime.now(UTC).year
+    stale_window = {"year": year - 2, "citation_count": 100,
+                    "counts_by_year": [{"year": year - 4, "cited_by_count": 5}]}
+    s2_twin = {"year": year - 2, "citation_count": 100}
+    assert discovery._momentum_term(stale_window, 100) == \
+        discovery._momentum_term(s2_twin, 100) > 0
 
 
 def test_momentum_velocity_fallback_without_counts_by_year():

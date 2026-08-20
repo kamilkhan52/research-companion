@@ -533,6 +533,11 @@ def _merge_candidate(existing: dict, incoming: dict) -> None:
             if isinstance(value, int)
         ]
         existing[field] = max(values) if values else None
+    # Momentum's input: only the OpenAlex lanes carry it, so when the merge target came from
+    # another lane (or the reservoir), the fresh row's table must survive the merge — otherwise
+    # the accurate velocity fires only on a candidate's first-ever sighting.
+    if incoming.get("counts_by_year") and not existing.get("counts_by_year"):
+        existing["counts_by_year"] = incoming["counts_by_year"]
 
 
 def collect_candidates(
@@ -1074,17 +1079,19 @@ def _momentum_term(candidate: dict, cites: int) -> float:
     if not isinstance(year, int):
         return 0.0
     now = datetime.now(UTC).year
-    age = max(0.5, now - year + 0.5)      # a paper published this year is ~half a year old
-    if now - year > MOMENTUM_YOUNG_YEARS:
+    # A future year is a provider mis-date (a "forthcoming" journal version): with the age clamp
+    # it would turn LIFETIME citations into near-maximum momentum, so it gets nothing instead.
+    if year > now or now - year >= MOMENTUM_YOUNG_YEARS:
         return 0.0
+    age = max(0.5, now - year + 0.5)      # a paper published this year is ~half a year old
     counts = candidate.get("counts_by_year")
-    if isinstance(counts, list) and counts:
-        recent = sum(int(row.get("cited_by_count") or 0) for row in counts
-                     if isinstance(row, dict) and isinstance(row.get("year"), int)
-                     and row["year"] >= now - 1)
-        velocity = recent / min(age, 2.0)
-    else:
-        velocity = (cites or 0) / age
+    recent = sum(int(row.get("cited_by_count") or 0)
+                 for row in (counts if isinstance(counts, list) else [])
+                 if isinstance(row, dict) and isinstance(row.get("year"), int)
+                 and row["year"] >= now - 1)
+    # counts_by_year rows can lag the count itself; an empty or stale window falls back to the
+    # lifetime rate rather than zero, so the same paper scores alike whichever lane found it.
+    velocity = recent / min(age, 2.0) if recent > 0 else (cites or 0) / age
     if velocity <= 0:
         return 0.0
     return min(MOMENTUM_CAP, MOMENTUM_SCALE * math.log10(1 + velocity))
@@ -1101,24 +1108,32 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
         reasons: list[str] = []
         if candidate.get("screen_note"):
             reasons.append(candidate["screen_note"])
-        significance = candidate.get("significance") or {}
+        # Named `sig`, NOT `significance`: that would shadow the imported module for the whole
+        # function body and make `significance.SIGNIFICANT_VERBS` below an UnboundLocalError.
+        sig = candidate.get("significance") or {}
+        # `.get`, never a subscript: a label added in significance.py must degrade this line to
+        # the plain lane wording, not kill a multi-minute run after its LLM money is spent.
+        verb = significance.SIGNIFICANT_VERBS.get(sig.get("label", ""))
         if "new_citation" in channels:
             provenance_term += PROVENANCE_BONUS_NEW_CITATION
-            anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
-                           if p.get("channel") == "new_citation" and p.get("anchor_title")), "")
-            if significance.get("significant"):
+            if sig.get("significant") and verb:
                 # The lane's evidence line (spec §4's output rule): what the citer DID with the
-                # reader's paper, in its own words, never just "new relevant paper".
+                # reader's paper, in its own words, never just "new relevant paper". The anchor
+                # and count come from the significance block — the EDGE that earned the label —
+                # not from whichever provenance entry happens to sit first. Inserted at the
+                # FRONT: clients render reasons[0], and this line is the one the stage paid for.
                 provenance_term += SIGNIFICANT_CITER_BONUS
-                verb = {"EXTENDS": "extends", "USES": "uses",
-                        "CONTRASTS": "challenges"}[significance["label"]]
-                mentions = significance.get("mentions") or 0
+                anchor = str(sig.get("anchor_title") or "")
+                mentions = sig.get("mentions") or 0
                 times = f" {mentions}×" if mentions > 1 else ""
-                note = str(significance.get("note") or "").rstrip(".")
+                note = str(sig.get("note") or "").rstrip(".")
                 line = f"Significant: {verb} “{anchor[:70]}”{times}" if anchor else \
                     f"Significant: {verb} a paper on your reading list{times}"
-                reasons.append(f"{line} — {note}" if note else line)
+                reasons.insert(0, f"{line} — {note}" if note else line)
             else:
+                anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
+                               if p.get("channel") == "new_citation" and p.get("anchor_title")),
+                              "")
                 reasons.append(f"New: has started citing “{anchor[:70]}” from your list" if anchor
                                else "New: has started citing a paper on your reading list")
         if "cites" in channels:
@@ -1154,7 +1169,10 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
             "credibility": 0.0,
             "score": round(relevance + citation_term + provenance_term
                            + connectivity_term + momentum_term, 3),
-            "reasons": list(dict.fromkeys(r for r in reasons if r))[:4],
+            # 5, up from 4: the connectivity line lands on exactly the multi-channel candidates
+            # that already carry a screen note plus one reason per channel, where a cap of 4
+            # cut the very line that distinguishes them.
+            "reasons": list(dict.fromkeys(r for r in reasons if r))[:5],
         })
     out.sort(key=lambda c: (c["score"], c["relevance"], c.get("citation_count") or 0),
              reverse=True)
@@ -1401,10 +1419,18 @@ def run_discovery(
         scored = list(state["scored"])
         abstract_audit = state["abstract_audit"]
 
+    # The ranked reel first, BEFORE the significance batches: this preview used to appear the
+    # moment scoring finished, and a new paid stage must not put a silent multi-batch gap in
+    # front of it. The final list below re-ranks with the significance evidence folded in.
+    ranked_so_far = blend_and_rank(scored)
+    yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
+    if cancelled():
+        return
+
     # Lane-1 significance (DR-052 PR 3): classify HOW the new citers cite, on the survivors
     # only. Runs on both checkpoint branches — a resumed run skipped the paid scoring above,
-    # but this stage's ledger cache (keyed on the context sentences, not the profile) makes a
-    # repeat classification free, so re-entering here re-buys nothing that didn't change.
+    # and this stage's ledger cache (keyed on the context sentences, not the profile) plus the
+    # checkpoint re-save below make a repeat classification free.
     def _record_significance(candidate: dict, *, label: str, note: str, model: str,
                              contexts_hash: str) -> None:
         entry = discovery_ledger.get(ledger, _candidate_key(candidate))
@@ -1413,14 +1439,15 @@ def run_discovery(
                 entry, label=label, note=note, model=model,
                 contexts_hash=contexts_hash, today=today)
 
-    if cancelled():
-        return
     significance_audit = significance.classify(
         scored, cheap_llm, ledger=ledger, cheap_model=CHEAP_MODEL,
         get_entry=discovery_ledger.get, record_entry=_record_significance)
-
-    ranked_so_far = blend_and_rank(scored)
-    yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
+    # Re-save the scored checkpoint with the classified candidates and their ledger records:
+    # the classification was PAID for, and a Stop/crash between here and the final persist
+    # would otherwise resume from a ledger that never saw it and buy it all again — the exact
+    # gap checkpoints exist for, and what triage/scoring both do at their own boundaries.
+    state.update({"ledger": ledger, "scored": scored})
+    discovery_checkpoint.save(checkpoint_key, "scored", state)
     if cancelled():
         return
 
@@ -1440,7 +1467,10 @@ def run_discovery(
     funnel = {"gathered": len(candidates), **gate_counts,
               "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
     degraded = [*triage_audit.get("degraded", []), *abstract_audit.get("degraded", []),
-                *recall_audit.get("degraded", [])]
+                *recall_audit.get("degraded", []),
+                # A dead significance stage must not read as "nothing significant cited you
+                # this week" — same reasoning as the lexical_error entry below.
+                *significance_audit.get("degraded", [])]
     if plan_error:
         degraded.append(f"Query planning failed ({plan_error}); searched your words directly")
     if lexical_error:

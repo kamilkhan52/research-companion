@@ -22,6 +22,12 @@ Two deliberate design points, both measured live on 2026-08-14 (spec §3):
   phrases ("we extend", "we build on") (F5). S2's `isInfluential` is a boost into the LLM slice,
   never a gate — it has ~11% recall on new citers.
 
+Everything is scored and classified **per edge, never pooled across a candidate**: one citer can
+cite two reading-list papers with different intent, and pooling would let a cue about paper B
+push the candidate over the threshold while the model — and the evidence line — get told about
+paper A. The strongest edge is the one classified, and the significance block names its anchor,
+so the line the reader sees is about the edge that earned it.
+
 The failure mode to watch (spec §6, from the scite evaluation): collapse-to-the-boring-class.
 The audit therefore counts labels per class, so a run of all-BACKGROUND is visible rather than
 silently plausible.
@@ -48,6 +54,10 @@ CONTEXTS_CHARS = 700
 #: BACKGROUND (related-work lists) are the incidental majority.
 LABELS = ("EXTENDS", "USES", "CONTRASTS", "COMPARES", "BACKGROUND")
 SIGNIFICANT_LABELS = frozenset({"EXTENDS", "USES", "CONTRASTS"})
+#: The evidence line's verb per significant label. Lives HERE, beside the label set, so adding a
+#: label is one edit in one module — the blend looks the verb up and treats a miss as
+#: not-significant rather than raising mid-run.
+SIGNIFICANT_VERBS = {"EXTENDS": "extends", "USES": "uses", "CONTRASTS": "challenges"}
 
 #: Valenzuela F5 — cue phrases that mark a citation as load-bearing in the citer's own prose.
 #: Deliberately conservative: these appear IN the context sentence quoting the reader's paper.
@@ -61,11 +71,17 @@ _CUE_RE = re.compile(
 )
 
 #: Pre-filter weights. The threshold admits roughly the top slice the honest prior describes:
-#: one plain mention scores 0.25 and stays out; two mentions, a cue phrase, a short reference
-#: list, or the isInfluential flag each push an edge over.
+#: one plain mention scores 0.25 and stays out; two mentions, a cue phrase, a genuinely short
+#: reference list, or the isInfluential flag each push an edge over.
 PRESCORE_MENTION = 0.25       # per context sentence, capped at 4
 PRESCORE_CUE = 0.6            # any cue phrase in any context
 PRESCORE_SCARCITY = 6.0       # x 1/referenceCount (F7): 30 refs -> 0.2, 120 refs -> 0.05
+#: F7's floor, set so the scarcity term maxes at 0.2 — BELOW what a single plain mention needs
+#: to cross the threshold. Two reasons: S2 reports referenceCount 1-5 for preprints whose
+#: bibliography extraction failed (6.0/2 = 3.0 would admit passing mentions wholesale, turning
+#: the 5-15% paid slice into most of the lane), and in Valenzuela F7 is a *feature* that
+#: sharpens real signals, not a gate that admits on its own.
+PRESCORE_MIN_REFERENCES = 30
 PRESCORE_INFLUENTIAL = 0.5    # S2's flag: a boost into the slice, never a gate
 PRESCORE_THRESHOLD = 0.5
 
@@ -75,38 +91,47 @@ def _edges(candidate: dict) -> list[dict]:
             if isinstance(p, dict) and p.get("channel") == "new_citation"]
 
 
-def prescore(candidate: dict) -> tuple[float, dict]:
-    """The deterministic Valenzuela pre-filter over a candidate's new-citation edges.
-
-    Returns (score, features). Feature values ride into the audit and the significance block so
-    a surprising classification can be traced to what the pre-filter saw.
-    """
-    contexts: list[str] = []
-    influential = False
-    reference_count = None
-    for edge in _edges(candidate):
-        contexts.extend(str(c) for c in (edge.get("contexts") or []) if str(c).strip())
-        influential = influential or bool(edge.get("is_influential"))
-        rc = edge.get("reference_count")
-        if isinstance(rc, int) and rc > 0:
-            reference_count = rc if reference_count is None else min(reference_count, rc)
-
+def _score_edge(edge: dict) -> tuple[float, dict]:
+    contexts = [str(c) for c in (edge.get("contexts") or []) if str(c).strip()]
     mentions = len(contexts)
     cue = any(_CUE_RE.search(c) for c in contexts)
+    rc = edge.get("reference_count")
+    reference_count = rc if isinstance(rc, int) and rc > 0 else None
     score = PRESCORE_MENTION * min(mentions, 4)
     if cue:
         score += PRESCORE_CUE
     if reference_count:
-        score += PRESCORE_SCARCITY / reference_count
-    if influential:
+        score += PRESCORE_SCARCITY / max(reference_count, PRESCORE_MIN_REFERENCES)
+    if edge.get("is_influential"):
         score += PRESCORE_INFLUENTIAL
     return score, {
         "mentions": mentions,
         "cue": cue,
         "reference_count": reference_count,
-        "influential": influential,
+        "influential": bool(edge.get("is_influential")),
         "contexts": contexts,
+        "anchor_slug": edge.get("anchor_slug") or "",
+        "anchor_title": edge.get("anchor_title") or "",
     }
+
+
+def prescore(candidate: dict) -> tuple[float, dict]:
+    """The deterministic Valenzuela pre-filter, per edge, returning the STRONGEST edge.
+
+    Per edge and never pooled: one citer can cite two reading-list papers with different
+    intent, and pooling contexts would earn a bonus with evidence about one paper while
+    attributing it to another. Returns (best score, best edge's features); features carry the
+    edge's anchor so classification and the evidence line stay about the same paper.
+    """
+    best_score, best_features = 0.0, {
+        "mentions": 0, "cue": False, "reference_count": None, "influential": False,
+        "contexts": [], "anchor_slug": "", "anchor_title": "",
+    }
+    for edge in _edges(candidate):
+        score, features = _score_edge(edge)
+        if features["contexts"] and score > best_score:
+            best_score, best_features = score, features
+    return best_score, best_features
 
 
 def _contexts_hash(contexts: list[str]) -> str:
@@ -120,12 +145,13 @@ def classify(candidates: list[dict], cheap_llm, *, ledger: dict | None = None,
 
     Runs over the ~60 gate/triage survivors, never the raw reservoir — the spec's budget rule is
     "LLM triage runs only on gate survivors and weekly deltas". Within those, only edges past the
-    deterministic pre-filter (or with no contexts at all, nothing) reach the model, and results
-    are ledger-cached by context hash so a weekly re-run re-buys nothing that didn't change.
+    deterministic pre-filter reach the model, and results are ledger-cached by context hash so a
+    weekly re-run re-buys nothing that didn't change.
 
     `get_entry`/`record_entry` are the ledger seams (discovery_ledger.get + a recorder); injected
     so tests need no ledger on disk. Never raises for model-side problems — a failed batch leaves
-    those candidates unclassified, which ranks them exactly as before this stage existed.
+    those candidates unclassified, which ranks them exactly as before this stage existed — and a
+    total failure lands in `audit["degraded"]`, which the run merges into its own degraded list.
     """
     audit: dict = {"stage": "citation_significance", "lane": 0, "selected": 0, "reused": 0,
                    "labels": {}, "degraded": []}
@@ -134,7 +160,7 @@ def classify(candidates: list[dict], cheap_llm, *, ledger: dict | None = None,
     if not lane:
         return audit
 
-    selected: list[tuple[dict, dict, str]] = []   # (candidate, features, contexts_hash)
+    selected: list[tuple[dict, dict, str]] = []   # (candidate, best-edge features, ctx hash)
     for candidate in lane:
         score, features = prescore(candidate)
         if not features["contexts"]:
@@ -161,9 +187,8 @@ def classify(candidates: list[dict], cheap_llm, *, ledger: dict | None = None,
     system = prompts.render("discover_citation_significance")
 
     def render(index: int, item: dict) -> str:
-        candidate, features, _ = selected[index - 1]
-        anchor = next((e.get("anchor_title") for e in _edges(candidate)
-                       if e.get("anchor_title")), "") or "a paper on the reading list"
+        _, features, _ = selected[index - 1]
+        anchor = features["anchor_title"] or "a paper on the reading list"
         quoted = " | ".join(features["contexts"])[:CONTEXTS_CHARS]
         return (f"{index}|cited work: {str(anchor)[:120]}|"
                 f"mentions={features['mentions']}|{quoted}")
@@ -195,6 +220,10 @@ def _attach(candidate: dict, label: str, note: str, score: float, features: dict
         "label": label,
         "significant": label in SIGNIFICANT_LABELS,
         "note": note,
+        # The classified EDGE's anchor and count — the evidence line must be about the paper
+        # whose sentences earned the label, not whichever edge happens to sit first.
+        "anchor_title": features["anchor_title"],
+        "anchor_slug": features["anchor_slug"],
         "mentions": features["mentions"],
         "prescore": round(score, 3),
     }
