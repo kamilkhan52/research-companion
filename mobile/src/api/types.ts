@@ -795,6 +795,11 @@ export interface DiscoveryResult {
   source_counts?: { arxiv: number; semantic_scholar: number };
   top_n: number;
   suggestions: PaperSuggestion[];
+  /** DR-066: suggestions excluded because they identify a paper already on the reading list.
+   * Server-computed at read time (routers/discovery._without_hidden); each carries
+   * `library_match` — the reading-list title it matched. Absent on results served by an older
+   * backend. */
+  in_library?: (PaperSuggestion & { library_match?: string })[];
   generated_at: string;
 }
 

@@ -31,14 +31,18 @@ def start_discovery(pid: str, req: DiscoverReq):
 
 
 def _without_hidden(result: dict | None) -> dict | None:
-    """A copy of the persisted result with hidden suggestions AND already-in-library papers
-    removed (R12.3; library exclusion added DR-002, 2026-08-11). The stored file keeps every
-    suggestion either way, so unhiding never needs a re-run and neither would un-excluding."""
+    """A copy of the persisted result with hidden suggestions removed and already-in-library
+    papers split out (R12.3; library exclusion added DR-002, 2026-08-11; the split is DR-066's
+    "reveal them, but not by default"). The stored file keeps every suggestion either way, so
+    unhiding never needs a re-run and neither does revealing the library matches — they ride
+    the response as `in_library`, each carrying the reading-list title it identified with.
+    Hidden wins over in-library on purpose: a suggestion the reader explicitly hid stays
+    hidden, not resurfaced in the library row."""
     if not result or not isinstance(result.get("suggestions"), list):
         return result
     suggestions = discovery.filter_hidden(result["suggestions"])
-    suggestions = discovery.filter_in_library(suggestions)
-    return {**result, "suggestions": suggestions}
+    suggestions, in_library = discovery.partition_in_library(suggestions)
+    return {**result, "suggestions": suggestions, "in_library": in_library}
 
 
 @project_router.get("/discover")

@@ -80,6 +80,7 @@ export default function DiscoverScreen() {
 
   const result = discovery.data?.result ?? null;
   const suggestions = result?.suggestions ?? [];
+  const inLibrary = result?.in_library ?? [];
   const topN = result?.top_n ?? 5;
   const visible = showAll ? suggestions : suggestions.slice(0, topN);
   const hiddenCount = suggestions.length - Math.min(topN, suggestions.length);
@@ -236,6 +237,7 @@ export default function DiscoverScreen() {
                   style={{ marginTop: space.md }}
                 />
               ) : null}
+              {inLibrary.length > 0 ? <InLibraryRow items={inLibrary} /> : null}
             </View>
           ) : null}
 
@@ -570,7 +572,60 @@ export function SuggestionCard({
   );
 }
 
+/** DR-066 — Kamil: suggestions already on the reading list "shouldn't be included. We could
+ *  have an option to reveal them, but not by default." A quiet collapsed count row under the
+ *  results; expanding lists each excluded suggestion with the reading-list title it matched,
+ *  so the reader can audit the exclusion without the duplicates competing with real results. */
+export function InLibraryRow({ items }: { items: (PaperSuggestion & { library_match?: string })[] }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={styles.inLibrary}>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        style={styles.inLibraryHead}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${items.length} suggestion${items.length === 1 ? '' : 's'} already in your library. Tap to ${open ? 'collapse' : 'expand'}.`}
+      >
+        <Icon name="check-circle" size={14} color={t.muted} />
+        <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+          {items.length} already in your library
+        </Text>
+        <Icon name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.muted} />
+      </Pressable>
+      {open
+        ? items.map((s) => (
+            <View key={s.candidate_id} style={styles.inLibraryItem}>
+              <Text variant="caption" numberOfLines={2}>{s.title}</Text>
+              {s.library_match && s.library_match !== s.title ? (
+                <Text variant="caption" color={t.muted} numberOfLines={1}>
+                  matches “{s.library_match}”
+                </Text>
+              ) : null}
+            </View>
+          ))
+        : null}
+    </View>
+  );
+}
+
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
+  inLibrary: {
+    marginTop: space.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.line,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  inLibraryHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs, minHeight: 32 },
+  inLibraryItem: {
+    marginTop: space.sm,
+    paddingLeft: space.md + space.xs,
+    gap: 2,
+  },
   body: { padding: space.md, paddingBottom: space.xxl },
   finds: {
     marginTop: space.sm,
