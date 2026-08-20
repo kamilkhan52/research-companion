@@ -279,7 +279,7 @@ def chase_citations(anchors: list[dict], *, client: httpx.Client,
                 params={"filter": ",".join(filters), "sort": "cited_by_count:desc",
                         "per-page": CITES_PER_PAGE,
                         "select": "id,doi,title,abstract_inverted_index,publication_year,"
-                                  "cited_by_count,type,primary_location,authorships"},
+                                  "cited_by_count,counts_by_year,type,primary_location,authorships"},
                 timeout=TIMEOUT_S)
         except httpx.HTTPError:
             log.info("citation chase unreachable for %s; skipping", key)
@@ -350,6 +350,12 @@ def _from_openalex(row: dict) -> dict | None:
         "arxiv_id": arxiv_id,
         "year": row.get("publication_year"),
         "citation_count": row.get("cited_by_count"),
+        # Momentum's input (DR-052 PR 3): a free select field; trimmed to the recent window the
+        # blend actually reads so thousands of candidates don't carry decade-long tables.
+        "counts_by_year": sorted(
+            (r for r in (row.get("counts_by_year") or [])
+             if isinstance(r, dict) and isinstance(r.get("year"), int)),
+            key=lambda r: r["year"], reverse=True)[:3],
         "url": landing or (f"https://doi.org/{doi}" if doi else ""),
         "authors": [a for a in authors if a][:12],
         "publication_types": [row.get("type")] if row.get("type") else [],
@@ -444,7 +450,7 @@ def sweep_topics(anchors: list[dict], *, client: httpx.Client, frontier: dict,
                     "per-page": TOPIC_PER_PAGE,
                     "sort": "cited_by_count:desc",
                     "select": "id,doi,title,abstract_inverted_index,publication_year,"
-                              "cited_by_count,type,primary_location,authorships,topics",
+                              "cited_by_count,counts_by_year,type,primary_location,authorships,topics",
                 }, timeout=TIMEOUT_S)
             if response.status_code != 200:
                 raise httpx.HTTPStatusError(

@@ -50,6 +50,10 @@ _CANDIDATE_SCALARS = (
 _CANDIDATE_LISTS = (
     "authors", "author_ids", "fields_of_study", "publication_types", "sources", "channels",
     "provenance",
+    # Momentum's per-year table (DR-052 PR 3): already trimmed to 3 rows at recall. Without it
+    # the reservoir round-trip silently downgrades a returning candidate to the lifetime-rate
+    # fallback, so its score would change between runs with unchanged data.
+    "counts_by_year",
 )
 
 
@@ -197,6 +201,15 @@ def record_abstract_score(entry: dict, *, relevance: int, role: str, note: str, 
                           profile: str, today: str) -> None:
     entry["abstract"] = {"relevance": relevance, "role": role, "model": model,
                          "note": note[:160], "profile_hash": profile, "at": today}
+
+
+def record_citation_significance(entry: dict, *, label: str, note: str, model: str,
+                                 contexts_hash: str, today: str) -> None:
+    """Lane-1 classification cache (DR-052 PR 3). Keyed on the CONTEXTS hash, not the profile:
+    how a citer cites a paper is a fact about the two papers, unchanged by the reader's goals —
+    so a goals rewrite must not re-buy it, while a new context sentence must."""
+    entry["citation"] = {"label": label, "note": note[:160], "model": model,
+                         "contexts_hash": contexts_hash, "at": today}
 
 
 def cached_cheap_drop(entry: dict | None, *, model: str, profile: str) -> bool:
