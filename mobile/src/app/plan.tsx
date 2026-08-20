@@ -251,7 +251,7 @@ function PlanBody({ plan }: { plan: Plan }) {
             <Text variant="heading" color={t.amber}>A little room remains</Text>
           </View>
           <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
-            Nothing changes until the allowance reaches zero. Scholiast keeps working in the meantime.
+            Nothing changes until the allowance reaches zero. Seminar keeps working in the meantime.
           </Text>
         </ToneSurface>
       ) : null}

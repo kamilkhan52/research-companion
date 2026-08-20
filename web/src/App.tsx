@@ -70,7 +70,7 @@ export function App() {
   return <ErrorBoundary><LibraryProvider><AudioProvider>
     <>
       <TopBar
-        title="Scholiast"
+        title="Seminar"
         showBack={route.view !== 'library' && route.view !== 'settings'}
         onBack={() => navigate('library')}
         onSettings={() => navigate('settings')}

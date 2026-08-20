@@ -318,7 +318,7 @@ export default function LibraryScreen() {
 
   const header = (
     <TabHeader
-      title="Scholiast"
+      title="Seminar"
       actions={[
         { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
       ]}

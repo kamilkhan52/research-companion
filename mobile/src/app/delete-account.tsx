@@ -104,7 +104,7 @@ export default function DeleteAccountScreen() {
           <View style={styles.list}>
             <DeletionItem text="Projects, papers, discussions, and notes" />
             <DeletionItem text="Generated narrations and account settings" />
-            <DeletionItem text="Your Scholiast sign-in identity" />
+            <DeletionItem text="Your Seminar sign-in identity" />
           </View>
 
           <Text variant="heading" style={{ marginTop: space.xl }}>

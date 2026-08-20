@@ -23,7 +23,7 @@ describe('App', () => {
   it('renders the top bar title', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    expect(await screen.findByText('Scholiast')).toBeInTheDocument();
+    expect(await screen.findByText('Seminar')).toBeInTheDocument();
   });
 
   it('shows loading state on library view', async () => {
@@ -49,7 +49,7 @@ describe('App', () => {
   it('hides back button on library view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    await screen.findByText('Scholiast');
+    await screen.findByText('Seminar');
     expect(screen.queryByLabelText('Back')).not.toBeInTheDocument();
   });
 
