@@ -254,3 +254,27 @@ def test_a_brand_new_citer_is_not_dropped_by_the_citation_floor():
     kept, counts = _gate([candidate])
     assert counts["citation_floor"] == 0
     assert [c["title"] for c in kept] == ["Just cited you"]
+
+
+# ---------- lane 3's S2 primitives (DR-052 PR 3b) ----------
+
+def test_a_recommendation_is_grounded_and_bypasses_the_citation_floor():
+    """Seeded entirely by the reader's library and dismissals: a citation floor would delete
+    exactly the fresh work a corpus-seeded recommender surfaces best."""
+    kept, counts = _gate([{"title": "T", "abstract": "a", "year": 2010,
+                           "citation_count": 0, "channels": ["s2_recommendations"]}])
+    assert len(kept) == 1
+    assert counts["citation_floor"] == 0
+
+
+def test_a_snippet_passage_counts_as_substance():
+    """Snippet hits often carry externalIds only — no abstract, no counts. The matched
+    full-text passage is more substance than an abstract fragment, not less."""
+    kept, counts = _gate([{"title": "T", "snippet": "We measure decode latency on ...",
+                           "channels": ["snippet"]}])
+    assert len(kept) == 1
+    assert counts["no_substance"] == 0
+    # And a snippet-less equivalent still drops, so the pass above is the passage's doing.
+    kept, counts = _gate([{"title": "T", "channels": ["snippet"]}])
+    assert kept == []
+    assert counts["no_substance"] == 1

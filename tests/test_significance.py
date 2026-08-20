@@ -269,3 +269,30 @@ def test_momentum_velocity_fallback_without_counts_by_year():
     year = datetime.now(UTC).year
     s2_only = {"year": year - 1, "citation_count": 60}
     assert discovery._momentum_term(s2_only, 60) > 0
+
+
+def test_snippet_reason_quotes_the_passage():
+    candidate = {"title": "Snippet Hit", "relevance": 6.0, "citation_count": 0,
+                 "channels": ["snippet"],
+                 "provenance": [{"channel": "snippet", "query": "q",
+                                 "passage": "We measure decode latency on 3D-stacked DRAM."}]}
+    ranked = discovery.blend_and_rank([candidate])
+    assert any(r.startswith("Its full text says:") and "decode latency" in r
+               for r in ranked[0]["reasons"])
+
+
+def test_recommendation_reason_names_the_steering():
+    steered = {"title": "Steered", "relevance": 6.0, "citation_count": 0,
+               "channels": ["s2_recommendations"],
+               "provenance": [{"channel": "s2_recommendations",
+                               "positives": 30, "negatives": 4}]}
+    unsteered = {"title": "Unsteered", "relevance": 6.0, "citation_count": 0,
+                 "channels": ["s2_recommendations"],
+                 "provenance": [{"channel": "s2_recommendations",
+                                 "positives": 30, "negatives": 0}]}
+    ranked = discovery.blend_and_rank([steered, unsteered])
+    by_title = {c["title"]: c for c in ranked}
+    assert any("dismissed" in r for r in by_title["Steered"]["reasons"])
+    assert all("dismissed" not in r for r in by_title["Unsteered"]["reasons"])
+    assert any(r.startswith("Recommended from your reading list")
+               for r in by_title["Unsteered"]["reasons"])

@@ -155,14 +155,20 @@ def _request(
     pacer: RequestPacer = _PACER,
     sleep: Callable[[float], None] = time.sleep,
     require_key: bool = True,
+    json_body: dict[str, Any] | None = None,
 ) -> httpx.Response:
+    """One paced, retried request. GET by default; a `json_body` makes it a POST (the
+    recommendations API is POST-only — the seed lists don't fit in a query string)."""
     headers = _headers(key, required=require_key)
     response: httpx.Response | None = None
     for attempt in range(MAX_RETRIES):
         try:
             spend_control.require_enabled()
             response = paced_request(
-                lambda: client.get(path, params=params, headers=headers), pacer=pacer
+                lambda: (client.post(path, params=params, headers=headers, json=json_body)
+                         if json_body is not None
+                         else client.get(path, params=params, headers=headers)),
+                pacer=pacer,
             )
         except spend_control.ProviderSpendDisabled as exc:
             raise SemanticScholarError(str(exc)) from exc
@@ -601,6 +607,140 @@ def citing_papers(
             edge for row in rows
             if isinstance(row, dict) and (edge := _normalize_citation(row)) is not None
         ]
+    finally:
+        if own_client:
+            client.close()
+
+
+RECOMMENDATIONS_URL = "https://api.semanticscholar.org/recommendations/v1/papers/"
+#: Snippet hits carry the matching passage plus enough paper identity to become a candidate.
+SNIPPET_FIELDS = "snippet.text,paper.title,paper.externalIds,paper.corpusId"
+
+
+def recommendations(
+    positives: list[str],
+    negatives: list[str] | None = None,
+    *,
+    limit: int = 100,
+    key: str | None = None,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer = _PACER,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """S2's seed-based recommendations, WITH the negative list (spec §3 lane 3).
+
+    The negatives are what no competitor has: the reader's explicitly dismissed papers steer
+    the recommender away from whole regions, not just individual works. Ids accept the same
+    prefixed forms `paper_identifier` produces (`ArXiv:…`, `DOI:…`) or raw S2 paper ids.
+    One POST per run; an empty positive list returns nothing rather than asking the API for
+    recommendations seeded by nothing.
+    """
+    positives = [p for p in (positives or []) if p]
+    if not positives:
+        return []
+    own_client = client is None
+    client = client or httpx.Client(timeout=TIMEOUT_S)
+    try:
+        response = _request(
+            client,
+            RECOMMENDATIONS_URL,
+            params={"fields": SEARCH_FIELDS, "limit": max(1, min(limit, 500))},
+            key=key,
+            pacer=pacer,
+            sleep=sleep,
+            require_key=False,   # one call per run: fine on the anonymous pool, like search
+            json_body={
+                "positivePaperIds": positives[:100],
+                "negativePaperIds": [n for n in (negatives or []) if n][:100],
+            },
+        )
+        try:
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("recommendations response is not an object")
+            rows = payload.get("recommendedPapers") or []
+        except (TypeError, ValueError) as exc:
+            raise SemanticScholarError(
+                "Semantic Scholar returned malformed recommendations."
+            ) from exc
+        if not isinstance(rows, list):
+            raise SemanticScholarError("Semantic Scholar recommendations were not a list.")
+        return [
+            item for row in rows
+            if isinstance(row, dict) and (item := _normalize_search_result(row)) is not None
+        ]
+    finally:
+        if own_client:
+            client.close()
+
+
+def snippet_search(
+    query: str,
+    *,
+    limit: int = 10,
+    key: str | None = None,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer = _PACER,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """Full-text passage search (spec §3 lane 3): each hit carries the sentence that matched.
+
+    Better recall than abstract search for goal-specific CLAIMS (the claim may never reach the
+    abstract), and the passage doubles as the suggestion's evidence line. Returns candidate
+    dicts with a `snippet` field holding the matching text; identity is whatever the paper
+    object carries (often externalIds only — no S2 search-result row), so rows without a title
+    are dropped rather than surfaced unnameable.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    own_client = client is None
+    client = client or httpx.Client(base_url=BASE_URL, timeout=TIMEOUT_S)
+    try:
+        response = _request(
+            client,
+            "/snippet/search",
+            params={"query": query[:300], "limit": max(1, min(limit, 25)),
+                    "fields": SNIPPET_FIELDS},
+            key=key,
+            pacer=pacer,
+            sleep=sleep,
+            require_key=False,   # bounded to SNIPPET_QUERY_COUNT calls per run
+        )
+        try:
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("snippet response is not an object")
+            rows = payload.get("data") or []
+        except (TypeError, ValueError) as exc:
+            raise SemanticScholarError(
+                "Semantic Scholar returned malformed snippet results."
+            ) from exc
+        if not isinstance(rows, list):
+            raise SemanticScholarError("Semantic Scholar snippets were not a list.")
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            paper = row.get("paper") or {}
+            snippet = row.get("snippet") or {}
+            if not isinstance(paper, dict) or not isinstance(snippet, dict):
+                continue
+            title = str(paper.get("title") or "").strip()
+            text = str(snippet.get("text") or "").strip()
+            if not title or not text:
+                continue
+            external = paper.get("externalIds") or {}
+            if not isinstance(external, dict):
+                external = {}
+            out.append({
+                "title": title,
+                "arxiv_id": external.get("ArXiv") or external.get("ARXIV"),
+                "doi": external.get("DOI"),
+                "corpus_id": paper.get("corpusId"),
+                "snippet": text,
+            })
+        return out
     finally:
         if own_client:
             client.close()
