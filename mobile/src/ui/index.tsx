@@ -6,7 +6,6 @@
 import { Feather } from '@expo/vector-icons';
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import {
-  AccessibilityInfo,
   ActivityIndicator,
   Animated,
   Easing,
@@ -22,6 +21,7 @@ import {
 import { useSafeAreaInsets, type Edge } from 'react-native-safe-area-context';
 
 import { impactTap } from '@/lib/haptics';
+import { useReduceMotion } from '@/hooks/useReduceMotion';
 import {
   useTheme,
   useThemedStyles,
@@ -355,22 +355,6 @@ export function ProgressBar({
       />
     </View>
   );
-}
-
-function useReduceMotion(): boolean {
-  const [reduceMotion, setReduceMotion] = useState(false);
-  useEffect(() => {
-    let current = true;
-    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
-      if (current) setReduceMotion(enabled);
-    });
-    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
-    return () => {
-      current = false;
-      subscription.remove();
-    };
-  }, []);
-  return reduceMotion;
 }
 
 /** Progress that eases between server snapshots without replaying from zero on focus. The initial

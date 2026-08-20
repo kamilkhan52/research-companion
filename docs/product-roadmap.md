@@ -94,14 +94,13 @@ not competing sources of current truth.
 | U.23 | Audio-loading card: eq bars, warm copy, real progress (Figma 64:157) | [#106](https://github.com/kamilkhan52/research-companion/pull/106) | Complete |
 | U.24 | Project forking — v1 design (`docs/project-forking-design.md`) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Design ready — 3 open questions for Kamil; implementation after sign-off |
 | U.25 | Marketplace/sharing vision recorded (design doc §Later; not scheduled) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Recorded |
-| U.26 | Loading skeleton screens for initial, empty-cache fetches | — | Deferred until the post-subscription polish pass; implement before launch rehearsal/store screenshots |
+| U.26 | Loading skeleton screens for initial, empty-cache fetches | [#416](https://github.com/kamilkhan52/research-companion/pull/416) | Implemented — Android visual QA passed; device verification remains |
 
-### U.26 — Loading skeleton screens (deferred)
+### U.26 — Loading skeleton screens
 
 The familiar boxes that preview where content will appear are called **skeleton screens** or
-**skeleton loaders**. Add them after the credits/subscription flows have settled the final screen
-shapes, but before M10 launch rehearsal and store screenshots. This is presentation work only; it
-must not change query, cache, or background-job behavior.
+**skeleton loaders**. They now cover the initial empty-cache fetches below without changing query,
+cache, or background-job behavior.
 
 Use the smallest native implementation first:
 
@@ -120,6 +119,12 @@ Start with Library/project cards, Discover results, Notes lists, Settings/accoun
 paper header/session bootstrap. Do not skeletonize deliberate empty states, long-running job
 progress, chat generation, narration generation, or graph-building stages; those already carry
 meaningful status and progress UI.
+
+Implemented with a 150 ms delayed mount and one opacity animation per visible skeleton group.
+Cached data remains mounted during background refreshes; Discover's search controls and reattached
+job progress remain visible while its saved-result query warms up. Android emulator visual QA and
+the mobile test suite cover the current implementation; final closure still needs a narrow-device
+pass in Light, Dim, and Black with Reduce Motion both off and on.
 
 Implementation references: React Native's
 [`Animated` API](https://reactnative.dev/docs/animations) and
