@@ -807,6 +807,40 @@ def test_filter_in_library_drops_a_suggestion_already_on_the_reading_list(temp_p
     assert [c["title"] for c in kept] == ["Genuinely New Paper"]
 
 
+def test_partition_in_library_keeps_the_dropped_side_with_its_match(temp_project):
+    """DR-066's remainder: the excluded suggestions stay visible on demand, each naming the
+    reading-list entry it identified with."""
+    from app import store
+    store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+
+    kept, matched = discovery.partition_in_library([
+        {"arxiv_id": "1706.03762v5", "title": "Attention is all you need"},
+        {"arxiv_id": "2401.00000", "title": "Genuinely New Paper"},
+    ])
+    assert [c["title"] for c in kept] == ["Genuinely New Paper"]
+    assert [c["library_match"] for c in matched] == ["Attention Is All You Need"]
+    assert matched[0]["arxiv_id"] == "1706.03762v5"  # the suggestion itself, annotated
+
+
+def test_discover_response_splits_in_library_and_hidden_wins(temp_project, monkeypatch):
+    """The route's read-time shape: library matches ride `in_library`; a suggestion the reader
+    explicitly hid stays hidden rather than resurfacing in the library row."""
+    from app import store
+    from app.routers import discovery as discovery_routes
+    store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+    monkeypatch.setattr(discovery, "load_hidden", lambda: [
+        {"keys": discovery._identity_keys(
+            {"arxiv_id": "1706.03762", "title": "Attention Is All You Need"})},
+    ])
+
+    out = discovery_routes._without_hidden({"suggestions": [
+        {"arxiv_id": "1706.03762", "title": "Attention Is All You Need"},
+        {"arxiv_id": "2401.00000", "title": "Genuinely New Paper"},
+    ]})
+    assert [s["title"] for s in out["suggestions"]] == ["Genuinely New Paper"]
+    assert out["in_library"] == []  # hidden first: the hidden duplicate never reaches the row
+
+
 def test_filter_in_library_keeps_everything_for_an_empty_project(temp_project):
     items = [{"arxiv_id": "1706.03762", "title": "Attention is all you need"}]
     assert discovery.filter_in_library(items) == items

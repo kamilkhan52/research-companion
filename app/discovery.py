@@ -315,20 +315,32 @@ def filter_in_library(items: list | None, papers: list | None = None) -> list:
     for why the asymmetric id richness between a `Paper` and a real candidate needs a stricter
     rule than the reader's own explicit hides do.
     """
+    return partition_in_library(items, papers)[0]
+
+
+def partition_in_library(items: list | None, papers: list | None = None) -> tuple[list, list]:
+    """(kept, matched): `filter_in_library`'s split, keeping what it drops. DR-066's remainder
+    (Kamil: "we could have an option to reveal them, but not by default") wants the excluded
+    suggestions visible on demand, so each matched item gains `library_match` — the title of
+    the reading-list entry it identified with, which is the WHY a reader expanding the row is
+    looking for."""
     items = items or []
     papers = list(store.list_papers()) if papers is None else papers
     if not papers:
-        return items
-    library_keys = [_identity_keys({"arxiv_id": p.arxiv_id, "title": p.title}) for p in papers]
-    kept = []
+        return items, []
+    keyed = [(p, _identity_keys({"arxiv_id": p.arxiv_id, "title": p.title})) for p in papers]
+    kept, matched = [], []
     for item in items:
         if not isinstance(item, dict):
             kept.append(item)
             continue
         cand_keys = _identity_keys(item)
-        if not any(_library_match(keys, cand_keys) for keys in library_keys):
+        hit = next((p for p, keys in keyed if _library_match(keys, cand_keys)), None)
+        if hit is None:
             kept.append(item)
-    return kept
+        else:
+            matched.append({**item, "library_match": hit.title})
+    return kept, matched
 
 
 # ---------- LLM plumbing ----------
