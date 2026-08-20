@@ -153,18 +153,27 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
-def _extract_pdf(data: bytes) -> str:
+def looks_like_pdf(data: bytes) -> bool:
+    """Whether `data` starts a plausible PDF. The %PDF- marker may legitimately sit after up
+    to 1024 bytes of junk (the spec's own allowance), so the window is 1024 + len marker.
+    The ONE sniffing policy — the agentic hunt shares it, so a preamble'd PDF is not accepted
+    by one path and refused by the other."""
+    return b"%PDF-" in data[:1029]
+
+
+def _extract_pdf(data: bytes, *, upload: bool = False) -> str:
     # A client-supplied link often points at a web page rather than a PDF (DR-087: an
     # arxiv.org/html/ URL). pypdf's own failure for HTML bytes is the cryptic "Stream has
     # ended unexpectedly", which surfaced verbatim on the device — so refuse non-PDF bytes
-    # here with a message that tells the reader what to paste instead. The %PDF- marker may
-    # legitimately sit after up to 1024 bytes of junk (the spec's own allowance).
-    if b"%PDF-" not in data[:1024]:
+    # here with a message that tells the reader what to do instead. `upload` swaps the advice:
+    # this also serves extract_pdf_bytes (the upload flow), where "paste a link" is nonsense.
+    if not looks_like_pdf(data):
         looks_like_html = b"<html" in data[:1024].lower() or data[:256].lstrip()[:1].startswith(b"<")
         what = "a web page" if looks_like_html else "something that is not a PDF"
-        raise RetrievalError(
-            f"That link returned {what}, not a PDF. "
-            "Paste a direct PDF link, or the paper's arXiv page (abs/pdf/html all work).")
+        advice = ("Upload the paper's PDF file itself." if upload else
+                  "Paste a direct PDF link, or the paper's arXiv page (abs/pdf/html all work).")
+        source = "That file is" if upload else f"That link returned {what},"
+        raise RetrievalError(f"{source} not a PDF. {advice}")
     try:
         reader = PdfReader(io.BytesIO(data))
     except Exception as e:
@@ -184,7 +193,7 @@ def _extract_pdf(data: bytes) -> str:
 
 def extract_pdf_bytes(data: bytes) -> str:
     """Public wrapper: extract cleaned text from raw PDF bytes (for user-uploaded PDFs)."""
-    return _extract_pdf(data)
+    return _extract_pdf(data, upload=True)
 
 
 def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
@@ -288,7 +297,12 @@ def _arxiv_id_from_url(url: str) -> str | None:
         path = urlsplit(url).path
     except ValueError:
         return None
-    m = re.match(r"^/(?:abs|pdf|html)/(\d{4}\.\d{4,5}(?:v\d+)?)", path)
+    # New-style ids (2007+) and old-style archive ids (e.g. cond-mat/0703185) — an /abs/ link
+    # for a pre-2007 paper otherwise falls through to the raw-URL branch and fails with a
+    # message claiming abs links work.
+    m = re.match(
+        r"^/(?:abs|pdf|html)/(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Za-z]{2})?/\d{7}(?:v\d+)?)",
+        path)
     return m.group(1) if m else None
 
 
@@ -329,7 +343,7 @@ def _arxiv_id_via_web(title: str) -> str | None:
         out = research_tools.web_search(f"arXiv page for the paper: {title}", [f"{title} arxiv"])
     except Exception:
         return None
-    m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})", out)
+    m = re.search(r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})", out)
     return m.group(1) if m else None
 
 
@@ -342,13 +356,14 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     carries the raw downloaded PDF so a caller can reuse it (e.g. render a cover) without a second
     download; it's absent on the needs-confirmation branch.
     """
+    id_from_url = False
     if pdf_url:
         # A pasted arXiv link of any flavor (abs/html/pdf) canonicalizes to the id path below:
         # the abs and html pages are not PDFs, and even a pdf link benefits from the id branch's
         # metadata resolution.
         aid = _arxiv_id_from_url(pdf_url)
         if aid:
-            arxiv_id, pdf_url = aid, None
+            arxiv_id, pdf_url, id_from_url = aid, None, True
     if pdf_url:
         data = _fetch(pdf_url)
         return {"full_text": _extract_pdf(data), "arxiv_id": None,
@@ -374,9 +389,12 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         except RetrievalError:
             # A supplied arXiv id can be wrong — especially ids extracted from a bibliography by
             # the graph pipeline (often malformed or hallucinated). Rather than hard-fail, fall
-            # back to a title search so the paper can still be found. Re-raise only if we have no
-            # title to search on.
-            if not title:
+            # back to a title search so the paper can still be found. Re-raise if we have no
+            # title to search on — or if the id came from an explicitly pasted URL: the reader
+            # pastes a link precisely to override the automatic match, so quietly retrieving a
+            # DIFFERENT best-title-match paper would be worse than the error (the raw pdf_url
+            # branch this replaced always surfaced its failure).
+            if not title or id_from_url:
                 raise
 
     try:

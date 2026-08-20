@@ -19,6 +19,12 @@ describe('parseSource', () => {
     expect(parseSource(url)).toEqual({ arxiv_id: '2608.11668' });
   });
 
+  it('resolves an old-style (pre-2007) archive id', () => {
+    expect(parseSource('https://arxiv.org/abs/cond-mat/0703185')).toEqual({
+      arxiv_id: 'cond-mat/0703185',
+    });
+  });
+
   it('passes a non-arXiv URL through as pdf_url', () => {
     expect(parseSource('https://example.com/paper.pdf')).toEqual({
       pdf_url: 'https://example.com/paper.pdf',

@@ -84,7 +84,7 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
             return f"Download failed: HTTP {e.response.status_code}"
         except httpx.HTTPError as e:
             return f"Download failed: {str(e)[:120]}"
-        if not data.startswith(b"%PDF"):
+        if not retriever.looks_like_pdf(data):
             return "Not a PDF (wrong content — find a direct PDF link)"
         try:
             text = retriever.extract_pdf_bytes(data)
