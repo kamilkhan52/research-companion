@@ -171,7 +171,7 @@ export function SpendRefusalHost() {
   } else if (refusal.kind === 'rate_limited') {
     eyebrow = 'TRY AGAIN SHORTLY';
     title = 'New work is starting too quickly.';
-    body = 'Scholiast limits how quickly new work can start. Wait a few seconds, then try again.';
+    body = 'Seminar limits how quickly new work can start. Wait a few seconds, then try again.';
   } else {
     eyebrow = refusal.operation === 'narration' ? 'NARRATION' : 'THIS ACTION';
     title = refusal.operation === 'narration'

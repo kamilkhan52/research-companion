@@ -83,7 +83,7 @@ function LocalCleanupRequired() {
             {error ?? 'Some deleted-account data could not be cleared from this device.'}
           </Text>
           <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
-            Scholiast will not load private content while cleanup is incomplete. Clear the app’s
+            Seminar will not load private content while cleanup is incomplete. Clear the app’s
             storage in device settings, or try the cleanup again.
           </Text>
           <Button title="Try cleanup again" onPress={retry} style={{ marginTop: space.lg }} />
@@ -364,7 +364,7 @@ function EmailEntry({
       </Text>
       <Text variant="body" color={t.muted} style={styles.pageSubtitle}>
         {creating
-          ? 'Start your research journey with Scholiast.'
+          ? 'Start your research journey with Seminar.'
           : 'Sign in with your password, or have us email you a link.'}
       </Text>
 
@@ -468,7 +468,7 @@ function EmailEntry({
         onPress={() => onChangeMode(creating ? 'sign-in' : 'create-account')}
         style={styles.switchMode}>
         <Text variant="caption" color={t.muted}>
-          {creating ? 'Already have an account? ' : 'New to Scholiast? '}
+          {creating ? 'Already have an account? ' : 'New to Seminar? '}
           <Text variant="caption" color={t.mint}>
             {creating ? 'Sign in' : 'Create account'}
           </Text>
@@ -683,7 +683,7 @@ function ServerUnreachable() {
           <Icon name="alert-triangle" size={28} color={t.amber} />
         </View>
         <Text variant="editorial" style={{ textAlign: 'center' }}>
-          Can’t reach Scholiast
+          Can’t reach Seminar
         </Text>
         <Text variant="body" color={t.muted} style={styles.stateBody}>
           Check your connection and try again. If this keeps happening, the service may be
@@ -796,10 +796,10 @@ function Brand() {
         variant="serifTitle"
         color={t.mint}
         style={{ fontSize: 31, lineHeight: 36, fontFamily: fonts.serifSemiBold }}>
-        P
+        S
       </Text>
       <Text variant="title" color={t.mint} style={{ fontFamily: fonts.bodyBold }}>
-        Scholiast
+        Seminar
       </Text>
     </View>
   );
