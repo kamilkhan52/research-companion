@@ -28,7 +28,25 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-10)
+## Current position (updated 2026-08-20)
+
+**Delta since the 2026-08-10 write-up below** (which remains accurate for its date):
+- **M3 closed fully on 2026-08-14** — web-search metering was the last seam (detail below,
+  dated 2026-08-12, and §8.4 of the pricing analysis).
+- **M4 is in progress and blocked on exactly one thing that is Kamil's**: the Google Payments
+  merchant account (H8). The client foundation (RevenueCat SDK, identity, paywall behind a
+  flag) merged 2026-08-14 (#405); the Play app exists as **Seminar** (`io.scholiast.seminar`,
+  created 2026-08-18 — the app was renamed; the company stays Scholiast, see #414 and DR-086).
+  H9 (authoring the $10 Basic / $25 Pro products) is agent-doable once the merchant profile
+  exists.
+- **`pydantic-ai-slim` is pinned `<2.3`** after an unpinned CI resolve turned main red on
+  2026-08-19 with no code change (spend-ceiling hooks reach into pydantic-ai internals; a turn
+  would have settled at its MAXIMUM). Upgrading is deliberate work, never a fresh-install
+  side effect — see CLAUDE.md's dev-workflow note.
+- **DR-052 (Map/Discover merge) PRs 1–2 merged** (#407, #409); PRs 3–4 (lane-1 significance,
+  client convergence) are next in that track.
+
+**The 2026-08-10 position:**
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all migrations
