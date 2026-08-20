@@ -116,12 +116,22 @@ export interface DevTestFeedbackEntry {
   comment?: string;
   route?: string;
   screenshot?: string | null;
+  /** Why the screenshot did not land (too large / not an image / write failed). */
+  screenshot_error?: string;
   /** DR-080: the agent's markdown reply (kind === 'response'). */
   text?: string;
 }
 export const getDevTestItems = () => apiGet<{ items: DevTestItem[] }>('/api/devtest/items');
-export const createDevTestItem = (title: string, description?: string) =>
-  apiPost<{ item: DevTestItem }>('/api/devtest/items', { title, description });
+export const createDevTestItem = (
+  title: string,
+  description?: string,
+  // DR-088: a screenshot belongs on the issue at creation, not on a follow-up remark.
+  extra?: { screenshot_b64?: string; route?: string },
+) =>
+  apiPost<{ item: DevTestItem; screenshot?: string | null; screenshot_error?: string }>(
+    '/api/devtest/items',
+    { title, description, ...extra },
+  );
 export const recordDevTestFeedback = (body: {
   item_id: string;
   verdict: 'pass' | 'fail' | 'remark';

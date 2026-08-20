@@ -15,8 +15,10 @@ delete them**. This skill turns that inbox into ledger updates.
 - `.dev-feedback/feedback.jsonl` — one JSON entry per line, append-only. Three kinds:
   - `{"kind": "feedback", "ts", "item_id", "verdict": "pass|fail|remark", "comment", "route", "screenshot"}`
     — `route` is the app screen he was on; `screenshot` is a repo-relative PNG path or null.
-  - `{"kind": "new_item", "ts", "id": "NEW-…", "title", "description"}` — an issue he opened
-    from the phone; the `NEW-…` id is provisional until you assign a DR number.
+  - `{"kind": "new_item", "ts", "id": "NEW-…", "title", "description", "route", "screenshot"}`
+    — an issue he opened from the phone; the `NEW-…` id is provisional until you assign a DR
+    number. Since DR-088 the entry itself can carry `route` and a `screenshot` path (or null)
+    captured at creation — treat them exactly like a feedback entry's.
   - `{"kind": "response", "ts", "item_id", "text"}` — YOUR reply (DR-080), written via
     `devtest.append_response` in step 3 below; renders as markdown under the item in the
     phone's bubble.
@@ -37,7 +39,10 @@ delete them**. This skill turns that inbox into ledger updates.
      them away; quote them.
    - **remark** → append the comment to the row's evidence with its date. State unchanged
      unless the remark plainly reopens or closes it.
-   - **new_item** → create the next `DR-0XX` row (max existing + 1), `open`, with his title as
+   - **new_item** → view its `screenshot` when present (it is usually the context the title
+     abbreviates), and carry it — copied to `docs/device-review-assets/<DR-id>/` per the rule
+     below — plus the `route` into the new row's evidence column. Then create the next `DR-0XX`
+     row (max existing + 1), `open`, with his title as
      the feedback text and his description in the evidence column; note the provisional
      `NEW-…` id so the app's untriaged entry reconciles on his next refresh.
 3. **Answer him in the bubble (DR-080).** For every triaged entry that deserves a reply —

@@ -1077,6 +1077,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/session/{slug}/clear_chats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear Chats
+         * @description DR-079 — clear every discussion thread of one paper, on explicit confirmation.
+         *
+         *     Destructive by design, so the guards mirror project-splitting's posture: refused while
+         *     any thread's turn is generating or an approval is in flight; every transcript and thread
+         *     is removed under the paper's admission lock; and the deletion of git-TRACKED transcript
+         *     files is committed immediately with a pathspec limited to exactly those files (the same
+         *     invariant-4 posture as project_split — a human-confirmed action, deterministically
+         *     executed, and the commit is what keeps the cleared chats RECOVERABLE from git history
+         *     rather than silently swept into the next unrelated approval).
+         *
+         *     The paper itself — corpus, covers, committed notes, reading-list entry — is untouched:
+         *     clearing chats is not removing notes. The client separately OFFERS a Project Notes
+         *     retraction through the existing notes-agent propose/review flow when the paper had
+         *     contributed (invariant 4: that removal is a proposal the human approves, never a side
+         *     effect of this endpoint).
+         */
+        post: operations["clear_chats_api_projects__pid__session__slug__clear_chats_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/chat/jobs/active/{slug}": {
         parameters: {
             query?: never;
@@ -2143,6 +2177,10 @@ export interface components {
             title: string;
             /** Description */
             description?: string | null;
+            /** Screenshot B64 */
+            screenshot_b64?: string | null;
+            /** Route */
+            route?: string | null;
         };
         /** NotesAgentReq */
         NotesAgentReq: {
@@ -4096,6 +4134,38 @@ export interface operations {
                 "application/json": components["schemas"]["RequestChangesReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_chats_api_projects__pid__session__slug__clear_chats_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

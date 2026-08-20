@@ -99,6 +99,53 @@ def test_remark_requires_a_comment_and_verdicts_are_closed(client):
                        json={"item_id": "DR-001", "verdict": "pass"}).status_code == 200
 
 
+def test_screenshot_alone_is_a_valid_remark(client):
+    """DR-088: requiring words on top of a screenshot pushed the tester toward Pass/Fail
+    (which didn't complain) just to get the screenshot through."""
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n shot").decode()
+    r = client.post("/api/devtest/feedback",
+                    json={"item_id": "DR-001", "verdict": "remark", "screenshot_b64": png})
+    assert r.status_code == 200
+    assert r.json()["entry"]["screenshot"].startswith(".dev-feedback/screenshots/")
+    # With neither a comment nor a screenshot, a remark is still refused.
+    assert client.post("/api/devtest/feedback",
+                       json={"item_id": "DR-001", "verdict": "remark"}).status_code == 400
+    # A remark whose ONLY content is a screenshot that fails validation is refused too —
+    # there are no words to lose, and recording it would append a contentless entry while
+    # telling the tester their evidence landed.
+    r = client.post("/api/devtest/feedback",
+                    json={"item_id": "DR-001", "verdict": "remark",
+                          "screenshot_b64": "not-base64!!!"})
+    assert r.status_code == 400
+    assert "did not land" in r.json()["detail"]
+
+
+def test_new_issue_carries_its_screenshot_from_creation(client, tmp_path):
+    """DR-088: evidence attaches when the issue is created — the follow-up-remark second step
+    is what produced accidental Pass verdicts on brand-new issues."""
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n new issue").decode()
+    r = client.post("/api/devtest/items", json={
+        "title": "Fetch fails on html links", "description": "steps",
+        "screenshot_b64": png, "route": "/paper/x",
+    })
+    assert r.status_code == 200
+    entry = devtest._read_feedback()[-1]
+    assert entry["kind"] == "new_item"
+    assert entry["route"] == "/paper/x"
+    shot = tmp_path / "inbox" / "screenshots" / entry["screenshot"].split("/")[-1]
+    assert shot.read_bytes() == b"\x89PNG\r\n\x1a\n new issue"
+
+
+def test_a_bad_screenshot_never_discards_a_new_issue(client):
+    r = client.post("/api/devtest/items",
+                    json={"title": "Precious title", "screenshot_b64": "not-base64!!!"})
+    assert r.status_code == 200
+    entry = devtest._read_feedback()[-1]
+    assert entry["title"] == "Precious title"
+    assert entry["screenshot"] is None
+    assert entry["screenshot_error"]
+
+
 def test_a_bad_screenshot_never_discards_the_verdict(client, tmp_path):
     """The comment is the reader's typed input; a broken IMAGE must record the entry anyway,
     with the reason in its place — the first cut 400ed and lost both."""

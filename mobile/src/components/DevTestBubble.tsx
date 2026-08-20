@@ -458,6 +458,8 @@ export function DevTestBubble() {
             >
               {creating ? (
                 <NewItemForm
+                  shot={shot}
+                  route={pathname}
                   onDone={(item) => {
                     setCreating(false);
                     if (item) {
@@ -529,11 +531,48 @@ function Section({ label, tone }: { label: string; tone: string }) {
   );
 }
 
+// One control for "include the captured screen", shared by the new-issue form and the
+// per-item remark row so the affordance and its accessibility stay identical.
+function AttachToggle({ attach, onToggle }: { attach: boolean; onToggle: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <Pressable
+      onPress={onToggle}
+      style={styles.attachRow}
+      hitSlop={8}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked: attach }}
+      accessibilityLabel="Attach the captured screen"
+    >
+      <Icon name={attach ? 'check-square' : 'square'} size={16} color={t.mint} />
+      <Text variant="caption" color={t.text}>Attach the captured screen</Text>
+    </Pressable>
+  );
+}
+
+/** The toast suffix for a submission that asked for a screenshot — from the SERVER's answer,
+ *  not the request's intent: a dropped image (too large, invalid, disk error) otherwise gets
+ *  announced as "with screenshot" while triage finds nothing. */
+function screenshotOutcome(
+  wanted: boolean,
+  saved: string | null | undefined,
+  error: string | undefined,
+): string {
+  if (!wanted) return '';
+  if (saved) return ' with screenshot';
+  return ` — but the screenshot did not land (${error ?? 'unknown reason'})`;
+}
+
 interface NewItemDraft { title: string; description: string }
 const NEW_ITEM_DRAFT_FALLBACK: NewItemDraft = { title: '', description: '' };
 
 // Exported for a direct persistence test (DR-065), same reasoning as ItemCard above.
-export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void }) {
+export function NewItemForm({ shot, route, onDone }: {
+  // DR-088: the captured screen attaches at creation. Needing a follow-up remark for the
+  // screenshot is what produced accidental Pass verdicts on brand-new issues.
+  shot?: string | null; route?: string; onDone: (item: DevTestItem | null) => void;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   // DR-065: an unfinished new-issue draft used to vanish the moment the sheet closed (Modal
@@ -541,6 +580,10 @@ export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => 
   // uses for exactly this failure mode.
   const draft = usePersistedDraft<NewItemDraft>(draftKey('devtest-new-item'), NEW_ITEM_DRAFT_FALLBACK);
   const [busy, setBusy] = useState(false);
+  // Deliberately NOT in the persisted draft: the capture is per-open, so a checked state
+  // surviving to a later session would attach a DIFFERENT screen's pixels to this issue —
+  // misleading evidence is worse than re-ticking a checkbox.
+  const [attach, setAttach] = useState(false);
   return (
     <View style={styles.card}>
       <Text variant="label">New issue</Text>
@@ -559,6 +602,7 @@ export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => 
         multiline
         style={[styles.input, styles.inputTall]}
       />
+      {shot ? <AttachToggle attach={attach} onToggle={() => setAttach((v) => !v)} /> : null}
       <View style={styles.row}>
         <Button
           title="Create"
@@ -567,10 +611,14 @@ export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => 
           onPress={async () => {
             setBusy(true);
             try {
-              const { item } = await api.createDevTestItem(
+              const wantedShot = !!(attach && shot);
+              const res = await api.createDevTestItem(
                 draft.value.title.trim(), draft.value.description.trim() || undefined,
+                wantedShot ? { screenshot_b64: shot, route } : undefined,
               );
-              showToast('Issue recorded for triage.');
+              const { item } = res;
+              showToast(`Issue recorded for triage${
+                screenshotOutcome(wantedShot, res.screenshot, res.screenshot_error)}.`);
               await draft.clear(NEW_ITEM_DRAFT_FALLBACK);
               onDone(item);
             } catch (e) {
@@ -637,20 +685,24 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   const setAttach = (next: boolean) => draft.setValue((v) => ({ ...v, attach: next }));
 
   const send = async (verdict: 'pass' | 'fail' | 'remark') => {
-    if (verdict === 'remark' && !comment.trim()) {
-      showToast('A remark needs a comment.');
+    // DR-088: a screenshot alone is a valid remark. Requiring words on top of it pushed the
+    // tester toward Pass/Fail (which didn't complain) just to get the screenshot through.
+    if (verdict === 'remark' && !comment.trim() && !(attach && shot)) {
+      showToast('A remark needs a comment or an attached screenshot.');
       return;
     }
     setBusy(true);
     try {
-      await api.recordDevTestFeedback({
+      const wantedShot = !!(attach && shot);
+      const { entry } = await api.recordDevTestFeedback({
         item_id: item.id,
         verdict,
         comment: comment.trim() || undefined,
         route,
-        screenshot_b64: attach && shot ? shot : undefined,
+        screenshot_b64: wantedShot ? shot : undefined,
       });
-      showToast(`${item.id}: ${verdict} recorded${attach && shot ? ' with screenshot' : ''}.`);
+      showToast(`${item.id}: ${verdict} recorded${
+        screenshotOutcome(wantedShot, entry.screenshot, entry.screenshot_error)}.`);
       // Nothing left to resume once a verdict lands, but DR-075 wants the fact that a pass/fail
       // was already given to survive close/reopen (a remark leaves no verdict, so it doesn't
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
@@ -761,19 +813,14 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             )
           )}
           <TextInput
-            placeholder="Comment (optional for pass/fail, required for remark)"
+            placeholder="Comment (optional — a remark needs a comment or a screenshot)"
             placeholderTextColor={t.muted}
             value={comment}
             onChangeText={setComment}
             multiline
             style={styles.input}
           />
-          {shot ? (
-            <Pressable onPress={() => setAttach(!attach)} style={styles.attachRow} hitSlop={8}>
-              <Icon name={attach ? 'check-square' : 'square'} size={16} color={t.mint} />
-              <Text variant="caption" color={t.text}>Attach the captured screen</Text>
-            </Pressable>
-          ) : null}
+          {shot ? <AttachToggle attach={attach} onToggle={() => setAttach(!attach)} /> : null}
           <View style={styles.row}>
             <Button title="Pass" icon="check" loading={busy} disabled={busy}
               onPress={() => void send('pass')} />
