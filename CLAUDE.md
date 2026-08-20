@@ -167,6 +167,20 @@ way they did. This is an index, not a substitute for reading them.
   because a slow-drip server is the one failure an `httpx.MockTransport` cannot express (it returns
   a response object without ever doing a socket read). Reach for that only when the behaviour under
   test *is* the transport.
+- **A green local suite is WEAKER evidence than green CI here, and the gap is silent.** CI runs
+  the backend job against a real Postgres service container and sets `RC_TEST_DATABASE_URL`; a
+  plain local venv has neither, so every ownership/tenancy/spend test that needs a database
+  **skips** locally and reports as a pass. On 2026-08-19 main was red on 15 tests while two
+  separate local full-suite runs were green. To run what CI runs, give the venv a throwaway
+  Postgres and export `RC_TEST_DATABASE_URL`; otherwise treat local green as "nothing obviously
+  broken", and gate merges on CI at the head SHA, which is the standing rule for this reason.
+- **Pin anything the metering hooks reach into.** `app/spend_ceiling.py` attaches to
+  **pydantic-ai internals** to count dispatches, so an in-major upgrade of `pydantic-ai-slim` is
+  not compatible by default. `>=2.2,<3` let CI resolve 2.32.0 while every dev venv still held
+  2.2.0, and main went red with no code change: dispatch counts stopped zeroing out (a turn
+  would settle at its MAXIMUM — real money) and stubbed transports stopped being honoured. It is
+  pinned `<2.3`; upgrading is a deliberate task that re-fits the hooks and re-verifies "a refused
+  request is not charged", never something a fresh CI install decides.
 - **Device-test feedback loop (DR-060):** dev builds show a floating DevTest bubble (gated on
   the server's `RC_DEV`) listing the device-review ledger's items with pass/fail/remark +
   screenshots. Kamil's inputs land in `.dev-feedback/` (gitignored, append-only — never edit or
@@ -244,6 +258,15 @@ open); completed milestones and dated handoffs are in `90-history.md`.
 
 ## Conventions
 
+- **Check a PR's base branch before merging it.** Sessions here stack PRs, and a stacked PR does
+  NOT retarget when merging its parent deletes the base — it silently merges into the resurrected
+  base branch instead of `main`, and still shows a green MERGED badge. That happened on
+  2026-08-19 with #412 (base `agent/finish-drift-guard`), whose work had to be cherry-picked onto
+  main afterwards as #418. `gh pr view <n> --json baseRefName` costs one call.
+- **Before concluding a session, check `gh pr list` and the remote branches, not just `main`.**
+  Work that looks stranded usually isn't: two commits sitting unpushed in the `device-main`
+  worktree turned out to already be PRs #411/#412 with review fixes on top, and a "rescue" PR for
+  them was a duplicate carrying LESS than the real branches.
 - Env vars are prefixed `RC_`. The agentic tool loop is the default turn path; `RC_AGENTIC=0` restores the single-shot analyst (no tools).
 - Commits into a project's git store are made by the app with a pinned author
   (`config.git_identity_args()`, from `RC_GIT_AUTHOR_NAME` / `RC_GIT_AUTHOR_EMAIL`), so they
