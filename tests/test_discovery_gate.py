@@ -278,3 +278,19 @@ def test_a_snippet_passage_counts_as_substance():
     kept, counts = _gate([{"title": "T", "channels": ["snippet"]}])
     assert kept == []
     assert counts["no_substance"] == 1
+
+
+def test_a_snippet_passage_survives_the_reservoir_round_trip():
+    """DR-052 PR 3b: the passage is often a snippet row's ONLY substance, so losing it in the
+    ledger snapshot would drop the returning candidate at no_substance on its second run."""
+    ledger = {"entries": {}}
+    discovery_ledger.observe(
+        ledger, "arxiv:2608.00042", {
+            "title": "Near-Memory Decoding", "arxiv_id": "2608.00042",
+            "snippet": "We measure decode latency on 3D-stacked DRAM.",
+            "channels": ["snippet"], "sources": ["semantic_scholar"],
+        }, "snippet", "2026-08-20")
+    rows = discovery_ledger.reservoir(ledger)
+    assert rows[0]["snippet"].startswith("We measure")
+    kept, counts = _gate(rows)
+    assert len(kept) == 1 and counts["no_substance"] == 0

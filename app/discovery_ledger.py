@@ -46,6 +46,10 @@ _CANDIDATE_SCALARS = (
     "candidate_id", "paper_id", "openalex_id", "arxiv_id", "doi", "title", "year", "venue",
     "url", "provider_url", "pdf_url", "citation_count", "influential_citation_count",
     "publication_date", "category", "provider", "recall_score",
+    # The snippet lane's matched passage (DR-052 PR 3b): the gate counts it as substance and
+    # snippet rows often carry nothing else, so losing it in the reservoir round-trip would
+    # silently drop a returning candidate at no_substance on its second run.
+    "snippet",
 )
 _CANDIDATE_LISTS = (
     "authors", "author_ids", "fields_of_study", "publication_types", "sources", "channels",
