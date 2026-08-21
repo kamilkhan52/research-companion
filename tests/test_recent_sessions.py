@@ -137,3 +137,21 @@ def test_recent_session_includes_whole_paper_links(temp_project):
     item = next(entry for entry in projects.recent_sessions() if entry["slug"] == "linked")
     assert item["source_url"] == "https://example.com/paper.pdf"
     assert item["arxiv_id"] == ""
+
+
+def test_recent_sessions_carry_the_papers_current_title_after_a_rename(temp_project):
+    """DR-090: the index's title is a snapshot from session START. A canonical-title rename
+    accepted afterwards updates the reading list; the Continue card must show that title, not
+    keep advertising 'arXiv 2608.11668' forever."""
+    add_paper(temp_project, "hbf-sucks", "arXiv 2608.11668")
+    sessions.start_session("hbf-sucks", "arXiv 2608.11668")
+    index = sessions.session_index()
+    index["hbf-sucks"]["updated_at"] = "2026-08-20T13:38:00+00:00"
+    sessions._save_index_unlocked(index)
+
+    assert store.rename_entry(
+        "hbf-sucks", "HBF Sucks! A Full-Stack Characterization of High-Bandwidth Flash")
+
+    recent = projects.recent_sessions()
+    assert recent[0]["slug"] == "hbf-sucks"
+    assert recent[0]["title"].startswith("HBF Sucks!")   # the live title, not the snapshot
