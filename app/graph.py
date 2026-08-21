@@ -865,11 +865,17 @@ def paper_ego(graph: dict | None, slug: str, forward: dict | None = None) -> dic
 
     # References: outgoing edges, paired with their target node. Citers: incoming edges paired
     # with their source node. Keep the edge beside the node so the significance sort and the
-    # returned ego edges stay consistent.
+    # returned ego edges stay consistent. `target != slug` / `source != slug` drops a self-loop
+    # (a paper citing itself), which would otherwise re-add the centre as a satellite.
     refs = [(by_id[e["target"]], e) for e in edges
-            if e.get("source") == slug and e.get("target") in by_id]
+            if e.get("source") == slug and e.get("target") in by_id and e.get("target") != slug]
+    # A node that BOTH references the paper and is cited by it (a mutual citation between two
+    # reading-list papers) must appear ONCE, not on both sides — a duplicate id would collide as
+    # a React key and be laid out twice. References win the tie; the citer edge still draws.
+    ref_ids = {n["id"] for n, _ in refs}
     citers = [(by_id[e["source"]], e) for e in edges
-              if e.get("target") == slug and e.get("source") in by_id]
+              if e.get("target") == slug and e.get("source") in by_id
+              and e.get("source") != slug and e.get("source") not in ref_ids]
     refs.sort(key=lambda pair: _ego_rank(*pair))
     citers.sort(key=lambda pair: _ego_rank(*pair))
     refs_total, citers_total = len(refs), len(citers)

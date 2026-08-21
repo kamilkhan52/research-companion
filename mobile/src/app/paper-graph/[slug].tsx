@@ -39,8 +39,11 @@ export default function PaperGraphScreen() {
     [ego?.nodes],
   );
 
+  // navigate (not replace): the same call PaperEntityProvider's "Show in Map" uses to reach the
+  // Map tab focused on a node — switches to the tab and applies the focus param, leaving this
+  // screen in the back stack so the reader can return to the ego view.
   const openFullMap = () =>
-    router.replace(`/graph?focus=${encodeURIComponent(slug ?? '')}&t=${Date.now()}`);
+    router.navigate(`/graph?focus=${encodeURIComponent(slug ?? '')}&t=${Date.now()}`);
 
   return (
     <Screen edges={['top']}>

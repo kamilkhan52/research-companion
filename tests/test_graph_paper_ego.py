@@ -107,3 +107,19 @@ def test_paper_graph_route_returns_the_ego_for_a_built_project_paper(temp_projec
 
     # A slug that isn't a built project node → ego null (the client shows an offer, not an error).
     assert graph_routes.get_paper_graph("test-project", "missing")["ego"] is None
+
+
+def test_a_mutual_citation_and_a_self_loop_never_duplicate_a_node():
+    """P references X and X cites P (mutual), plus a self-loop P->P: X appears once (on the
+    reference side, tie to references), the self-loop never re-adds the centre, and no node id
+    repeats — a duplicate would collide as a React key on the canvas and lay out twice."""
+    g = _graph(
+        [_node("p", kind="project"), _node("x", kind="project")],
+        [_edge("p", "x"), _edge("x", "p"), _edge("p", "p")],
+    )
+    ego = graph.paper_ego(g, "p")
+    ids = [n["id"] for n in ego["nodes"]]
+    assert len(ids) == len(set(ids))                    # no duplicate node ids
+    assert ids.count("p") == 1                           # self-loop didn't re-add the centre
+    x = next(n for n in ego["nodes"] if n["id"] == "x")
+    assert x["x"] < 0                                    # placed once, on the reference side
