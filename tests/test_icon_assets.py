@@ -1,4 +1,7 @@
+import json
 import struct
+import subprocess
+import sys
 import zlib
 from pathlib import Path
 
@@ -6,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "mobile" / "assets"
 ICON_NAMES = (
     "icon.png",
+    "android-icon-background.png",
     "android-icon-foreground.png",
     "android-icon-monochrome.png",
     "splash-icon.png",
@@ -13,9 +17,11 @@ ICON_NAMES = (
 )
 MINT = (0x65, 0xD6, 0xB4)
 VIOLET = (0x9B, 0x8A, 0xFB)
+INK = (0x0B, 0x0D, 0x12)
+PAPER = (0xF3, 0xF0, 0xE8)
 
 
-def _rgba_pixels(path):
+def _rgba_image(path):
     payload = path.read_bytes()
     assert payload.startswith(b"\x89PNG\r\n\x1a\n")
     offset = 8
@@ -38,25 +44,100 @@ def _rgba_pixels(path):
     stride = width * 4 + 1
     assert len(rows) == stride * height
     assert all(rows[row * stride] == 0 for row in range(height))
-    return [
+    pixels = [
         tuple(rows[start : start + 4])
         for row in range(height)
         for start in range(row * stride + 1, (row + 1) * stride, 4)
     ]
+    return width, height, pixels
 
 
-def test_canonical_icon_is_the_p_alone():
-    svg = (ASSETS / "brand" / "paradigm-mark.svg").read_text()
+def test_canonical_icon_is_the_name_independent_quiet_aperture():
+    svg = (ASSETS / "brand" / "seminar-mark.svg").read_text()
+    assert "Seminar Quiet Aperture mark" in svg
     assert 'fill="#F3F0E8"' in svg
+    assert '<mask id="aperture"' in svg
+    assert "M512 452L572 512L512 572L452 512Z" in svg
     assert "<circle" not in svg
     assert "stroke=" not in svg
+    assert "<text" not in svg
     assert "#65D6B4" not in svg
     assert "#9B8AFB" not in svg
+    assert not (ASSETS / "brand" / "paradigm-mark.svg").exists()
+
+
+def test_generated_icons_match_committed_assets(tmp_path):
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "gen_app_icons.py"), str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for name in ICON_NAMES:
+        assert _rgba_image(tmp_path / name) == _rgba_image(ASSETS / "images" / name)
 
 
 def test_platform_icons_contain_no_secondary_accent_marks():
     for name in ICON_NAMES:
-        pixels = _rgba_pixels(ASSETS / "images" / name)
+        _, _, pixels = _rgba_image(ASSETS / "images" / name)
         opaque_colors = {pixel[:3] for pixel in pixels if pixel[3] > 0}
         assert MINT not in opaque_colors
         assert VIOLET not in opaque_colors
+
+
+def test_platform_icon_dimensions_and_layer_contracts():
+    images = {
+        name: _rgba_image(ASSETS / "images" / name)
+        for name in ICON_NAMES
+    }
+    assert {name: value[:2] for name, value in images.items()} == {
+        "icon.png": (1024, 1024),
+        "android-icon-background.png": (1024, 1024),
+        "android-icon-foreground.png": (1024, 1024),
+        "android-icon-monochrome.png": (1024, 1024),
+        "splash-icon.png": (512, 512),
+        "favicon.png": (48, 48),
+    }
+
+    _, _, background = images["android-icon-background.png"]
+    assert set(background) == {(*INK, 255)}
+
+    for name in ("icon.png", "favicon.png"):
+        assert all(pixel[3] == 255 for pixel in images[name][2])
+
+    for name in ("android-icon-foreground.png", "android-icon-monochrome.png", "splash-icon.png"):
+        width, _, pixels = images[name]
+        center = pixels[(width // 2) * width + width // 2]
+        assert center[3] == 0, f"{name} must keep the aperture transparent"
+        assert any(pixel[3] == 0 for pixel in pixels)
+        assert any(pixel[3] == 255 for pixel in pixels)
+
+    _, _, foreground = images["android-icon-foreground.png"]
+    assert all(pixel[3] == 0 or pixel[:3] == PAPER for pixel in foreground)
+    foreground_alpha = [
+        (index % 1024, index // 1024)
+        for index, pixel in enumerate(foreground)
+        if pixel[3] > 0
+    ]
+    safe_radius = 1024 * (33 / 108)
+    center = (1024 - 1) / 2
+    assert max(
+        (x - center) ** 2 + (y - center) ** 2
+        for x, y in foreground_alpha
+    ) <= safe_radius**2
+
+    _, _, monochrome = images["android-icon-monochrome.png"]
+    assert all(pixel[3] == 0 or pixel[:3] == (255, 255, 255) for pixel in monochrome)
+
+
+def test_expo_config_uses_the_generated_icon_set():
+    config = json.loads((ROOT / "mobile" / "app.json").read_text())["expo"]
+    assert config["icon"] == "./assets/images/icon.png"
+    assert config["ios"]["icon"] == "./assets/images/icon.png"
+    assert config["web"]["favicon"] == "./assets/images/favicon.png"
+    assert config["android"]["adaptiveIcon"] == {
+        "backgroundColor": "#0B0D12",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png",
+    }
