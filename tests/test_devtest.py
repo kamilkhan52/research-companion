@@ -3,6 +3,7 @@ feedback inbox; the app records, the /device-feedback skill triages into the led
 from __future__ import annotations
 
 import base64
+import json
 
 import pytest
 from app import config
@@ -341,3 +342,55 @@ def test_dispatch_is_absent_outside_dev(tmp_path, monkeypatch):
     from starlette.testclient import TestClient
     c = TestClient(app)
     assert c.post("/api/devtest/dispatch", json={"model": "sonnet"}).status_code == 404
+
+
+def test_dispatch_is_refused_over_the_public_tunnel(client, monkeypatch):
+    """The one privileged devtest route must not be reachable through the Cloudflare quick
+    tunnel — cloudflared injects cf-ray, which a caller past the tunnel cannot strip."""
+    import subprocess
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: None)   # must never be reached
+    r = client.post("/api/devtest/dispatch", json={"model": "sonnet"},
+                    headers={"cf-ray": "abc-SJC", "cf-connecting-ip": "203.0.113.7"})
+    assert r.status_code == 403
+    assert "tunnel" in r.json()["detail"]
+
+
+def test_a_dead_recorded_pid_clears_itself_instead_of_wedging_dispatch(client, tmp_path,
+                                                                       monkeypatch):
+    """A stale current.json (dead pid, or a pid reused after a reboot) must never pin dispatch
+    behind a permanent 409 — _dispatch_running clears it and the next dispatch proceeds."""
+    import os
+    import subprocess
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    class FakeProc:
+        pid = 5555
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    import time
+    current = tmp_path / "inbox" / "dispatch" / "current.json"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    # Fresh timestamp so it passes the age cap and the DEAD-PID branch is what recovers it.
+    current.write_text(json.dumps({"id": "old", "pid": 999999, "started_ts": time.time()}))
+
+    def kill(pid, sig):
+        raise ProcessLookupError   # the recorded pid is gone
+
+    monkeypatch.setattr(os, "kill", kill)
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 200                       # not wedged behind the stale record
+    assert json.loads(current.read_text())["id"] != "old"
+
+
+def test_dispatch_response_hides_the_internal_timestamp(client, monkeypatch):
+    import subprocess
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    class FakeProc:
+        pid = 6001
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    info = client.post("/api/devtest/dispatch", json={"model": "sonnet"}).json()["dispatch"]
+    assert "started_ts" not in info and "started_at" in info

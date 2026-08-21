@@ -143,7 +143,9 @@ export const getDevTestFeedback = (itemId: string) =>
   apiGet<{ entries: DevTestFeedbackEntry[] }>(
     `/api/devtest/feedback?item_id=${encodeURIComponent(itemId)}`,
   );
-export type DispatchModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
+// DISPATCH_MODELS / DispatchModel live in ./dispatch (a constant, not mocked by endpoint tests).
+export type { DispatchModel } from './dispatch';
+import type { DispatchModel } from './dispatch';
 export interface DevTestDispatch {
   id: string;
   model: DispatchModel;

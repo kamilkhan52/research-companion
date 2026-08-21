@@ -21,7 +21,9 @@ import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-co
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
-import type { DevTestItem, DevTestFeedbackEntry, DispatchModel } from '@/api/endpoints';
+import { DISPATCH_MODELS } from '@/api/dispatch';
+import type { DispatchModel } from '@/api/dispatch';
+import type { DevTestItem, DevTestFeedbackEntry } from '@/api/endpoints';
 import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
@@ -503,6 +505,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onVerdictChange={reportVerdict}
+                    dispatchModel={modelDraft.value}
                   />
                 </>
               ) : null}
@@ -550,8 +553,6 @@ function Section({ label, tone }: { label: string; tone: string }) {
   );
 }
 
-// DR-092: the models the dispatch route accepts, in the order a picker shows them.
-const DISPATCH_MODELS: DispatchModel[] = ['sonnet', 'opus', 'haiku', 'fable'];
 
 /** Fire a Claude dispatch (fire-on-tap, Kamil's decision): one session for `itemId`, or the
  *  whole pending batch when omitted. Shared by the header's "Dispatch all" and each item card
