@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
-import { useDevMode, useGraph, useProjectState } from '@/api/queries';
+import { useDevMode, useGraph, useNeighbourhood, useProjectState } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
@@ -21,6 +21,7 @@ import { readableError } from '@/api/errorMessage';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
+import { NeighbourhoodLine } from '@/components/NeighbourhoodLine';
 import { AnimatedProgressBar, Button, Card, Icon, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { Marquee } from '@/ui/Marquee';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
@@ -64,6 +65,7 @@ export default function GraphScreen() {
   const graphQuery = useGraph(activePid);
   const projectState = useProjectState(activePid);
   const build = useGraphBuild(activePid);
+  const neighbourhood = useNeighbourhood(activePid);
   const { allowAllFilter } = useGraphSettings();
   const devMode = useDevMode();
 
@@ -346,6 +348,15 @@ export default function GraphScreen() {
             onFilterChange={setFilter}
             visibleCount={visibleGraph.nodes.length}
           />
+
+          {/* DR-052 PR 4: the SAME forward-citation freshness the Discover tab shows — the
+              shared substrate beneath both tabs — but READ-ONLY here and only once a scan
+              exists. The forward sweep is Discovery's (the Map build never writes citer
+              records), so the Map shows the connection without offering to refresh a scan it
+              doesn't run, and doesn't clutter a fresh map with a "not scanned yet" line. */}
+          {neighbourhood.data?.ever_swept ? (
+            <NeighbourhoodLine neighbourhood={neighbourhood.data} />
+          ) : null}
 
           {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
             <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />

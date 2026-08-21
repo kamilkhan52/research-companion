@@ -493,6 +493,18 @@ export const unhideSuggestion = (pid: string, keys: string[]) =>
 
 export const getGraph = (pid: string) =>
   apiGet<GraphResponse>(`${P(pid)}/graph`).then(noting((r) => scopedJob(`graph-build:${pid}`, r.build)));
+// DR-052 PR 4: the shared corpus-neighbourhood freshness both tabs show.
+export interface Neighbourhood {
+  last_swept: string | null;
+  age_seconds: number | null;
+  monitored: number;
+  total_papers: number;
+  unmonitored: number;
+  time_stale: boolean;
+  ever_swept: boolean;
+}
+export const getNeighbourhood = (pid: string) =>
+  apiGet<{ neighbourhood: Neighbourhood }>(`${P(pid)}/neighbourhood`).then((r) => r.neighbourhood);
 export const getGraphAuthors = (pid: string) =>
   apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`).then(noting((r) => r.labs_job));
 /** Start (or join) the agentic lab pass over the project's top authors (R7.7). */

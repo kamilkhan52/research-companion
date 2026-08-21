@@ -180,6 +180,66 @@ FORWARD_PAGE = 100
 MAX_DELTA_ANCHORS = 25
 
 
+#: A neighbourhood older than this reads as "time-stale" — worth a one-tap refresh. A week
+#: matches DR-051's intended weekly monitoring cadence; below it, new citers are unlikely
+#: enough that nagging would be noise (spec §1: time-staleness never blocks).
+NEIGHBOURHOOD_STALE_AFTER_S = 7 * 24 * 3600.0
+
+
+def status(papers: list[Paper], data: dict) -> dict:
+    """The shared neighbourhood-freshness summary both views show (DR-052 PR 4, spec §1/§7).
+
+    Read-only and deterministic over the graph store's `forward` records — the per-anchor
+    known-citer sets. Those record the **forward-citation** neighbourhood: which papers cite the
+    reader's library, and when we last looked. That is a Discovery-maintained concept (the
+    citation chase and the delta lane write these records; the Map build does not), so the line
+    is Discover's domain — the Map tab shows it read-only, when it exists, to make the shared
+    substrate visible, but does not refresh it.
+
+    Fields:
+    - `monitored`/`total_papers`: anchors with a current forward record, out of the reading
+      list. `monitored` caps around the delta lane's per-run budget (it rotates through a large
+      library), so the fraction is coverage-at-this-moment, not a defect.
+    - `unmonitored` = `total - monitored`: papers with no current forward record. NOT
+      necessarily newly added — it also counts papers awaiting rotation and papers a sweep found
+      to have zero citers (`record_forward_sweep` writes only when a new citer appears). So it is
+      a soft "not yet reflected" count, deliberately not presented as "papers added since".
+    - `time_stale`: the most recent sweep is older than the weekly cadence. Never blocks.
+    - `ever_swept`: whether any forward sweep has run at all — the Discover-vs-not-built signal.
+    """
+    forward = data.get("forward") or {}
+    monitored = 0
+    last_swept = ""
+    for paper in papers:
+        record = forward.get(getattr(paper, "slug", "") or "")
+        if not isinstance(record, dict):
+            continue
+        # A record exists once EITHER lane touched the anchor (breadth chase writes swept_at,
+        # the delta lane writes s2_swept_at); the newest of the two is when we last looked.
+        swept = max(str(record.get("s2_swept_at") or ""), str(record.get("swept_at") or ""))
+        if swept:
+            monitored += 1
+            last_swept = max(last_swept, swept)
+    total = len(papers)
+    age_s: float | None = None
+    if last_swept:
+        try:
+            age_s = (datetime.now(UTC) - datetime.fromisoformat(last_swept)).total_seconds()
+        except ValueError:
+            age_s = None
+    return {
+        "last_swept": last_swept or None,
+        "age_seconds": int(age_s) if age_s is not None else None,
+        "monitored": monitored,
+        "total_papers": total,
+        "unmonitored": max(0, total - monitored),
+        # Only "time-stale" once something has been swept; a never-swept neighbourhood is "not
+        # scanned yet", a distinct state the client renders as an offer, not as stale (DR-046).
+        "time_stale": bool(age_s is not None and age_s > NEIGHBOURHOOD_STALE_AFTER_S),
+        "ever_swept": bool(last_swept),
+    }
+
+
 def stalest_first(anchors: list[dict], data: dict, limit: int = MAX_DELTA_ANCHORS
                   ) -> tuple[list[dict], int]:
     """The anchors to sweep this run, least-recently-swept first, and how many are left over.
