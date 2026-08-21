@@ -362,11 +362,91 @@ def test_wide_recall_runs_openalex_and_s2_in_parallel_without_fanning_out_s2():
         return [], {"pages": 1, "complete": True}
 
     client = _client(handler)
+    snippet_calls = []
     _, audit, updates = discovery_recall.wide_recall(
         [{"topics": [{"id": "T7", "display_name": "Memory"}]}],
         [{"bulk_query": "memory systems"}], frontier={}, client=client,
-        bulk_search_fn=bulk, today=date(2026, 7, 31))
+        bulk_search_fn=bulk, snippet_fn=lambda term: snippet_calls.append(term) or [],
+        today=date(2026, 7, 31))
     client.close()
     assert audit["topic"]["pages"] == 1
     assert audit["bulk"]["pages"] == 1
+    # The snippet lane runs AFTER the parallel pair (shared S2 pacer), with the same seam.
+    assert snippet_calls == ["memory systems"]
+    assert audit["snippet"]["queries"] == 1
     assert len(updates) == 2
+
+
+# ---------- lane 3's S2 primitives (DR-052 PR 3b) ----------
+
+class _Seed:
+    def __init__(self, arxiv_id=""):
+        self.arxiv_id = arxiv_id
+
+
+def test_negatives_from_hidden_recovers_ids_by_key_strength():
+    from app.discovery_recall import negatives_from_hidden
+    hidden = [
+        {"keys": ["s2:abc123", "arxiv:1706.03762"]},     # s2 id wins
+        {"keys": ["arxiv:2401.00001", "title:some paper"]},
+        {"keys": ["doi:10.1/x"]},
+        {"keys": ["title:only a title"]},                 # nothing to send
+        {},                                               # malformed entry
+    ]
+    assert negatives_from_hidden(hidden) == ["abc123", "ARXIV:2401.00001", "DOI:10.1/x"]
+
+
+def test_s2_recommendations_seeds_library_and_steers_with_hides():
+    from app import discovery_recall
+    seen = {}
+
+    def fetch(positives, negatives):
+        seen["positives"], seen["negatives"] = positives, negatives
+        return [{"title": "Recommended Work", "paper_id": "s2-rec",
+                 "arxiv_id": "2608.12345"}]
+
+    candidates, audit = discovery_recall.s2_recommendations(
+        [_Seed("1706.03762"), _Seed(""), _Seed("2401.00001v3")],
+        [{"keys": ["arxiv:1801.00001"]}], fetch=fetch)
+    assert seen["positives"] == ["ARXIV:1706.03762", "ARXIV:2401.00001"]
+    assert seen["negatives"] == ["ARXIV:1801.00001"]
+    assert candidates[0]["channels"] == ["s2_recommendations"]
+    assert candidates[0]["provenance"][0]["negatives"] == 1
+    assert audit["rows"] == 1
+
+
+def test_s2_recommendations_outage_degrades_and_returns_nothing():
+    from app import discovery_recall
+
+    def fetch(positives, negatives):
+        raise RuntimeError("boom")
+
+    candidates, audit = discovery_recall.s2_recommendations([_Seed("1706.03762")], [],
+                                                            fetch=fetch)
+    assert candidates == []
+    assert audit["degraded"] and "unavailable" in audit["degraded"][0]
+
+
+def test_snippet_recall_carries_the_passage_as_provenance():
+    from app import discovery_recall
+    rows = [{"title": "Near-Memory Decoding", "arxiv_id": "2608.00042",
+             "snippet": "We measure decode latency on 3D-stacked DRAM."}]
+    candidates, audit = discovery_recall.snippet_recall(
+        [{"search_terms": "3D-stacked DRAM decode"}], fetch=lambda term: rows)
+    assert candidates[0]["channels"] == ["snippet"]
+    assert candidates[0]["snippet"].startswith("We measure")
+    assert candidates[0]["provenance"][0]["passage"].startswith("We measure")
+    assert audit == {"queries": 1, "rows": 1, "degraded": []}
+
+
+def test_snippet_recall_is_bounded_to_its_query_budget():
+    from app import discovery_recall
+    calls = []
+
+    def fetch(term):
+        calls.append(term)
+        return []
+
+    discovery_recall.snippet_recall(
+        [{"search_terms": f"query {i}"} for i in range(5)], fetch=fetch)
+    assert len(calls) == discovery_recall.SNIPPET_QUERY_COUNT

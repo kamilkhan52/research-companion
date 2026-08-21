@@ -551,6 +551,7 @@ def bulk_goal_search(queries: list[dict], *, frontier: dict,
 
 def wide_recall(anchors: list[dict], queries: list[dict], *, frontier: dict,
                 client: httpx.Client | None = None, bulk_search_fn=None,
+                snippet_fn=None,
                 today: date | None = None, should_cancel: Callable[[], bool] | None = None
                 ) -> tuple[list[dict], dict, list[dict]]:
     """R3+R4 together; failures stay lane-local and every frontier update remains pending."""
@@ -583,9 +584,15 @@ def wide_recall(anchors: list[dict], queries: list[dict], *, frontier: dict,
                                 "degraded": [f"bulk recall failed ({type(bulk_result).__name__})"]}, [])
         topic_rows, topic_audit, topic_updates = topic_result
         bulk_rows, bulk_audit, bulk_updates = bulk_result
-        return [*topic_rows, *bulk_rows], {
-            "topic": topic_audit, "bulk": bulk_audit,
-            "degraded": [*topic_audit["degraded"], *bulk_audit["degraded"]],
+        # Snippet search runs AFTER the parallel pair, not inside it: it shares the account-wide
+        # S2 pacer with the bulk lane, so a third worker would only queue on the same lock, and
+        # keeping it out of the fan-out keeps its failures trivially lane-local.
+        snippet_rows, snippet_audit = snippet_recall(
+            queries, fetch=snippet_fn, should_cancel=should_cancel)
+        return [*topic_rows, *bulk_rows, *snippet_rows], {
+            "topic": topic_audit, "bulk": bulk_audit, "snippet": snippet_audit,
+            "degraded": [*topic_audit["degraded"], *bulk_audit["degraded"],
+                         *snippet_audit["degraded"]],
         }, [*topic_updates, *bulk_updates]
     finally:
         if own:
@@ -627,6 +634,136 @@ def graph_recommendations(graph_data: dict, limit: int = 200) -> list[dict]:
                             "score": rec.get("score")}],
         })
     return out
+
+
+# ---------- lane 3's S2 primitives (DR-052 PR 3b, spec §3 lane 3) ----------
+
+#: One POST per run; 100 is the API's comfortable page and plenty ahead of the gate.
+RECOMMENDATION_LIMIT = 100
+#: Passage hits per snippet query, and how many of the run's queries get one. Two queries is
+#: one paced call each through the account-wide S2 pacer — snippet search is the run's most
+#: expensive-feeling call (full-text index) and recall here feeds a funnel, not a display.
+SNIPPET_LIMIT = 10
+SNIPPET_QUERY_COUNT = 2
+
+
+def negatives_from_hidden(hidden_entries: list[dict] | None) -> list[str]:
+    """The reader's dismissed papers, as ids the recommendations API accepts.
+
+    This is the primitive no competitor uses (spec §3): hides are the only CURATED rejection
+    signal in the whole pipeline, and here they steer the recommender away rather than merely
+    filtering its output. Hidden entries store identity keys, not raw candidates, so the ids
+    are recovered from the key prefixes; title-only hides contribute nothing (no id to send).
+    """
+    out: list[str] = []
+    for entry in hidden_entries or []:
+        for key in entry.get("keys") or []:
+            kind, _, value = str(key).partition(":")
+            if not value:
+                continue
+            if kind == "s2":
+                out.append(value)
+                break
+            if kind == "arxiv":
+                out.append(f"ARXIV:{value}")
+                break
+            if kind == "doi":
+                out.append(f"DOI:{value}")
+                break
+    return out
+
+
+def s2_recommendations(papers: list, hidden_entries: list[dict] | None, *,
+                       fetch=None) -> tuple[list[dict], dict]:
+    """Seed-based recommendations from the reader's own library, minus what they dismissed.
+
+    Positives are the reading list (the same per-paper identifiers the delta lane resolves);
+    negatives are the hidden list. One POST per run. Never raises: an outage costs this lane
+    only, recorded in the audit's degraded list.
+    """
+    audit: dict = {"positives": 0, "negatives": 0, "rows": 0, "degraded": []}
+    positives = []
+    for paper in papers or []:
+        identifier = semantic_scholar.paper_identifier(
+            arxiv_id=getattr(paper, "arxiv_id", "") or "")
+        if identifier:
+            positives.append(identifier)
+    negatives = negatives_from_hidden(hidden_entries)
+    audit["positives"], audit["negatives"] = len(positives), len(negatives)
+    if not positives:
+        return [], audit
+    try:
+        rows = (fetch(positives, negatives) if fetch else
+                semantic_scholar.recommendations(
+                    positives, negatives, limit=RECOMMENDATION_LIMIT))
+    except Exception as exc:  # noqa: BLE001 — one recall lane is best-effort
+        audit["degraded"].append(
+            f"library recommendations unavailable ({type(exc).__name__})")
+        return [], audit
+    candidates = []
+    for raw in rows:
+        if not isinstance(raw, dict) or not raw.get("title"):
+            continue
+        candidate = dict(raw)
+        candidate["channels"] = ["s2_recommendations"]
+        candidate["sources"] = list(dict.fromkeys(
+            [*candidate.get("sources", []), "semantic_scholar"]))
+        candidate["provenance"] = [{"channel": "s2_recommendations",
+                                    "positives": len(positives),
+                                    "negatives": len(negatives)}]
+        candidates.append(candidate)
+    audit["rows"] = len(candidates)
+    return candidates, audit
+
+
+def snippet_recall(queries: list[dict], *, fetch=None,
+                   should_cancel: Callable[[], bool] | None = None
+                   ) -> tuple[list[dict], dict]:
+    """Full-text passage search over the run's queries — the matching sentence rides along.
+
+    Better recall for goal-specific CLAIMS than abstract search (the claim may never reach the
+    abstract), and the passage is the suggestion's evidence, carried in provenance so the blend
+    can quote it. Sparse rows by nature (often externalIds only, no abstract): the gate counts
+    the passage itself as substance rather than deleting them for lacking one.
+    """
+    audit: dict = {"queries": 0, "rows": 0, "degraded": []}
+    cancelled = should_cancel or (lambda: False)
+    terms = []
+    for query in queries or []:
+        value = str(query.get("search_terms") or query.get("bulk_query")
+                    or query.get("query") or "").strip()
+        if value and value not in terms:
+            terms.append(value)
+        if len(terms) >= SNIPPET_QUERY_COUNT:
+            break
+    candidates: list[dict] = []
+    for term in terms:
+        if cancelled():
+            audit["cancelled"] = True
+            break
+        audit["queries"] += 1
+        try:
+            rows = (fetch(term) if fetch else
+                    semantic_scholar.snippet_search(term, limit=SNIPPET_LIMIT))
+        except Exception as exc:  # noqa: BLE001 — one recall lane is best-effort
+            audit["degraded"].append(f"snippet search failed ({type(exc).__name__})")
+            continue
+        for raw in rows:
+            if not isinstance(raw, dict) or not raw.get("title"):
+                continue
+            passage = str(raw.get("snippet") or "").strip()
+            candidates.append({
+                "title": raw["title"],
+                "arxiv_id": raw.get("arxiv_id") or "",
+                "doi": raw.get("doi") or "",
+                "snippet": passage,
+                "sources": ["semantic_scholar"],
+                "channels": ["snippet"],
+                "provenance": [{"channel": "snippet", "query": term,
+                                "passage": passage[:280]}],
+            })
+    audit["rows"] = len(candidates)
+    return candidates, audit
 
 
 # ---------- merge ----------

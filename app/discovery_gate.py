@@ -33,7 +33,11 @@ from . import discovery_ledger
 #: to them would drop exactly the frontier work the lane exists to surface — and they arrive with
 #: the citation contexts naming which of the reader's papers they build on, which is stronger
 #: project-specific evidence than a citation count is a quality signal.
-GROUNDED_CHANNELS = frozenset({"cites", "graph", "new_citation"})
+#: `s2_recommendations` (DR-052 PR 3b) is grounded the same way: seeded entirely by the
+#: reader's own library (positives) and their explicit dismissals (negatives), so a citation
+#: floor would delete exactly the fresh, low-citation work a corpus-seeded recommender is
+#: best at surfacing.
+GROUNDED_CHANNELS = frozenset({"cites", "graph", "new_citation", "s2_recommendations"})
 
 #: Publication types that are never a reading suggestion, whatever they cite.
 EXCLUDED_TYPES = frozenset({
@@ -100,6 +104,10 @@ def _passes_citation_floor(candidate: dict, today_year: int) -> bool:
 
 def _has_substance(candidate: dict) -> bool:
     if str(candidate.get("abstract") or "").strip():
+        return True
+    # A full-text passage (the snippet lane, DR-052 PR 3b) is MORE substance than an abstract
+    # fragment: it is the sentence that matched the reader's goal, quoted from the paper body.
+    if str(candidate.get("snippet") or "").strip():
         return True
     return isinstance(candidate.get("citation_count"), int)
 

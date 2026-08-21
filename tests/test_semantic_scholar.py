@@ -254,3 +254,50 @@ def test_references_rejects_non_object_payload():
     client = FakeClient(FakeResponse(200, []))
     with pytest.raises(s2.SemanticScholarError, match="malformed reference metadata"):
         s2.references("paper-id", key="private-key", client=client, pacer=no_wait_pacer())
+
+
+class FakePostClient(FakeClient):
+    def post(self, path: str, *, params: dict, headers: dict, json: dict):
+        self.calls.append({"path": path, "params": params, "headers": headers, "json": json})
+        return self.responses.pop(0)
+
+
+def test_recommendations_posts_positives_and_negatives_and_normalizes():
+    client = FakePostClient(FakeResponse(200, {"recommendedPapers": [{
+        "paperId": "s2-rec", "title": "Recommended Work",
+        "externalIds": {"ArXiv": "2608.12345"}, "year": 2026, "citationCount": 3,
+    }]}))
+    rows = s2.recommendations(
+        ["ARXIV:1706.03762"], ["DOI:10.1/hidden"],
+        key="", client=client, pacer=no_wait_pacer())
+    assert rows[0]["paper_id"] == "s2-rec"
+    assert rows[0]["arxiv_id"] == "2608.12345"
+    call = client.calls[0]
+    assert call["path"] == s2.RECOMMENDATIONS_URL
+    assert call["json"] == {"positivePaperIds": ["ARXIV:1706.03762"],
+                            "negativePaperIds": ["DOI:10.1/hidden"]}
+    assert call["params"]["fields"] == s2.SEARCH_FIELDS
+
+
+def test_recommendations_with_no_positives_never_calls_the_api():
+    client = FakePostClient()
+    assert s2.recommendations([], ["DOI:10.1/x"], key="", client=client,
+                              pacer=no_wait_pacer()) == []
+    assert client.calls == []
+
+
+def test_snippet_search_normalizes_and_drops_unnameable_rows():
+    client = FakeClient(FakeResponse(200, {"data": [
+        {"snippet": {"text": "We measure decode latency on 3D-stacked DRAM."},
+         "paper": {"title": "Near-Memory Decoding", "corpusId": 7,
+                   "externalIds": {"ArXiv": "2608.00042"}}},
+        {"snippet": {"text": "orphan passage"}, "paper": {}},         # no title: dropped
+        {"snippet": {}, "paper": {"title": "No passage"}},            # no text: dropped
+    ]}))
+    rows = s2.snippet_search("3D-stacked DRAM decode", key="", client=client,
+                             pacer=no_wait_pacer())
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Near-Memory Decoding"
+    assert rows[0]["arxiv_id"] == "2608.00042"
+    assert rows[0]["snippet"].startswith("We measure decode latency")
+    assert client.calls[0]["path"] == "/snippet/search"

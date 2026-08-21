@@ -538,6 +538,11 @@ def _merge_candidate(existing: dict, incoming: dict) -> None:
     # the accurate velocity fires only on a candidate's first-ever sighting.
     if incoming.get("counts_by_year") and not existing.get("counts_by_year"):
         existing["counts_by_year"] = incoming["counts_by_year"]
+    # The snippet lane's passage: the gate counts it as substance and the blend quotes it, so
+    # it must survive when another lane's row wins the merge (the provenance copy is for the
+    # reason line; this top-level field is what the gate reads).
+    if incoming.get("snippet") and not existing.get("snippet"):
+        existing["snippet"] = incoming["snippet"]
 
 
 def collect_candidates(
@@ -1147,6 +1152,17 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
             graph_reasons = next((p.get("reasons") or [] for p in candidate.get("provenance") or []
                                   if p.get("channel") == "graph"), [])
             reasons.extend(str(r) for r in graph_reasons[:2])
+        if "snippet" in channels:
+            # The passage IS the evidence (spec §3 lane 3): quote it, never say "relevant".
+            passage = next((str(p.get("passage") or "") for p in candidate.get("provenance") or []
+                            if p.get("channel") == "snippet" and p.get("passage")), "")
+            if passage:
+                reasons.append(f"Its full text says: “{passage[:120].rstrip()}…”")
+        if "s2_recommendations" in channels:
+            reasons.append("Recommended from your reading list’s citation patterns"
+                           + (" (steered away from papers you dismissed)"
+                              if any(p.get("negatives") for p in candidate.get("provenance") or []
+                                     if p.get("channel") == "s2_recommendations") else ""))
         # Corpus connectivity (spec §4): distinct reading-list papers this candidate's edges
         # reach. Deterministic and explainable — Litmaps surfaces the same number as "Map
         # Connectivity" but never scores on it.
@@ -1718,10 +1734,23 @@ def _grounded_candidates(papers: list, *, recall_fn,
             graph_store.save(graph_data)   # anchor ids are free but slow; pay for them once ever
         except Exception:  # noqa: BLE001
             pass
+
+    # Lane 3's seed-based recommendations (DR-052 PR 3b): the reading list as positives, the
+    # reader's hides as negatives — the one curated rejection signal the pipeline holds, used
+    # to steer recall rather than merely filter it. One POST; its own guard, same as the lanes
+    # above: an S2 outage costs this lane only.
+    try:
+        recommended, rec_audit = discovery_recall.s2_recommendations(papers, load_hidden())
+        audit["s2_recommendations"] = len(recommended)
+        audit["degraded"].extend(rec_audit.get("degraded") or [])
+    except Exception as e:  # noqa: BLE001
+        log.warning("library recommendations stopped early (%s)", type(e).__name__)
+        recommended = []
+
     # Delta candidates lead: they are the most specific thing the pipeline knows (a named paper
     # of the reader's, newly cited). `_merge_candidate` dedupes by identity downstream, so a
     # paper both lanes found keeps this lane's provenance and its contexts.
-    return [*fresh, *from_cites, *from_graph], audit
+    return [*fresh, *from_cites, *from_graph, *recommended], audit
 
 
 def _wide_candidates(anchors: list[dict], queries: list[dict], ledger: dict, *,
