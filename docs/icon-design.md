@@ -1,116 +1,71 @@
-# Scholiast — app icon design (R7.10, redo brief)
+# Seminar — Quiet Aperture app icon
 
-The first pass (6 codex generations → a Fable×codex top-three → Figma vector comps on page
-"03 · App Icon — Scholiast") was useful groundwork but is being **redone** with Kamil in the
-generation loop and a firmer foundation: agreed app-icon best practices, and a sharper reading
-of the Scholiast philosophy, *before* we prompt codex. This document is that foundation.
+## Decision
 
-> **Renamed 2026-07-29: the app is now Scholiast, not Paradigm.** This section below is kept as
-> written because it is the reasoning the existing icon work was built on, and discarding it would
-> leave those comps unexplained. But read it as history: the Kuhn argument belongs to the old name.
-> A *scholiast* is the ancient commentator who wrote explanatory notes in the margins of a
-> manuscript — a different and more literal image (margin, gloss, annotation, the reader in
-> conversation with a text) which is arguably closer to what the app does. **Any new icon work
-> should start from the scholiast idea, not the paradigm-shift one.** See
-> `docs/production/90-history.md` ("Rebrand to Scholiast") for why the rename happened.
+The production icon is **Quiet Aperture**, selected by Kamil from three generated directions in
+August 2026. It deliberately does not encode the product name, an initial, a book, or a specific
+academic discipline. The name can evolve without making the mark obsolete.
 
-## What the name means (and how it should feel, not read)
+## Art narrative
 
-*Historical — written when the app was called Paradigm.* The app was **Paradigm**, after Kuhn's *The Structure of Scientific Revolutions*: normal
-science proceeds inside a shared frame; anomalies accumulate; the frame itself then
-reorganizes — the same facts snap into a new structure. That is the app's theory of *reading*:
-you work through a corpus with an interlocutor until your map of a field reorganizes.
+Research rarely begins with one clean answer. It begins with perspectives that overlap, disagree,
+and partially obscure one another. Seminar's work is the movement from that plurality toward a
+clearer view: reading evidence, reasoning across it, and deciding what holds.
 
-Design implications, in order of importance:
+The icon turns that process into one compact gesture:
 
-1. **Express the shift, not the book.** The icon should carry the *feeling* of a frame-shift —
-   structure, reorganization, "the same elements seen anew" — never a literal book, portrait,
-   telescope, or Kuhn reference. A generic "reading/library" icon would actively mislead.
-2. **One idea, cleanly.** A paradigm is a single organizing frame; the mark should be one
-   confident gesture, not a scene. This aligns with the #1 best practice below (single focal
-   point), so philosophy and craft point the same way.
-3. **Quietly intellectual, not sci-fi.** The app pairs serif reading text with a calm dark UI.
-   The icon is an instrument, not a toy or a neon gadget.
+- **Two asymmetric planes** are two readings or bodies of evidence, moving in opposite directions.
+- **Their overlap** is the act of comparison rather than simple collection.
+- **The central aperture** is the considered view that reasoning opens. It is negative space, not
+  another object layered on top.
+- **The diagonal flow** keeps the mark active and editorial without becoming a literal chain link,
+  infinity symbol, speech bubble, or letterform.
 
-The honest tension to resolve in generation: the most *conceptually precise* marks (an anomaly
-reorganizing a field; a discontinuous jump) risk being illegible at 48px, while the most
-*legible* marks (a bold single glyph) risk being generic. The winning direction has to be both
-— a bold, simple silhouette that still earns its meaning.
+The result should feel quiet, exact, and useful: a research instrument rather than a mascot.
 
-## App-icon best practices we will hold codex to (2025/2026)
+## Construction
 
-Synthesized from current iOS/Android guidance (sources below):
+- Canvas: 1024 × 1024, opaque square for the generic/iOS launcher asset.
+- Palette: deep ink `#0B0D12` and warm paper `#F3F0E8` only.
+- Geometry: two bold filled planes, no strokes, gradients, shadows, gloss, or embedded corner mask.
+- Aperture: a true cut-out in mark-only assets so Android theming and splash contexts remain valid.
+- Compact proof: the aperture must remain open at 32 px.
+- Android: meaningful foreground geometry stays inside the 66/108 adaptive-icon safe zone; the
+  background and monochrome layers are separate.
 
-- **Single focal point; ~0.5s to read.** One dominant element, no scene. It must be
-  recognizable at 60×60 and in a home-screen grid, not just at 1024².
-- **Two colors max.** The final direction uses only a deep ink ground (#0B0D12 family) and
-  the warm-paper P (#F3F0E8). No supporting accent, gradient, or decorative signal competes
-  with the letterform.
-- **Bold shapes, generous negative space.** Thin hairlines and fine detail vanish at small
-  sizes and get crushed by the platforms' 2025 effects (see next point).
-- **Design for the platform's own treatment — don't pre-bake it.** iOS applies its rounded
-  mask (and iOS 26 "Liquid Glass" depth/reflection) automatically — supply a **1024² square,
-  no transparency, no self-added corners/shadows/gloss**; if shapes aren't bold and clear the
-  glass effect flattens them. Android **adaptive icons** are two layers: an **opaque
-  background** (108dp) + a **foreground** (108dp) whose meaning must sit inside the **72dp
-  safe zone** (the system masks to circle/squircle/rounded-square and can crop the outer
-  ~33%). Also plan a **monochrome layer** — Android now tints icons from the wallpaper, and
-  without one the icon reads as dated.
-- **No text.** The wordmark is not the icon.
-- **Distinct in context.** It has to stand out on a crowded launcher next to other dark,
-  mint-ish, minimal icons — distinctiveness is a real constraint, not just taste.
+The canonical editable source is `mobile/assets/brand/seminar-mark.svg`; the generator parses its
+paths directly so the raster assets cannot silently drift from the approved vector. Install the
+pinned generator dependencies and regenerate the committed PNGs with:
 
-These become the non-negotiable clauses in every codex generation prompt (square 1024,
-opaque, single bold silhouette, ≤3 colors, meaning inside the center ~66%, no text).
+```sh
+.venv/bin/pip install -r scripts/requirements-icons.txt
+.venv/bin/python scripts/gen_app_icons.py mobile/assets/images
+```
 
-## The collaborative generation plan (Kamil in the loop)
+The output contracts are:
 
-Kamil wants to be involved at the generation step — that is the real point of selection.
+| Asset | Contract |
+|---|---|
+| `icon.png` | 1024² opaque ink canvas, used by Expo and iOS |
+| `android-icon-background.png` | 1024² opaque ink layer |
+| `android-icon-foreground.png` | 1024² transparent warm-paper mark, safe-zone scaled |
+| `android-icon-monochrome.png` | 1024² transparent single-tint mask |
+| `splash-icon.png` | 512² transparent warm-paper mark |
+| `favicon.png` | 48² opaque compact proof |
 
-1. **Align on 3–4 concept directions together** (from the philosophy above) before generating —
-   not 6 scattershot ideas. Likely starting candidates to react to: *stepped ring /
-   discontinuous orbit*, *refraction/prism*, *re-formed constellation (same nodes, new edges)*,
-   *figure-ground flip (one shape, two readings)*. Kamil edits this set.
-2. **Co-write the codex image prompts** for the agreed directions — each carrying the
-   best-practices clauses above verbatim, plus the specific concept and palette. Kamil reviews
-   the prompts before they run.
-3. **Generate** (codex → OpenAI Images), review together, iterate prompts as needed.
-4. **Select** the direction(s) worth vectorizing; rebuild as clean vector comps in Figma at
-   512² **and** 64px, on both a dark and a light launcher mock, with the Android safe-zone and
-   a monochrome variant checked.
-5. **Kamil picks the final**; then vector polish + asset integration (`mobile/assets/`,
-   adaptive `icon`/`foregroundImage`/`backgroundColor` + `monochromeImage` in `app.json`,
-   splash), shipped as its own PR (needs a dev build — native asset change).
+Native launcher assets require a development-app rebuild and reinstall. Reloading the Metro bundle
+alone cannot change the icon installed on the phone.
 
-## Status
+## Figma deliverable
 
-- [x] First-pass concepts + generations + comps (superseded; kept on the Figma page for
-      reference)
-- [x] Best-practices research + philosophy brief (this doc)
-- [x] Kamil approved the new editorial **P** direction in the round-10 device pass
-- [x] Final editable Figma board: `Scholiast P · Final (R7.10)` on page
-      `03 · App Icon — Scholiast`
-- [x] Primary, warm-paper launcher context, 128/64/32 proofs, Android 66% safe-zone proof,
-      and monochrome fallback
-- [x] Deterministic canonical SVG plus generic/iOS, Android adaptive foreground,
-      monochrome, splash, and favicon assets introduced in
-      [#182](https://github.com/kamilkhan52/research-companion/pull/182)
-- [x] Simplified after device review to the editorial P alone; the mint path, violet node,
-      and background glow were removed from all Figma proofs and every platform asset in
-      [#194](https://github.com/kamilkhan52/research-companion/pull/194)
-- [x] Regression coverage verifies that the removed mint/violet secondary marks cannot
-      reappear in the canonical SVG or committed platform PNGs.
+The editable Figma board uses the same canonical paths and contains:
 
-The final mark is a warm-paper slab-serif P on a flat ink canvas. The letterform is the
-entire idea: editorial authority, scholarship, and a single readable launcher silhouette
-without secondary symbols.
+- vector master;
+- primary launcher proof;
+- 64 px and 32 px proofs;
+- Android adaptive safe-zone proof;
+- monochrome proof;
+- the short narrative and construction guardrails above.
 
-The icon files are native application resources. Rebuild and reinstall the development app
-to inspect the launcher icon on-device; reloading the Metro JavaScript bundle is not enough.
-
-## Sources
-
-- [App Icon Design Guide (SVG Genie)](https://www.svggenie.com/blog/app-icon-design-guide)
-- [iOS vs Android Icon Guidelines 2025 (IconDino)](https://appiconcreator.com/blog/ios-vs-android-icon-guide)
-- [App Icon Trends & Best Practices 2025 (ASOMobile)](https://asomobile.net/en/blog/app-icon-trends-and-best-practices-2025/)
-- [App Icon Guide 2026 (MobileAction)](https://www.mobileaction.co/guide/app-icon-guide/)
+The previous letterform icon remains in git history; it is not retained as an active asset or
+compatibility fallback, so a future rebrand cannot accidentally restore it.

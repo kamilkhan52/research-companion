@@ -1,15 +1,20 @@
-"""Generate the Scholiast “P” icon set.
+"""Generate Seminar's Quiet Aperture icon set.
 
-The mark is one warm-paper editorial P on a flat Scholar Dark canvas. Pure numpy
-+ stdlib zlib PNG writer: no font rasterizer or image library, so every platform
-asset is reproducible.
+Two warm-paper planes overlap around a true negative-space aperture on a flat
+ink canvas. Geometry is shared with ``mobile/assets/brand/seminar-mark.svg``.
+Pillow rasterizes the cubic paths at 4x; numpy downsamples coverage; the stdlib
+PNG writer keeps every committed platform asset byte-for-byte reproducible.
 """
 
+import re
 import struct
 import sys
+import xml.etree.ElementTree as ET
 import zlib
+from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 INK = (0x0B, 0x0D, 0x12)
 PAPER = (0xF3, 0xF0, 0xE8)
@@ -18,25 +23,6 @@ PAPER = (0xF3, 0xF0, 0xE8)
 def canvas(n):
     yy, xx = np.mgrid[0:n, 0:n].astype(np.float64)
     return xx + 0.5, yy + 0.5
-
-
-def aa(dist):
-    """Signed distance (px, + outside) → coverage with a ~1.2 px feather."""
-    return np.clip(0.5 - dist / 1.2, 0.0, 1.0)
-
-
-def ellipse(xx, yy, cx, cy, rx, ry):
-    # Accurate enough at the edge for analytic AA while remaining dependency-free.
-    normalized = np.hypot((xx - cx) / rx, (yy - cy) / ry)
-    return aa((normalized - 1) * min(rx, ry))
-
-
-def round_rect(xx, yy, cx, cy, hx, hy, r):
-    qx = np.abs(xx - cx) - (hx - r)
-    qy = np.abs(yy - cy) - (hy - r)
-    outside = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0))
-    inside = np.minimum(np.maximum(qx, qy), 0)
-    return aa(outside + inside - r)
 
 
 def over(base_rgb, base_a, rgb, coverage, alpha=1.0):
@@ -73,29 +59,120 @@ def write_png(path, rgb, alpha, n):
     print("wrote", path)
 
 
+SUPERSAMPLE = 4
+ROOT = Path(__file__).resolve().parents[1]
+MARK_SOURCE = ROOT / "mobile" / "assets" / "brand" / "seminar-mark.svg"
+
+
+def cubic(start, control_1, control_2, end, steps=24):
+    """Flatten one SVG cubic segment without duplicating ``start``."""
+    p0 = np.asarray(start, dtype=np.float64)
+    p1 = np.asarray(control_1, dtype=np.float64)
+    p2 = np.asarray(control_2, dtype=np.float64)
+    p3 = np.asarray(end, dtype=np.float64)
+    points = []
+    for t in np.linspace(0.0, 1.0, steps + 1)[1:]:
+        u = 1.0 - t
+        point = u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
+        points.append(tuple(point))
+    return points
+
+
+def flatten_path(data):
+    """Flatten the small absolute-command subset used by the canonical SVG."""
+    tokens = re.findall(r"[A-Za-z]|-?(?:\d+(?:\.\d*)?|\.\d+)", data)
+    points = []
+    cursor = None
+    start = None
+    command = None
+    index = 0
+
+    def number():
+        nonlocal index
+        value = float(tokens[index])
+        index += 1
+        return value
+
+    while index < len(tokens):
+        if tokens[index].isalpha():
+            command = tokens[index]
+            index += 1
+        if command == "M":
+            cursor = (number(), number())
+            start = cursor
+            points.append(cursor)
+            command = "L"
+        elif command == "L":
+            cursor = (number(), number())
+            points.append(cursor)
+        elif command == "H":
+            cursor = (number(), cursor[1])
+            points.append(cursor)
+        elif command == "V":
+            cursor = (cursor[0], number())
+            points.append(cursor)
+        elif command == "C":
+            control_1 = (number(), number())
+            control_2 = (number(), number())
+            end = (number(), number())
+            points.extend(cubic(cursor, control_1, control_2, end))
+            cursor = end
+        elif command == "Z":
+            cursor = start
+            command = None
+        else:
+            raise ValueError(f"Unsupported SVG path command: {command}")
+    return points
+
+
+def quiet_aperture_geometry():
+    """Read the planes and true aperture from the canonical editable SVG."""
+    root = ET.parse(MARK_SOURCE).getroot()
+    planes = []
+    aperture = None
+    for element in root.iter():
+        if not element.tag.endswith("path"):
+            continue
+        data = element.attrib.get("d")
+        if not data:
+            continue
+        if element.attrib.get("fill") == "black":
+            aperture = flatten_path(data)
+        else:
+            planes.append(flatten_path(data))
+    if len(planes) != 2 or aperture is None:
+        raise ValueError("seminar-mark.svg must contain two planes and one black mask path")
+    return planes, aperture
+
+
+def mark_coverage(n, scale):
+    """Rasterize the planes and subtract the aperture as actual transparency."""
+    size = n * SUPERSAMPLE
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+
+    def transform(points):
+        return [
+            (
+                (n / 2 + (x - 512) * scale) * SUPERSAMPLE,
+                (n / 2 + (y - 512) * scale) * SUPERSAMPLE,
+            )
+            for x, y in points
+        ]
+
+    planes, aperture = quiet_aperture_geometry()
+    for plane in planes:
+        draw.polygon(transform(plane), fill=255)
+    draw.polygon(transform(aperture), fill=0)
+    pixels = np.asarray(mask, dtype=np.float64) / 255.0
+    return pixels.reshape(n, SUPERSAMPLE, n, SUPERSAMPLE).mean(axis=(1, 3))
+
+
 def draw_mark(xx, yy, scale, rgb, alpha, mono=False):
-    """Composite the mark around the current canvas center.
-
-    ``scale=1`` uses the canonical 1024-unit geometry. Smaller values keep the
-    same optical proportions for adaptive and compact assets.
-    """
-    n = xx.max() + 0.5
-    cx, cy = n / 2, n / 2
-
-    def pt(x, y):
-        return cx + (x - 512) * scale, cy + (y - 512) * scale
-
+    """Composite the canonical mark around the current canvas center."""
+    n = int(xx.max() + 0.5)
     paper = (255, 255, 255) if mono else PAPER
-    # P silhouette: quiet slab serifs plus an ample counter that remains open at 24 px.
-    stem = round_rect(xx, yy, *pt(390, 512), 62 * scale, 300 * scale, 10 * scale)
-    top_serif = round_rect(xx, yy, *pt(435, 220), 135 * scale, 20 * scale, 8 * scale)
-    bottom_serif = round_rect(xx, yy, *pt(410, 792), 110 * scale, 20 * scale, 8 * scale)
-    outer = ellipse(xx, yy, *pt(490, 392), 220 * scale, 190 * scale)
-    inner = ellipse(xx, yy, *pt(500, 395), 112 * scale, 90 * scale)
-    bowl = np.clip(outer - inner, 0, 1)
-    p_coverage = np.maximum.reduce((stem, top_serif, bottom_serif, bowl))
-    rgb, alpha = over(rgb, alpha, paper, p_coverage)
-    return rgb, alpha
+    return over(rgb, alpha, paper, mark_coverage(n, scale))
 
 
 def solid(n, color):
