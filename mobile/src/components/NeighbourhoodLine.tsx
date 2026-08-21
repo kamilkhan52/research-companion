@@ -1,13 +1,12 @@
-// DR-052 PR 4 — the shared corpus-neighbourhood freshness line. Both the Map and the Discover
-// tab render THIS, reading the one substrate they both maintain (the graph store's forward
-// citer sets), so the reader sees the same "checked N ago · M of P monitored" on either tab —
-// which is how the merge beneath the two tabs (spec docs/map-discover-merge-design.md) becomes
-// visible without collapsing them into one screen.
+// DR-052 PR 4 — the shared corpus-neighbourhood freshness line. It reflects the FORWARD-citation
+// neighbourhood (which papers cite the reader's library, and when we last looked) — the graph
+// store's per-anchor citer sets. Those are maintained by DISCOVERY (the citation chase + delta
+// lane); the Map build does not touch them. So the line is Discover's domain: the Discover tab
+// shows it and can refresh it (a re-run re-sweeps); the Map tab shows the same line read-only,
+// and only once it exists, so the reader sees the shared substrate beneath the two tabs (spec
+// docs/map-discover-merge-design.md) without the Map claiming to own a scan it doesn't run.
 //
-// The two kinds of stale it distinguishes are the spec's (§1): composition-stale (papers added
-// since the last sweep — exact, auto-fixed by the next run, shown as a gentle count) and
-// time-stale (the world published new citers; the age of the last sweep, addressed by a
-// refresh). A never-swept neighbourhood reads as an offer, never as loss (DR-046).
+// A never-swept neighbourhood reads as an offer ("not scanned yet"), never as loss (DR-046).
 
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -31,18 +30,21 @@ export function relativeAge(seconds: number | null): string {
 }
 
 export function neighbourhoodSummary(n: Neighbourhood): string {
-  if (!n.ever_swept) return 'Neighbourhood not mapped yet';
-  const parts = [`Neighbourhood checked ${relativeAge(n.age_seconds)}`];
+  if (!n.ever_swept) return 'Neighbourhood not scanned yet';
+  const age = relativeAge(n.age_seconds);
+  // Guard the empty age (a malformed stored timestamp yields age_seconds null while ever_swept
+  // stays true) so the line never renders "checked  · …" with a dangling separator.
+  const parts = [age ? `Neighbourhood checked ${age}` : 'Neighbourhood checked recently'];
   if (n.total_papers > 0) parts.push(`${n.monitored} of ${n.total_papers} papers`);
   return parts.join(' · ');
 }
 
-/** `onRefresh` is the tab's own refresh action (rebuild the map, or re-run Discover); the line
- *  labels it so a tap reads as refreshing the SHARED neighbourhood, not just this view. */
-export function NeighbourhoodLine({ neighbourhood, onRefresh, refreshing = false, refreshLabel }: {
+/** `onRefresh` is the owning tab's refresh — only Discover passes one (a re-run re-sweeps the
+ *  forward substrate). The Map passes none: it shows the line read-only, so it never offers to
+ *  refresh a scan it doesn't run. */
+export function NeighbourhoodLine({ neighbourhood, onRefresh, refreshLabel }: {
   neighbourhood: Neighbourhood | undefined;
   onRefresh?: () => void;
-  refreshing?: boolean;
   refreshLabel?: string;
 }) {
   const t = useTheme();
@@ -50,36 +52,27 @@ export function NeighbourhoodLine({ neighbourhood, onRefresh, refreshing = false
   if (!neighbourhood) return null;
 
   const stale = neighbourhood.time_stale;
-  const added = neighbourhood.composition_stale;
-  const notMapped = !neighbourhood.ever_swept;
-  const tone = notMapped ? t.muted : stale ? t.amber : t.muted;
+  const notScanned = !neighbourhood.ever_swept;
 
   return (
     <View style={styles.row} testID="neighbourhood-line">
-      <Icon name={notMapped ? 'circle' : stale ? 'refresh-cw' : 'check-circle'} size={13} color={tone} />
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text variant="caption" color={t.muted} numberOfLines={1}>
-          {neighbourhoodSummary(neighbourhood)}
-        </Text>
-        {/* Composition-stale is shown as information, never a warning — the next run fixes it. */}
-        {added > 0 && !notMapped ? (
-          <Text variant="caption" color={t.muted} numberOfLines={1}>
-            {added} newer paper{added === 1 ? '' : 's'} join on the next run
-          </Text>
-        ) : null}
-      </View>
+      <Icon
+        name={notScanned ? 'circle' : stale ? 'refresh-cw' : 'check-circle'}
+        size={13}
+        color={stale ? t.amber : t.muted}
+      />
+      <Text variant="caption" color={t.muted} numberOfLines={1} style={{ flex: 1, minWidth: 0 }}>
+        {neighbourhoodSummary(neighbourhood)}
+      </Text>
       {onRefresh ? (
         <Pressable
           onPress={onRefresh}
-          disabled={refreshing}
           accessibilityRole="button"
           accessibilityLabel={refreshLabel ?? 'Refresh the neighbourhood'}
           hitSlop={8}
           style={styles.action}
         >
-          <Text variant="caption" color={refreshing ? t.muted : t.mint}>
-            {refreshing ? 'Refreshing…' : refreshLabel ?? 'Refresh'}
-          </Text>
+          <Text variant="caption" color={t.mint}>{refreshLabel ?? 'Refresh'}</Text>
         </Pressable>
       ) : null}
     </View>

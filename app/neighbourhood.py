@@ -189,14 +189,23 @@ NEIGHBOURHOOD_STALE_AFTER_S = 7 * 24 * 3600.0
 def status(papers: list[Paper], data: dict) -> dict:
     """The shared neighbourhood-freshness summary both views show (DR-052 PR 4, spec §1/§7).
 
-    Read-only and deterministic over the graph store's `forward` records — the same substrate
-    Map and Discover both maintain — so the freshness line reads identically on either tab and
-    makes the merge visible. Distinguishes the spec's two kinds of stale:
+    Read-only and deterministic over the graph store's `forward` records — the per-anchor
+    known-citer sets. Those record the **forward-citation** neighbourhood: which papers cite the
+    reader's library, and when we last looked. That is a Discovery-maintained concept (the
+    citation chase and the delta lane write these records; the Map build does not), so the line
+    is Discover's domain — the Map tab shows it read-only, when it exists, to make the shared
+    substrate visible, but does not refresh it.
 
-    - **composition-stale** (exact, free): reading-list papers with no forward record yet, i.e.
-      added since the last sweep. Auto-fixed by the next run; surfaced as a count, never a block.
-    - **time-stale**: the age of the most recent sweep across monitored anchors. Never blocks;
-      it is what the one-tap refresh addresses.
+    Fields:
+    - `monitored`/`total_papers`: anchors with a current forward record, out of the reading
+      list. `monitored` caps around the delta lane's per-run budget (it rotates through a large
+      library), so the fraction is coverage-at-this-moment, not a defect.
+    - `unmonitored` = `total - monitored`: papers with no current forward record. NOT
+      necessarily newly added — it also counts papers awaiting rotation and papers a sweep found
+      to have zero citers (`record_forward_sweep` writes only when a new citer appears). So it is
+      a soft "not yet reflected" count, deliberately not presented as "papers added since".
+    - `time_stale`: the most recent sweep is older than the weekly cadence. Never blocks.
+    - `ever_swept`: whether any forward sweep has run at all — the Discover-vs-not-built signal.
     """
     forward = data.get("forward") or {}
     monitored = 0
@@ -223,10 +232,9 @@ def status(papers: list[Paper], data: dict) -> dict:
         "age_seconds": int(age_s) if age_s is not None else None,
         "monitored": monitored,
         "total_papers": total,
-        # Papers on the list the substrate has never seen — the next sweep covers them.
-        "composition_stale": max(0, total - monitored),
-        # Only "time-stale" once something has been swept at all; a never-built neighbourhood is
-        # "not built", a distinct state the client renders as an offer, not as stale (DR-046).
+        "unmonitored": max(0, total - monitored),
+        # Only "time-stale" once something has been swept; a never-swept neighbourhood is "not
+        # scanned yet", a distinct state the client renders as an offer, not as stale (DR-046).
         "time_stale": bool(age_s is not None and age_s > NEIGHBOURHOOD_STALE_AFTER_S),
         "ever_swept": bool(last_swept),
     }

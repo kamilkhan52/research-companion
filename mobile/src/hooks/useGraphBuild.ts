@@ -200,9 +200,6 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         // A completed build refreshes authors/affiliations too (U.9) — an open Authors
         // screen would otherwise keep showing the pre-build board.
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
-        // The build resolved anchors/citers, so the shared neighbourhood freshness (this tab
-        // and Discover) moved too (DR-052 PR 4).
-        qc.invalidateQueries({ queryKey: keys.neighbourhood(pid) });
       }
     },
     [pid, qc],

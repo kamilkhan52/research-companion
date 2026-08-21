@@ -15,7 +15,7 @@ const base: Neighbourhood = {
   age_seconds: 7200,
   monitored: 20,
   total_papers: 34,
-  composition_stale: 14,
+  unmonitored: 14,
   time_stale: false,
   ever_swept: true,
 };
@@ -38,29 +38,32 @@ describe('neighbourhoodSummary', () => {
   it('names the age and the monitored fraction when swept', () => {
     expect(neighbourhoodSummary(base)).toBe('Neighbourhood checked 2h ago · 20 of 34 papers');
   });
-  it('reads as an offer, not loss, when never mapped (DR-046)', () => {
+  it('reads as an offer, not loss, when never scanned (DR-046)', () => {
     expect(neighbourhoodSummary({ ...base, ever_swept: false, monitored: 0, age_seconds: null }))
-      .toBe('Neighbourhood not mapped yet');
+      .toBe('Neighbourhood not scanned yet');
+  });
+  it('never renders a dangling separator when the age is unknown', () => {
+    // ever_swept true but a malformed stored timestamp → age_seconds null.
+    const s = neighbourhoodSummary({ ...base, age_seconds: null });
+    expect(s).toBe('Neighbourhood checked recently · 20 of 34 papers');
+    expect(s).not.toContain('  ');
   });
 });
 
 describe('NeighbourhoodLine', () => {
-  it('renders the composition-stale hint as information, not a warning', () => {
-    const { getByText } = render(<NeighbourhoodLine neighbourhood={base} />);
-    expect(getByText('14 newer papers join on the next run')).toBeTruthy();
+  it('renders the summary, and no misleading "newer papers" hint', () => {
+    const { getByText, queryByText } = render(<NeighbourhoodLine neighbourhood={base} />);
+    expect(getByText('Neighbourhood checked 2h ago · 20 of 34 papers')).toBeTruthy();
+    expect(queryByText(/newer paper/)).toBeNull();
   });
   it('renders nothing without data', () => {
     const { toJSON } = render(<NeighbourhoodLine neighbourhood={undefined} />);
     expect(toJSON()).toBeNull();
   });
-  it('shows the refresh action label and disables it while refreshing', () => {
-    const { getByText, rerender } = render(
-      <NeighbourhoodLine neighbourhood={base} onRefresh={() => {}} refreshLabel="Rebuild" />,
-    );
-    expect(getByText('Rebuild')).toBeTruthy();
-    rerender(
-      <NeighbourhoodLine neighbourhood={base} onRefresh={() => {}} refreshLabel="Rebuild" refreshing />,
-    );
-    expect(getByText('Refreshing…')).toBeTruthy();
+  it('shows a refresh action only when given one (Discover), not read-only (Map)', () => {
+    const withRefresh = render(<NeighbourhoodLine neighbourhood={base} onRefresh={() => {}} refreshLabel="Refresh" />);
+    expect(withRefresh.getByText('Refresh')).toBeTruthy();
+    const readOnly = render(<NeighbourhoodLine neighbourhood={base} />);
+    expect(readOnly.queryByText('Refresh')).toBeNull();
   });
 });

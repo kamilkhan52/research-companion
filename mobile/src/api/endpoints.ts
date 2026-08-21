@@ -499,7 +499,7 @@ export interface Neighbourhood {
   age_seconds: number | null;
   monitored: number;
   total_papers: number;
-  composition_stale: number;
+  unmonitored: number;
   time_stale: boolean;
   ever_swept: boolean;
 }

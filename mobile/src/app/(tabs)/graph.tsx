@@ -349,14 +349,14 @@ export default function GraphScreen() {
             visibleCount={visibleGraph.nodes.length}
           />
 
-          {/* DR-052 PR 4: the SAME neighbourhood freshness the Discover tab shows — one
-              substrate beneath both — so the merge is visible. Refresh here is a rebuild. */}
-          <NeighbourhoodLine
-            neighbourhood={neighbourhood.data}
-            onRefresh={build.building ? undefined : () => build.run(false)}
-            refreshing={build.building}
-            refreshLabel="Rebuild"
-          />
+          {/* DR-052 PR 4: the SAME forward-citation freshness the Discover tab shows — the
+              shared substrate beneath both tabs — but READ-ONLY here and only once a scan
+              exists. The forward sweep is Discovery's (the Map build never writes citer
+              records), so the Map shows the connection without offering to refresh a scan it
+              doesn't run, and doesn't clutter a fresh map with a "not scanned yet" line. */}
+          {neighbourhood.data?.ever_swept ? (
+            <NeighbourhoodLine neighbourhood={neighbourhood.data} />
+          ) : null}
 
           {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
             <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />

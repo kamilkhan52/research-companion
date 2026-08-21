@@ -167,7 +167,7 @@ def test_status_reports_freshness_and_the_two_kinds_of_stale(temp_project):
     papers = [_Paper("paper-a"), _Paper("paper-b"), _Paper("paper-c")]  # c never swept
     st = neighbourhood.status(papers, data)
     assert st["monitored"] == 2 and st["total_papers"] == 3
-    assert st["composition_stale"] == 1      # paper-c added since the last sweep
+    assert st["unmonitored"] == 1      # paper-c added since the last sweep
     assert st["last_swept"] == recent        # newest wins
     assert st["ever_swept"] is True
     assert st["time_stale"] is False         # 2h < a week
@@ -189,4 +189,4 @@ def test_status_never_built_is_not_stale(temp_project):
     assert st["ever_swept"] is False
     assert st["time_stale"] is False
     assert st["last_swept"] is None and st["age_seconds"] is None
-    assert st["monitored"] == 0 and st["composition_stale"] == 2
+    assert st["monitored"] == 0 and st["unmonitored"] == 2
