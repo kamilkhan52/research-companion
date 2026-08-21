@@ -1,5 +1,7 @@
 import json
 import struct
+import subprocess
+import sys
 import zlib
 from pathlib import Path
 
@@ -63,9 +65,16 @@ def test_canonical_icon_is_the_name_independent_quiet_aperture():
     assert "#9B8AFB" not in svg
     assert not (ASSETS / "brand" / "paradigm-mark.svg").exists()
 
-    generator = (ROOT / "scripts" / "gen_app_icons.py").read_text()
-    assert '"seminar-mark.svg"' in generator
-    assert "quiet_aperture_paths" not in generator
+
+def test_generated_icons_match_committed_assets(tmp_path):
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "gen_app_icons.py"), str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for name in ICON_NAMES:
+        assert (tmp_path / name).read_bytes() == (ASSETS / "images" / name).read_bytes()
 
 
 def test_platform_icons_contain_no_secondary_accent_marks():
@@ -93,6 +102,9 @@ def test_platform_icon_dimensions_and_layer_contracts():
     _, _, background = images["android-icon-background.png"]
     assert set(background) == {(*INK, 255)}
 
+    for name in ("icon.png", "favicon.png"):
+        assert all(pixel[3] == 255 for pixel in images[name][2])
+
     for name in ("android-icon-foreground.png", "android-icon-monochrome.png", "splash-icon.png"):
         width, _, pixels = images[name]
         center = pixels[(width // 2) * width + width // 2]
@@ -107,12 +119,12 @@ def test_platform_icon_dimensions_and_layer_contracts():
         for index, pixel in enumerate(foreground)
         if pixel[3] > 0
     ]
-    xs, ys = zip(*foreground_alpha, strict=True)
-    safe_margin = 1024 * (21 / 108)
-    assert min(xs) >= safe_margin
-    assert min(ys) >= safe_margin
-    assert max(xs) <= 1024 - safe_margin
-    assert max(ys) <= 1024 - safe_margin
+    safe_radius = 1024 * (33 / 108)
+    center = (1024 - 1) / 2
+    assert max(
+        (x - center) ** 2 + (y - center) ** 2
+        for x, y in foreground_alpha
+    ) <= safe_radius**2
 
     _, _, monochrome = images["android-icon-monochrome.png"]
     assert all(pixel[3] == 0 or pixel[:3] == (255, 255, 255) for pixel in monochrome)
