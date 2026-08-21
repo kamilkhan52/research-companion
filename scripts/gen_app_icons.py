@@ -3,7 +3,7 @@
 Two warm-paper planes overlap around a true negative-space aperture on a flat
 ink canvas. Geometry is shared with ``mobile/assets/brand/seminar-mark.svg``.
 Pillow rasterizes the cubic paths at 4x; numpy downsamples coverage; the stdlib
-PNG writer keeps every committed platform asset byte-for-byte reproducible.
+PNG writer keeps the decoded pixels of every platform asset reproducible.
 """
 
 import re

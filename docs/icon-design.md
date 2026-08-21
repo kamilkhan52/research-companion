@@ -35,7 +35,7 @@ The result should feel quiet, exact, and useful: a research instrument rather th
 
 The canonical editable source is `mobile/assets/brand/seminar-mark.svg`; the generator parses its
 paths directly so the raster assets cannot silently drift from the approved vector. Install the
-pinned generator dependencies and regenerate the committed PNGs with:
+generator dependencies and regenerate the committed PNGs with:
 
 ```sh
 .venv/bin/pip install -r scripts/requirements-icons.txt

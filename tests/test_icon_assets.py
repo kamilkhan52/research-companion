@@ -74,7 +74,7 @@ def test_generated_icons_match_committed_assets(tmp_path):
         text=True,
     )
     for name in ICON_NAMES:
-        assert (tmp_path / name).read_bytes() == (ASSETS / "images" / name).read_bytes()
+        assert _rgba_image(tmp_path / name) == _rgba_image(ASSETS / "images" / name)
 
 
 def test_platform_icons_contain_no_secondary_accent_marks():
