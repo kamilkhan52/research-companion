@@ -25,8 +25,11 @@ import type {
   DiscussionThreadSummary,
   FavoriteModel,
   FigureManifest,
+  GraphBuildJob,
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
+  GraphEdge,
+  GraphNode,
   GraphResponse,
   NotesDoc,
   Plan,
@@ -505,6 +508,22 @@ export interface Neighbourhood {
 }
 export const getNeighbourhood = (pid: string) =>
   apiGet<{ neighbourhood: Neighbourhood }>(`${P(pid)}/neighbourhood`).then((r) => r.neighbourhood);
+// The per-paper reference graph (ego view): the paper, what it references, and what on the
+// reading list cites it, plus a count of external citers. `ego` null = not a built project node.
+export interface PaperEgo {
+  center_id: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  references_count: number;
+  citers_count: number;
+  external_citer_count: number | null;
+  capped: boolean;
+  layout: { algo: string };
+}
+export const getPaperGraph = (pid: string, slug: string) =>
+  apiGet<{ ego: PaperEgo | null; build: GraphBuildJob | null }>(
+    `${P(pid)}/graph/paper/${encodeURIComponent(slug)}`,
+  );
 export const getGraphAuthors = (pid: string) =>
   apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`).then(noting((r) => r.labs_job));
 /** Start (or join) the agentic lab pass over the project's top authors (R7.7). */

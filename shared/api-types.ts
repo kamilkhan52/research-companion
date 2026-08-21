@@ -1763,6 +1763,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/graph/paper/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Paper Graph
+         * @description The per-paper reference graph (ego view): this paper, what it references, and what on the
+         *     reading list cites it — a readable derived view over the built graph, with external citers
+         *     reported as a count. `ego` is null when the paper isn't a built project node, which the
+         *     client renders as a build/absent offer rather than an error (DR-046).
+         */
+        get: operations["get_paper_graph_api_projects__pid__graph_paper__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/neighbourhood": {
         parameters: {
             query?: never;
@@ -5299,6 +5322,38 @@ export interface operations {
             header?: never;
             path: {
                 pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_paper_graph_api_projects__pid__graph_paper__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
             };
             cookie?: never;
         };

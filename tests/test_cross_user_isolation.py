@@ -90,6 +90,8 @@ def client_as(monkeypatch):
     ("GET", "/api/projects/{pid}/state"),
     ("GET", "/api/projects/{pid}/usage"),
     ("GET", "/api/projects/{pid}/graph"),
+    ("GET", "/api/projects/{pid}/graph/paper/some-slug"),
+    ("GET", "/api/projects/{pid}/neighbourhood"),
     ("POST", "/api/projects/{pid}/discover"),
     ("POST", "/api/projects/{pid}/discover/cancel"),
     ("POST", "/api/projects/{pid}/papers"),

@@ -604,7 +604,7 @@ export default function DiscussionScreen() {
             hasNotes={!!session.data?.paper.has_notes}
             onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
             onRelatedWorks={() => setShowRelated(true)}
-            onGraph={() => router.push('/graph')}
+            onGraph={() => slug && router.push(`/paper-graph/${encodeURIComponent(slug)}`)}
             paperUrl={paperUrl}
             showFinishReading={
               hasSession
