@@ -142,3 +142,51 @@ def test_substrate_timestamps_keep_the_graph_builds_second_precision(temp_projec
 
     assert len(neighbourhood._now()) == len(graph._now())
     assert "." not in neighbourhood._now()  # no microseconds
+
+
+# --- shared freshness status (DR-052 PR 4) ---------------------------------------------------
+
+def _swept(data, slug, *, s2=None, oa=None):
+    rec = {}
+    if s2:
+        rec["s2_swept_at"] = s2
+    if oa:
+        rec["swept_at"] = oa
+    graph_store.set_forward_sweep(data, slug, rec)
+
+
+def test_status_reports_freshness_and_the_two_kinds_of_stale(temp_project):
+    from datetime import UTC, datetime, timedelta
+
+    data = graph_store.load()
+    recent = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    old = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    _swept(data, "paper-a", s2=recent)
+    _swept(data, "paper-b", oa=old)          # older; last_swept is the max across anchors
+
+    papers = [_Paper("paper-a"), _Paper("paper-b"), _Paper("paper-c")]  # c never swept
+    st = neighbourhood.status(papers, data)
+    assert st["monitored"] == 2 and st["total_papers"] == 3
+    assert st["composition_stale"] == 1      # paper-c added since the last sweep
+    assert st["last_swept"] == recent        # newest wins
+    assert st["ever_swept"] is True
+    assert st["time_stale"] is False         # 2h < a week
+    assert st["age_seconds"] is not None and st["age_seconds"] < 3 * 3600
+
+
+def test_status_flags_time_stale_past_the_cadence(temp_project):
+    from datetime import UTC, datetime, timedelta
+
+    data = graph_store.load()
+    _swept(data, "paper-a", s2=(datetime.now(UTC) - timedelta(days=10)).isoformat())
+    st = neighbourhood.status([_Paper("paper-a")], data)
+    assert st["time_stale"] is True
+
+
+def test_status_never_built_is_not_stale(temp_project):
+    """DR-046: an absent neighbourhood must read as 'not built', an offer — never as stale/loss."""
+    st = neighbourhood.status([_Paper("paper-a"), _Paper("paper-b")], graph_store.load())
+    assert st["ever_swept"] is False
+    assert st["time_stale"] is False
+    assert st["last_swept"] is None and st["age_seconds"] is None
+    assert st["monitored"] == 0 and st["composition_stale"] == 2

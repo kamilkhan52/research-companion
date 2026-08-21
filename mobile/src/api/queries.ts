@@ -45,6 +45,7 @@ export const keys = {
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
+  neighbourhood: (pid: string) => ['project', pid, 'neighbourhood'] as const,
   graphAuthors: (pid: string) => ['project', pid, 'graphAuthors'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
@@ -378,6 +379,18 @@ export function useGraph(pid: string | null) {
   return useQuery({
     queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
     queryFn: () => api.getGraph(pid as string),
+    enabled: !!pid && hasUrl,
+  });
+}
+
+/** DR-052 PR 4: the shared corpus-neighbourhood freshness both the Map and Discover tabs show,
+ *  so the merge beneath them (they maintain one substrate) becomes visible. Cheap read-only
+ *  endpoint; a build or a Discover run invalidates it via keys.neighbourhood. */
+export function useNeighbourhood(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid ? keys.neighbourhood(pid) : ['project', 'none', 'neighbourhood'],
+    queryFn: () => api.getNeighbourhood(pid as string),
     enabled: !!pid && hasUrl,
   });
 }

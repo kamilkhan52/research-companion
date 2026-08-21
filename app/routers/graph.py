@@ -15,6 +15,7 @@ from .. import (
     graph_jobs,
     graph_store,
     lab_research,
+    neighbourhood,
     sessions,
     store,
 )
@@ -45,6 +46,15 @@ def get_graph(pid: str):
         "status": graph.status(papers),
         "build": job.to_dict() if job else None,
     }
+
+
+@project_router.get("/neighbourhood")
+def get_neighbourhood(pid: str):
+    """The shared corpus-neighbourhood freshness (DR-052 PR 4). Read-only and cheap — derived
+    from the graph store's forward records — so both the Map and Discover tabs can show the
+    same 'checked N ago · M of P monitored' line and the merge beneath them becomes visible."""
+    papers = store.list_papers(sessions.session_states())
+    return {"neighbourhood": neighbourhood.status(papers, graph_store.load())}
 
 
 @project_router.get("/graph/recommendations")

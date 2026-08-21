@@ -604,18 +604,23 @@ export interface paths {
          * Dispatch To Claude
          * @description Spawn a detached headless Claude Code session for one item (or the pending batch).
          *
-         *     Fire-on-tap by Kamil's decision (2026-08-21): dev-only surface, and the response carries
-         *     the log path so a mis-tap is visible and killable. The child is fully detached
-         *     (start_new_session) so an RC_RELOAD restart of this server never takes the session down
-         *     with it.
+         *     Fire-on-tap by Kamil's decision (2026-08-21): the response carries the log path so a
+         *     mis-tap is visible and killable, and the child is fully detached (start_new_session) so an
+         *     RC_RELOAD restart never takes the session down with it.
          *
-         *     Permissions: `--permission-mode acceptEdits`, deliberately NOT the skip-everything mode
-         *     Kamil's interactive shell wrapper uses. This route is reachable by anything that can
-         *     reach the dev server (which is sometimes behind a public tunnel), and the devtest surface
-         *     is open-auth in dev — an endpoint that spawns a fully unrestricted agent would let anyone
-         *     who finds it run arbitrary commands on the Mac. acceptEdits still lets the session edit,
-         *     test, branch and push under the repo's own allowlists, which covers the triage-and-fix
-         *     loop this exists for.
+         *     **This is the one privileged devtest route and it is gated harder than the rest.** The
+         *     others only append to a gitignored inbox file; this one launches an agent that edits, runs
+         *     tests, and pushes. Two layers guard it:
+         *
+         *     - **Not over the public tunnel.** The devtest surface is open-auth in dev and the dev
+         *       server is sometimes behind a Cloudflare quick tunnel, so an unrestricted spawn reachable
+         *       there would be a remote-code-execution primitive (an attacker who found the URL could
+         *       POST an inbox item and then a batch dispatch to have the session act on their text; the
+         *       checkout's own allowlists cover git push / gh / python). Dispatch is refused for any
+         *       request bearing Cloudflare edge headers — it works from the tailnet (the phone's baked
+         *       stable path) and loopback only. The feedback/screenshot routes are unaffected.
+         *     - **`--permission-mode acceptEdits`, never skip-permissions.** Even from the tailnet the
+         *       session stays inside the repo's own tool allowlists rather than running unrestricted.
          */
         post: operations["dispatch_to_claude_api_devtest_dispatch_post"];
         delete?: never;
@@ -1750,6 +1755,28 @@ export interface paths {
         };
         /** Get Graph */
         get: operations["get_graph_api_projects__pid__graph_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/neighbourhood": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Neighbourhood
+         * @description The shared corpus-neighbourhood freshness (DR-052 PR 4). Read-only and cheap — derived
+         *     from the graph store's forward records — so both the Map and Discover tabs can show the
+         *     same 'checked N ago · M of P monitored' line and the merge beneath them becomes visible.
+         */
+        get: operations["get_neighbourhood_api_projects__pid__neighbourhood_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5267,6 +5294,37 @@ export interface operations {
         };
     };
     get_graph_api_projects__pid__graph_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_neighbourhood_api_projects__pid__neighbourhood_get: {
         parameters: {
             query?: never;
             header?: never;

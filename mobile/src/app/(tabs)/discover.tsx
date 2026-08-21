@@ -28,9 +28,10 @@ import {
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
-import { keys, useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
+import { keys, useAddPaper, useDiscovery, useNeighbourhood, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
+import { NeighbourhoodLine } from '@/components/NeighbourhoodLine';
 import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
@@ -59,6 +60,7 @@ export default function DiscoverScreen() {
     discovery.data !== undefined,
   );
   const runState = useDiscoveryRun(pid);
+  const neighbourhood = useNeighbourhood(pid);
   const goalsDraft = usePersistedDraft(
     pid ? draftKey(pid, 'discover', 'goals') : null,
     discovery.data?.goals || discovery.data?.result?.goals || '',
@@ -210,6 +212,16 @@ export default function DiscoverScreen() {
 
           {result && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
+              {/* DR-052 PR 4: the shared neighbourhood line — the same freshness the Map shows,
+                  since Discover's forward-citation sweep and the Map read one substrate. Its
+                  refresh IS a Discover run (which re-sweeps), so it reuses runDiscovery. */}
+              {pid ? (
+                <NeighbourhoodLine
+                  neighbourhood={neighbourhood.data}
+                  onRefresh={() => void runDiscovery()}
+                  refreshLabel="Refresh"
+                />
+              ) : null}
               <Text variant="editorial">
                 {runState.job?.status === 'cancelled' ? 'Previous results' : 'Results'}
               </Text>

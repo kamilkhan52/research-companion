@@ -71,7 +71,12 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
       // done: the result is already persisted server-side. cancelled: the old completed result
       // deliberately remains. In either case refresh so this and future visits render the
       // authoritative persisted state.
-      if (pid) qc.invalidateQueries({ queryKey: keys.discovery(pid) });
+      if (pid) {
+        qc.invalidateQueries({ queryKey: keys.discovery(pid) });
+        // A run re-sweeps the forward-citation substrate (DR-052), so the shared neighbourhood
+        // freshness line — on this tab and the Map — is now stale in cache.
+        qc.invalidateQueries({ queryKey: keys.neighbourhood(pid) });
+      }
     },
     [pid, qc],
   );

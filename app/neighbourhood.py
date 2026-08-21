@@ -180,6 +180,58 @@ FORWARD_PAGE = 100
 MAX_DELTA_ANCHORS = 25
 
 
+#: A neighbourhood older than this reads as "time-stale" — worth a one-tap refresh. A week
+#: matches DR-051's intended weekly monitoring cadence; below it, new citers are unlikely
+#: enough that nagging would be noise (spec §1: time-staleness never blocks).
+NEIGHBOURHOOD_STALE_AFTER_S = 7 * 24 * 3600.0
+
+
+def status(papers: list[Paper], data: dict) -> dict:
+    """The shared neighbourhood-freshness summary both views show (DR-052 PR 4, spec §1/§7).
+
+    Read-only and deterministic over the graph store's `forward` records — the same substrate
+    Map and Discover both maintain — so the freshness line reads identically on either tab and
+    makes the merge visible. Distinguishes the spec's two kinds of stale:
+
+    - **composition-stale** (exact, free): reading-list papers with no forward record yet, i.e.
+      added since the last sweep. Auto-fixed by the next run; surfaced as a count, never a block.
+    - **time-stale**: the age of the most recent sweep across monitored anchors. Never blocks;
+      it is what the one-tap refresh addresses.
+    """
+    forward = data.get("forward") or {}
+    monitored = 0
+    last_swept = ""
+    for paper in papers:
+        record = forward.get(getattr(paper, "slug", "") or "")
+        if not isinstance(record, dict):
+            continue
+        # A record exists once EITHER lane touched the anchor (breadth chase writes swept_at,
+        # the delta lane writes s2_swept_at); the newest of the two is when we last looked.
+        swept = max(str(record.get("s2_swept_at") or ""), str(record.get("swept_at") or ""))
+        if swept:
+            monitored += 1
+            last_swept = max(last_swept, swept)
+    total = len(papers)
+    age_s: float | None = None
+    if last_swept:
+        try:
+            age_s = (datetime.now(UTC) - datetime.fromisoformat(last_swept)).total_seconds()
+        except ValueError:
+            age_s = None
+    return {
+        "last_swept": last_swept or None,
+        "age_seconds": int(age_s) if age_s is not None else None,
+        "monitored": monitored,
+        "total_papers": total,
+        # Papers on the list the substrate has never seen — the next sweep covers them.
+        "composition_stale": max(0, total - monitored),
+        # Only "time-stale" once something has been swept at all; a never-built neighbourhood is
+        # "not built", a distinct state the client renders as an offer, not as stale (DR-046).
+        "time_stale": bool(age_s is not None and age_s > NEIGHBOURHOOD_STALE_AFTER_S),
+        "ever_swept": bool(last_swept),
+    }
+
+
 def stalest_first(anchors: list[dict], data: dict, limit: int = MAX_DELTA_ANCHORS
                   ) -> tuple[list[dict], int]:
     """The anchors to sweep this run, least-recently-swept first, and how many are left over.

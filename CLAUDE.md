@@ -152,9 +152,17 @@ way they did. This is an index, not a substitute for reading them.
   **An agent editing `app/` on the live checkout IS a restart** (DR-083: Kamil's in-flight
   Finish turn died mid-synthesis with no client-visible trace; a reload is one of the two
   candidate mechanisms, and an agent checkout demonstrably reloaded the server minutes
-  earlier). Before touching `app/` here, check for active jobs (recent writes under
-  `projects/`, `.dev-feedback/` activity, or ask); do backend edits on a branch/worktree and
-  let the merge fast-forward land them when the server is quiet.
+  earlier). **Advancing the live checkout (`git checkout` to a new main that touched `app/`)
+  is the same restart** — merging a backend PR and re-detaching HEAD reloads the worker and
+  kills every in-flight background job. On 2026-08-21 this silently killed a running Discover
+  job mid-triage (~50 min in): the checkpoint had reached `gated`, the worker was replaced,
+  and the client just reset to the initial screen with no error. Before touching `app/` OR
+  advancing the live checkout, check for active jobs — and **a fresh mtime on
+  `projects/*/.state/discovery-checkpoint.json` or `reference-graph.json` counts as an active
+  job**, not just `usage.json` (which a long recall/triage stage does not touch until it
+  meters). Do backend edits on a branch/worktree and let the merge fast-forward land them when
+  the server is quiet. (Discovery is checkpoint-resumable, so a killed run resumes from its
+  last stage on re-run — but the reader still lost the run they were watching.)
 - **Second instance for verification** (don't disturb the live server): `.env` pins `RC_PORT`
   and `run.sh` exports `.env` last, so bypass it — `RC_ENV=dev .venv/bin/uvicorn app.main:app
   --host 127.0.0.1 --port 8901`. **`RC_ENV` is now required** and bypassing `run.sh` bypasses the
