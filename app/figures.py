@@ -52,6 +52,11 @@ class StallError(Exception):
 
 MAX_FIGURES = 20
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
+#: Manifest FORMAT version, checked at reuse time. Bumped to 2 with DR-091 (SVG <object>
+#: figures): a "done" manifest derived by the img-only parser is not wrong, just blind to
+#: most of a vector-first paper — treating the old version as a cache miss re-derives it
+#: once instead of trusting a one-figure manifest forever.
+MANIFEST_VERSION = 2
 FETCH_TIMEOUT = 20.0
 MAX_REDIRECTS = 5
 # A "no HTML rendering" result is cached and only re-checked after this cool-down, so a
@@ -64,13 +69,44 @@ HARD_DEADLINE_S = 90.0
 
 _ALLOWED_HOST_SUFFIXES = ("arxiv.org", "ar5iv.org")
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
-# Raster types only — RN's Image can't render SVG, and SVG can embed further fetches.
+# Raster types plus SANITIZED SVG. The original raster-only rule assumed vector figures were
+# rare; measured 2026-08-21 (DR-091), arXiv's native LaTeXML rendering emits every
+# pgfplots/tikz figure as an SVG <object> — 11 of one real paper's 12 figures — and both
+# clients now render SVG (expo-image natively; browsers in <img> context, script-inert).
+# The "SVG can embed further fetches" concern is met by _svg_is_safe: an SVG with any active
+# or external-referencing construct is REJECTED outright, never rewritten.
 _IMAGE_EXTS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/gif": ".gif",
     "image/webp": ".webp",
+    "image/svg+xml": ".svg",
 }
+
+#: Constructs that make an SVG active or outward-reaching. Matched on the lowercased text;
+#: any hit rejects the figure (fail closed — a dropped figure card costs a caption, a served
+#: script costs more). `data:` is allowed only implicitly by not matching; external refs,
+#: scripts, event handlers, style imports and foreignObject all match.
+_SVG_FORBIDDEN = re.compile(
+    r"<\s*script|<\s*foreignobject|\bon[a-z]+\s*=|javascript:"
+    r"|(?:xlink:)?href\s*=\s*[\"'](?:https?:)?//|url\s*\(\s*[\"']?\s*https?:"
+    r"|@import|<\s*iframe|<\s*embed|<\s*object",
+)
+
+
+def _svg_is_safe(data: bytes) -> bool:
+    """Whether downloaded SVG bytes are inert enough to store and serve.
+
+    A deterministic REJECT filter, never a rewriter: sanitizing-by-editing XML invites parser
+    differentials, while LaTeXML's pgfplots output is pure paths/text and passes untouched.
+    """
+    try:
+        text = data.decode("utf-8", "strict").lower()
+    except UnicodeDecodeError:
+        return False
+    if "<svg" not in text[:2048]:
+        return False
+    return not _SVG_FORBIDDEN.search(text)
 
 _NUM_FROM_CAPTION = re.compile(r"^\s*Fig(?:ure)?\.?\s*(\d+)", re.I)
 _NUM_FROM_ID = re.compile(r"F(\d+)$")
@@ -324,6 +360,8 @@ def _fetch_image(url: str) -> tuple[bytes, str] | None:
                         buf.extend(chunk)
                         if len(buf) > MAX_IMAGE_BYTES:
                             return None
+                    if ext == ".svg" and not _svg_is_safe(bytes(buf)):
+                        return None
                     return bytes(buf), ext
         except httpx.TimeoutException as e:
             raise StallError(str(e)[:120]) from e
@@ -361,6 +399,16 @@ class _FigureParser(HTMLParser):
             if self._current["src"] is None and a.get("src"):
                 self._current["src"] = a["src"]
                 self._current["alt"] = (a.get("alt") or "")[:500]
+                self._current["width"] = _int_attr(a, "width")
+                self._current["height"] = _int_attr(a, "height")
+        elif self._depth and tag in ("object", "embed") and self._current is not None:
+            # DR-091: arXiv's native LaTeXML renders vector figures as
+            # <object type="image/svg+xml" data="…"> (measured: 11 of one paper's 12), which
+            # the img-only collection silently dropped. Same first-source-wins rule as <img>.
+            src = a.get("data") if tag == "object" else a.get("src")
+            if (self._current["src"] is None and src
+                    and (a.get("type") or "").strip().lower() == "image/svg+xml"):
+                self._current["src"] = src
                 self._current["width"] = _int_attr(a, "width")
                 self._current["height"] = _int_attr(a, "height")
         elif tag == "figcaption" and self._depth == 1:
@@ -450,14 +498,12 @@ def _image_urls(page_url: str, raw_src: str) -> list[str]:
 
 def _usable_figure_sources(page_url: str, parsed: list[dict]) -> bool:
     """Whether any figure the derivation would actually keep offers a fetchable image:
-    within the derivation's figure cap, on an allowed host, and not SVG. Mirrors the
+    within the derivation's figure cap and on an allowed host. Mirrors the
     per-figure drop rules in `_derive_locked` so "this page has figures" and "this page
     can yield assets" cannot disagree."""
     for fig in parsed[:MAX_FIGURES]:
         for candidate in _image_urls(page_url, str(fig.get("src") or "")):
             if not _host_allowed(candidate):
-                continue
-            if urlparse(candidate).path.lower().endswith(".svg"):
                 continue
             return True
     return False
@@ -498,7 +544,8 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
     # `requested_id` records the exact id (version included) the manifest was derived for.
     # A version advance (v1 → v2: revised figures) is a cache miss — but NOT a _drop: the
     # old assets stay live until the replacement lands atomically below.
-    if existing is not None and not force and existing.get("requested_id") == aid:
+    if (existing is not None and not force and existing.get("requested_id") == aid
+            and existing.get("version") == MANIFEST_VERSION):
         # A "done" manifest with zero figures is a LEGACY artifact: earlier code cached one
         # when native image paths were misresolved or every download failed. The current
         # pipeline records those outcomes as a cool-down "none" instead, so an empty "done"
@@ -523,7 +570,7 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
             # Transient failure (transport error, 429/5xx) — nothing cached, retried later.
             return existing
         if status != "ok":
-            manifest = {"version": 1, "arxiv_id": base, "requested_id": aid, "source": None,
+            manifest = {"version": MANIFEST_VERSION, "arxiv_id": base, "requested_id": aid, "source": None,
                         "status": "none", "fetched_at": _now_iso(),
                         "fetched_ts": time.time(), "figures": []}
             return manifest if _write_manifest(slug, manifest) else existing
@@ -541,8 +588,8 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
                 for candidate in _image_urls(final_url, fig["src"]):
                     if not _host_allowed(candidate):
                         continue  # data: URIs and off-allowlist hosts drop here
-                    if urlparse(candidate).path.lower().endswith(".svg"):
-                        continue
+                    # SVG paths are no longer skipped here (DR-091): the download path
+                    # enforces content-type and the _svg_is_safe reject filter.
                     image = fetch_image(candidate)  # StallError propagates → staging discarded
                     if image is not None:
                         src = candidate
@@ -573,7 +620,7 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
                 continue  # every listed image failed to download — try the next renderer
             shutil.rmtree(asset_dir(slug), ignore_errors=True)
             staging.rename(asset_dir(slug))
-            manifest = {"version": 1, "arxiv_id": base, "requested_id": aid,
+            manifest = {"version": MANIFEST_VERSION, "arxiv_id": base, "requested_id": aid,
                         "source": final_url, "status": "done", "fetched_at": _now_iso(),
                         "fetched_ts": time.time(), "figures": entries}
             if not _write_manifest(slug, manifest):

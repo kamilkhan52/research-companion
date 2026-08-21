@@ -186,6 +186,11 @@ way they did. This is an index, not a substitute for reading them.
   screenshots. Kamil's inputs land in `.dev-feedback/` (gitignored, append-only — never edit or
   delete them); the `/device-feedback` skill triages them into the ledger and advances the
   cursor. When Kamil says "look at my device feedback", that skill is what he means.
+  **Anything Kamil is asked to test MUST be a ledger row at `implemented — verify` (standing,
+  Kamil, 2026-08-21).** The bubble lists the LEDGER's rows — a row is the one channel through
+  which a test request reaches his phone. Asking for a device check in chat or a PR body
+  without its row means the request never appears in the bubble and silently ages out; the
+  row's evidence column is the what-to-test text he sees.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects
