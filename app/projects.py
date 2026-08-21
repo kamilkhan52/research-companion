@@ -305,11 +305,17 @@ def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[
             if meta.get("kind", "paper") == "paper" and slug not in current_slugs:
                 continue
             paper = papers_by_slug.get(slug)
+            # The index's title is a snapshot from when the session STARTED; a canonical-title
+            # rename accepted later updates the reading list but not the index, so the Continue
+            # card would keep advertising "arXiv 2608.11668" while the list shows the real name
+            # (DR-090). The live paper — already loaded above — is the title's source of truth;
+            # the snapshot remains the fallback for non-paper kinds and removed papers.
+            live_title = getattr(paper, "title", "") if paper else ""
             out.append({
                 "project_id": pid,
                 "project_name": project["name"],
                 "slug": slug,
-                "title": meta.get("title", slug),
+                "title": live_title or meta.get("title", slug),
                 "kind": meta.get("kind", "paper"),
                 "state": meta.get("state"),
                 "started_at": meta.get("started_at"),
