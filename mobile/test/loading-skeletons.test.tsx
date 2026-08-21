@@ -120,13 +120,22 @@ test('discussion skeleton is one continuous transcript canvas with matching floa
     </SafeAreaProvider>,
   );
 
-  expect(view.getAllByTestId('discussion-assistant-turn-skeleton')).toHaveLength(2);
-  expect(view.getByTestId('discussion-reader-turn-skeleton')).toBeTruthy();
-  expect(view.getByTestId('discussion-composer-skeleton')).toBeTruthy();
+  expect(view.getAllByTestId('discussion-assistant-turn-skeleton')).toHaveLength(4);
+  expect(view.getAllByTestId('discussion-reader-turn-skeleton')).toHaveLength(2);
+  expect(view.getByTestId(
+    'discussion-composer-skeleton',
+    { includeHiddenElements: true },
+  )).toBeTruthy();
   expect(view.getByTestId(
     'discussion-bottom-edge-fade',
     { includeHiddenElements: true },
   )).toBeTruthy();
+  expect(view.getAllByRole('progressbar')).toHaveLength(1);
+  expect(view.getByTestId('discussion-composer-skeleton', { includeHiddenElements: true }).props)
+    .toEqual(expect.objectContaining({
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants',
+    }));
 });
 
 test.each([
@@ -144,8 +153,15 @@ test.each([
     </SafeAreaProvider>,
   );
 
-  expect(view.getByTestId(expectedTestId)).toBeTruthy();
-  expect(view.queryByTestId('discussion-composer-skeleton')).toBeNull();
+  expect(view.getByTestId(expectedTestId, { includeHiddenElements: true }).props)
+    .toEqual(expect.objectContaining({
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants',
+    }));
+  expect(view.queryByTestId(
+    'discussion-composer-skeleton',
+    { includeHiddenElements: true },
+  )).toBeNull();
 });
 
 test('paper setup skeleton mirrors ComposeFirst instead of pretending to be a transcript', async () => {
@@ -160,7 +176,15 @@ test('paper setup skeleton mirrors ComposeFirst instead of pretending to be a tr
   expect(view.getByTestId('paper-setup-hero-skeleton')).toBeTruthy();
   expect(view.getByTestId('paper-setup-modes-skeleton').children).toHaveLength(7);
   expect(view.getByTestId('paper-setup-source-skeleton')).toBeTruthy();
-  expect(view.getByTestId('paper-setup-footer-skeleton')).toBeTruthy();
+  expect(view.getByTestId(
+    'paper-setup-footer-skeleton',
+    { includeHiddenElements: true },
+  )).toBeTruthy();
+  expect(view.getByTestId('paper-setup-footer-skeleton', { includeHiddenElements: true }).props)
+    .toEqual(expect.objectContaining({
+      accessibilityElementsHidden: true,
+      importantForAccessibility: 'no-hide-descendants',
+    }));
   expect(view.queryByTestId('discussion-reader-turn-skeleton')).toBeNull();
 });
 

@@ -112,6 +112,7 @@ import {
 import { TopBar } from '@/components/TopBar';
 import {
   DISCUSSION_SKELETON_DELAY_MS,
+  INITIAL_SKELETON_DELAY_MS,
   useDelayedInitialSkeleton,
 } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
@@ -340,6 +341,12 @@ export default function DiscussionScreen() {
     },
     [pid, slug],
   );
+  // Session and opening-draft requests are two stages of one route bootstrap. Anchor both
+  // placeholders to the same deadline so ComposeFirst never starts a second 500 ms blank window
+  // after the session request settles. useMemo scopes the clock to this route without mutating a
+  // ref during render; revisiting another paper/thread earns a fresh initial-load gate.
+  const bootstrapKey = `${pid ?? ''}\u0000${slug ?? ''}\u0000${activeThread}`;
+  const bootstrapStartedAt = useMemo(() => Date.now(), [bootstrapKey]);
   const session = useSession(pid, slug ?? null, activeThread);
   const showSessionSkeleton = useDelayedInitialSkeleton(
     session.isLoading,
@@ -456,17 +463,19 @@ export default function DiscussionScreen() {
       )
     : null;
   const loadingExistingDiscussion = loadingSurface === 'discussion';
-  // If this placeholder already earned its 500 ms threshold, keep it continuous while
-  // ComposeFirst's separate opening-draft query settles. Otherwise the sequence is the same
-  // setup skeleton, a blank body, then that setup skeleton again before the real form.
-  const bootstrapKey = `${pid ?? ''}\u0000${slug ?? ''}\u0000${activeThread}`;
-  const setupSkeletonHandoff = useRef({ key: bootstrapKey, visible: false });
-  if (setupSkeletonHandoff.current.key !== bootstrapKey) {
-    setupSkeletonHandoff.current = { key: bootstrapKey, visible: false };
-  }
-  if (showSessionSkeleton && loadingSurface === 'setup') {
-    setupSkeletonHandoff.current.visible = true;
-  }
+  // Only a setup-shaped stage-one placeholder can hand directly to ComposeFirst. A cold deep
+  // link deliberately rendered no skeleton while its destination was unknown, so even after the
+  // route deadline elapses it still gets a short flash guard for a fast opening-draft response.
+  const cachedMainState = anticipatedPaperState(
+    undefined,
+    'main',
+    cachedPaper?.session_state,
+    cachedRecent?.state,
+    undefined,
+  );
+  const bootstrapHadSetupSurface = activeThread === 'main'
+    && (cachedPaper !== undefined || cachedRecent !== undefined)
+    && paperLoadingSurface(cachedMainState, 'main', true) === 'setup';
   // Once a real transcript exists, the discussion owns the entire viewport and the header
   // becomes independent overlay chrome. Pre-discussion/setup/loading states keep the ordinary
   // in-flow top bar because their forms are not scroll-under reading surfaces. A known existing
@@ -831,7 +840,8 @@ export default function DiscussionScreen() {
           selectedModel={selectedModel}
           modelLabel={selectedModelLabel}
           onPickModel={() => setModelPickerOpen(true)}
-          loadingSkeletonAlreadyVisible={setupSkeletonHandoff.current.visible}
+          bootstrapStartedAt={bootstrapStartedAt}
+          bootstrapHadSetupSurface={bootstrapHadSetupSurface}
           retrieved={!!session.data?.paper.retrieved}
           titleConfirmed={!!session.data?.paper.title_confirmed}
         />
@@ -2561,7 +2571,8 @@ export function ComposeFirst({
   titleConfirmed = false,
   modelLabel = 'Project default',
   onPickModel = () => undefined,
-  loadingSkeletonAlreadyVisible = false,
+  bootstrapStartedAt,
+  bootstrapHadSetupSurface = false,
 }: {
   pid: string;
   slug: string;
@@ -2577,18 +2588,39 @@ export function ComposeFirst({
   titleConfirmed?: boolean;
   modelLabel?: string;
   onPickModel?: () => void;
-  /** Continue a setup skeleton already shown by the session bootstrap without blinking. */
-  loadingSkeletonAlreadyVisible?: boolean;
+  /** Start of the route's session bootstrap; the opening query shares its 500 ms deadline. */
+  bootstrapStartedAt?: number;
+  /** Whether stage one could already have painted this same setup-shaped placeholder. */
+  bootstrapHadSetupSurface?: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const qc = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const opening = useOpeningDraft(pid, slug);
+  // Only the first opening load shares the route deadline. Once real opening data has rendered,
+  // a later data-less refetch gets a fresh delay instead of inheriting a permanently-open latch.
+  const [initialOpeningLoad, setInitialOpeningLoad] = useState(opening.data === undefined);
+  useEffect(() => {
+    if (opening.data !== undefined) setInitialOpeningLoad(false);
+  }, [opening.data]);
+  const openingBootstrapStartedAt = useMemo(
+    () => bootstrapStartedAt ?? Date.now(),
+    [bootstrapStartedAt],
+  );
+  const initialOpeningDelayMs = useMemo(() => {
+    const remaining = Math.max(
+      0,
+      DISCUSSION_SKELETON_DELAY_MS - (Date.now() - openingBootstrapStartedAt),
+    );
+    return bootstrapHadSetupSurface
+      ? remaining
+      : Math.max(remaining, INITIAL_SKELETON_DELAY_MS);
+  }, [bootstrapHadSetupSurface, openingBootstrapStartedAt]);
   const showOpeningSkeleton = useDelayedInitialSkeleton(
     opening.isLoading,
     opening.data !== undefined,
-    DISCUSSION_SKELETON_DELAY_MS,
+    initialOpeningLoad ? initialOpeningDelayMs : DISCUSSION_SKELETON_DELAY_MS,
   );
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
@@ -2914,9 +2946,7 @@ export function ComposeFirst({
   }
 
   if (opening.isLoading) {
-    return showOpeningSkeleton || loadingSkeletonAlreadyVisible
-      ? <PaperSetupLoadingSkeleton />
-      : null;
+    return showOpeningSkeleton ? <PaperSetupLoadingSkeleton /> : null;
   }
 
   if (stream.streaming) {

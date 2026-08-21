@@ -18,7 +18,9 @@ export function useDelayedInitialSkeleton(
   delayMs = INITIAL_SKELETON_DELAY_MS,
 ): boolean {
   const initialLoad = isLoading && !hasUsableData;
-  const [visible, setVisible] = useState(false);
+  // A caller may hand off an already-earned shared deadline. Initialise synchronously when no
+  // time remains so replacing one bootstrap stage with another cannot commit a blank frame.
+  const [visible, setVisible] = useState(() => initialLoad && delayMs <= 0);
 
   useEffect(() => {
     if (!initialLoad) {

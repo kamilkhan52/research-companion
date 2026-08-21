@@ -65,3 +65,9 @@ test('discussion loads get a longer grace period than ordinary screens', () => {
   act(() => jest.advanceTimersByTime(DISCUSSION_SKELETON_DELAY_MS - INITIAL_SKELETON_DELAY_MS));
   expect(hook.result.current).toBe(true);
 });
+
+test('an already-earned shared deadline is visible on the first render', () => {
+  const hook = renderHook(() => useDelayedInitialSkeleton(true, false, 0));
+
+  expect(hook.result.current).toBe(true);
+});

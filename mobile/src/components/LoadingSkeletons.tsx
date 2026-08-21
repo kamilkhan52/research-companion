@@ -178,26 +178,44 @@ export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?:
     <View style={paperStyles.discussionRoot} testID="discussion-loading-skeleton">
       <SkeletonGroup
         label="Loading discussion"
-        style={paperStyles.discussionTranscript}
+        style={[paperStyles.discussionTranscript, { paddingTop: insets.top + 84 }]}
         testID="discussion-loading-transcript">
-        <View style={paperStyles.assistantTurn} testID="discussion-assistant-turn-skeleton">
-          {[92, 97, 81, 88, 62].map((width, key) => (
-            <Skeleton key={`opening-${key}`} width={`${width}%`} height={15} radius={7} />
-          ))}
-        </View>
-        <View style={paperStyles.readerTurn} testID="discussion-reader-turn-skeleton">
-          <Skeleton width="64%" height={52} radius={radius.lg} />
-        </View>
-        <View style={paperStyles.assistantTurn} testID="discussion-assistant-turn-skeleton">
-          {[96, 89, 93, 74].map((width, key) => (
-            <Skeleton key={`reply-${key}`} width={`${width}%`} height={15} radius={7} />
-          ))}
-          <View style={paperStyles.messageActions}>
-            <Skeleton width={46} height={13} />
-            <Skeleton width={42} height={13} />
-            <Skeleton width={52} height={13} />
+        {[
+          { kind: 'assistant', widths: [92, 97, 81, 88, 62] },
+          { kind: 'reader', widths: [] },
+          { kind: 'assistant', widths: [96, 89, 93, 74] },
+          { kind: 'reader', widths: [] },
+          { kind: 'assistant', widths: [91, 98, 86, 94, 68] },
+          { kind: 'assistant', widths: [95, 84, 90, 57] },
+        ].map((turn, turnIndex) => turn.kind === 'reader' ? (
+          <View
+            key={`reader-${turnIndex}`}
+            style={paperStyles.readerTurn}
+            testID="discussion-reader-turn-skeleton">
+            <Skeleton width={turnIndex === 1 ? '64%' : '52%'} height={52} radius={radius.lg} />
           </View>
-        </View>
+        ) : (
+          <View
+            key={`assistant-${turnIndex}`}
+            style={paperStyles.assistantTurn}
+            testID="discussion-assistant-turn-skeleton">
+            {turn.widths.map((width, lineIndex) => (
+              <Skeleton
+                key={`line-${lineIndex}`}
+                width={`${width}%`}
+                height={15}
+                radius={7}
+              />
+            ))}
+            {turnIndex === 5 ? (
+              <View style={paperStyles.messageActions}>
+                <Skeleton width={46} height={13} />
+                <Skeleton width={42} height={13} />
+                <Skeleton width={52} height={13} />
+              </View>
+            ) : null}
+          </View>
+        ))}
       </SkeletonGroup>
 
       <DiscussionEdgeFade
@@ -208,6 +226,8 @@ export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?:
       />
       {bottomMode === 'composer' ? (
         <View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
           style={[paperStyles.composerOverlay, discussionComposerPadding(insets.bottom)]}
           testID="discussion-composer-skeleton">
           <View style={paperStyles.composerPill}>
@@ -217,6 +237,8 @@ export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?:
         </View>
       ) : (
         <View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
           style={[paperStyles.statusOverlay, { paddingBottom: insets.bottom + space.sm }]}
           testID={`discussion-${bottomMode}-skeleton`}>
           <View style={paperStyles.statusCard}>
@@ -288,7 +310,11 @@ export function PaperSetupLoadingSkeleton() {
         </View>
       </SkeletonGroup>
 
-      <View style={paperStyles.setupFooter} testID="paper-setup-footer-skeleton">
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={paperStyles.setupFooter}
+        testID="paper-setup-footer-skeleton">
         <Skeleton height={48} radius={radius.md} />
       </View>
     </View>
@@ -314,11 +340,10 @@ const makePaperLoadingStyles = (t: ThemePalette, density: DensityMode) => {
     discussionRoot: { flex: 1, backgroundColor: t.bg },
     discussionTranscript: {
       flex: 1,
-      justifyContent: 'flex-end',
       gap: tight ? space.md : space.lg,
       paddingHorizontal: horizontal,
-      paddingTop: 108,
       paddingBottom: 132,
+      overflow: 'hidden',
     },
     assistantTurn: { gap: tight ? 6 : space.sm },
     readerTurn: { alignItems: 'flex-end', paddingVertical: tight ? space.xs : space.sm },

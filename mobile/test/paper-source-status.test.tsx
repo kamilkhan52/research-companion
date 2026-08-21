@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
-import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 jest.mock('@kesha-antonov/react-native-chat', () => ({
@@ -65,11 +65,13 @@ const doneJob: RetrievalJob = {
   enrichment: null,
 };
 
-test('an already-visible setup skeleton stays mounted through the opening-draft handoff', async () => {
+test('the opening skeleton shares the route bootstrap deadline without a second delay', async () => {
+  jest.useFakeTimers();
   jest.mocked(api.getOpeningDraft).mockImplementation(
     () => new Promise<Awaited<ReturnType<typeof api.getOpeningDraft>>>(() => undefined),
   );
   const stream = { streaming: false, items: [], run: jest.fn(), stop: jest.fn() };
+  const bootstrapStartedAt = Date.now() - 500;
 
   const view = await renderAsync(
     wrapper(
@@ -82,14 +84,48 @@ test('an already-visible setup skeleton stays mounted through the opening-draft 
         sessionState={null}
         selectedModel={null}
         retrieved={false}
-        loadingSkeletonAlreadyVisible
+        bootstrapStartedAt={bootstrapStartedAt}
+        bootstrapHadSetupSurface
       />,
     ),
   );
+  act(() => jest.advanceTimersByTime(0));
 
   expect(view.getByTestId('paper-setup-loading-skeleton')).toBeTruthy();
   expect(view.queryByText('Reading modes')).toBeNull();
   await view.unmountAsync();
+  jest.useRealTimers();
+});
+
+test('a setup handoff uses the remaining route budget instead of restarting it', async () => {
+  jest.useFakeTimers();
+  jest.mocked(api.getOpeningDraft).mockImplementation(
+    () => new Promise<Awaited<ReturnType<typeof api.getOpeningDraft>>>(() => undefined),
+  );
+  const stream = { streaming: false, items: [], run: jest.fn(), stop: jest.fn() };
+  const view = await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        sessionState={null}
+        selectedModel={null}
+        retrieved={false}
+        bootstrapStartedAt={Date.now() - 300}
+        bootstrapHadSetupSurface
+      />,
+    ),
+  );
+
+  act(() => jest.advanceTimersByTime(199));
+  expect(view.queryByTestId('paper-setup-loading-skeleton')).toBeNull();
+  act(() => jest.advanceTimersByTime(1));
+  expect(view.getByTestId('paper-setup-loading-skeleton')).toBeTruthy();
+  await view.unmountAsync();
+  jest.useRealTimers();
 });
 
 test('explicit Fetch updates durable source status without starting the discussion', async () => {
