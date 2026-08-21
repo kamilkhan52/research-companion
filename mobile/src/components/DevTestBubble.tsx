@@ -21,6 +21,8 @@ import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-co
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
+import { DISPATCH_MODELS } from '@/api/dispatch';
+import type { DispatchModel } from '@/api/dispatch';
 import type { DevTestItem, DevTestFeedbackEntry } from '@/api/endpoints';
 import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
@@ -234,6 +236,10 @@ export function DevTestBubble() {
     scrollDraft.setValue(scrollOffsetRef.current);
   }, [scrollDraft]);
 
+  // DR-092: the model a bubble dispatch uses, persisted so it survives reopen like the toolbar.
+  const modelDraft = usePersistedDraft<DispatchModel>(draftKey('devtest-dispatch-model'), 'sonnet');
+  const [dispatchingAll, setDispatchingAll] = useState(false);
+
   // DR-077: search/filter/sort state persists across opens the same way everything else in
   // this sheet does — one key for the whole toolbar, so leaving mid-review (e.g. filtered to
   // "Not reviewed") and coming back keeps the exact view, matching the "jump back into whatever
@@ -439,6 +445,21 @@ export function DevTestBubble() {
             </Text>
           ) : null}
 
+          {/* DR-092: hand the whole pending queue to one Claude session (Kamil's batch pick).
+              Fire-on-tap — dev-only, and the toast + bubble replies make a mis-tap visible. */}
+          <View style={styles.dispatchRow} testID="devtest-dispatch-all">
+            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Claude</Text>
+            <ModelPicker model={modelDraft.value} onChange={(m) => modelDraft.setValue(m)} />
+            <Button
+              title="Dispatch all"
+              variant="ghost"
+              icon="zap"
+              loading={dispatchingAll}
+              disabled={dispatchingAll}
+              onPress={() => void fireDispatch(modelDraft.value, undefined, setDispatchingAll)}
+            />
+          </View>
+
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
               scope of its own (DR-072 only fixed the closed-sheet trigger button). Same
@@ -484,6 +505,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onVerdictChange={reportVerdict}
+                    dispatchModel={modelDraft.value}
                   />
                 </>
               ) : null}
@@ -491,18 +513,18 @@ export function DevTestBubble() {
                 <>
                   <Section label={`Results (${flatSorted.length})`} tone={t.mint} />
                   {flatSorted.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                   ))}
                 </>
               ) : (
                 <>
                   <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
                   {sections.verify.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                   ))}
                   <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
                     <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
@@ -510,7 +532,7 @@ export function DevTestBubble() {
                   </Pressable>
                   {showRest
                     ? sections.rest.map((i) => (
-                        <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                        <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                       ))
                     : null}
                 </>
@@ -528,6 +550,44 @@ function Section({ label, tone }: { label: string; tone: string }) {
     <Text variant="overline" color={tone} style={{ marginTop: space.lg, marginBottom: space.xs }}>
       {label}
     </Text>
+  );
+}
+
+
+/** Fire a Claude dispatch (fire-on-tap, Kamil's decision): one session for `itemId`, or the
+ *  whole pending batch when omitted. Shared by the header's "Dispatch all" and each item card
+ *  so both report the same way and hit the same single-flight guard. */
+async function fireDispatch(model: DispatchModel, itemId: string | undefined,
+                           setBusy: (b: boolean) => void) {
+  setBusy(true);
+  try {
+    const { dispatch } = await api.dispatchToClaude(model, itemId);
+    showToast(`Claude (${model}) is on ${itemId ?? 'all pending issues'}. Replies land here.`);
+    return dispatch;
+  } catch (e) {
+    // 409 = a session is already running; the server's message says so plainly.
+    showToast((e as Error).message ?? 'Could not dispatch.');
+    return null;
+  } finally {
+    setBusy(false);
+  }
+}
+
+/** A compact model selector — the same chip vocabulary the toolbar rows use. */
+function ModelPicker({ model, onChange }: {
+  model: DispatchModel; onChange: (m: DispatchModel) => void;
+}) {
+  const t = useTheme();
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false}
+      contentContainerStyle={{ flexDirection: 'row', gap: space.xs, paddingVertical: space.xs }}>
+      {DISPATCH_MODELS.map((m) => (
+        <ToggleChip key={m} label={m} active={model === m} onPress={() => onChange(m)} />
+      ))}
+      <Text variant="caption" color={t.muted} style={{ alignSelf: 'center', marginLeft: space.xs }}>
+        model
+      </Text>
+    </ScrollView>
   );
 }
 
@@ -651,14 +711,19 @@ interface ItemCardDraft {
 
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
-export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange }: {
+export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
+                          dispatchModel }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
   // DR-077: reports this card's own verdict up to the list so filtering/sorting can see it the
   // instant it changes, without waiting for the sheet to close and reopen.
   onVerdictChange?: (id: string, info: VerdictInfo | undefined) => void;
+  // DR-092: the model the bubble's picker currently holds — this card's Dispatch uses it.
+  // Optional so the DR-065 persistence test can mount a card without the whole bubble.
+  dispatchModel?: DispatchModel;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const [dispatching, setDispatching] = useState(false);
   // DR-065: "which item was opened, any unfinished message... full resumption of previous
   // state" — closing the sheet (or the app dying) used to lose whichever card was expanded and
   // whatever remark was half-typed, since it was plain useState inside a Modal. Keyed per item
@@ -829,6 +894,19 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             <Button title="Remark" icon="message-circle" variant="ghost" disabled={busy}
               onPress={() => void send('remark')} />
           </View>
+          {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
+              Fire-on-tap; the toast and its eventual bubble reply confirm. */}
+          {dispatchModel ? (
+            <Button
+              title={`Dispatch to Claude (${dispatchModel})`}
+              icon="zap"
+              variant="ghost"
+              loading={dispatching}
+              disabled={dispatching}
+              onPress={() => void fireDispatch(dispatchModel, item.id, setDispatching)}
+              style={{ marginTop: space.sm }}
+            />
+          ) : null}
         </>
       ) : null}
     </View>
@@ -908,6 +986,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // The row View (not the ScrollView) owns the vertical footprint — see the comment at the
   // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
+  dispatchRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.sm },
   // minWidth, not width: at OS font scales past ~1.4x "Filter" outgrows 44px and a fixed width
   // would wrap it to a second line (Opus review, PR #388) — min keeps the two rows' chips
   // aligned at 1x and lets the label take more room instead of wrapping when scaled.
