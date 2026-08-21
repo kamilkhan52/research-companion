@@ -18,6 +18,9 @@ _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    # DR-091: only SVGs that passed figures._svg_is_safe are ever stored, so serving the
+    # type does not serve active content.
+    ".svg": "image/svg+xml",
 }
 
 

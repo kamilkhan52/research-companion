@@ -110,13 +110,14 @@ def test_html_fetch_falls_back_when_native_page_has_no_image_figures(monkeypatch
 
 
 def test_html_fetch_falls_back_when_native_figures_are_all_unfetchable(monkeypatch):
-    """A native page whose figures would ALL be dropped by derivation (SVG-only here) must
-    not shadow ar5iv: accepting it caches a 'done' manifest with zero entries for good."""
+    """A native page whose figures would ALL be dropped by derivation (data:-URI-only here;
+    SVG stopped being a drop with DR-091) must not shadow ar5iv: accepting it caches a
+    'done' manifest with zero entries for good."""
     native = "https://arxiv.org/html/2401.00001v1"
     fallback = "https://ar5iv.labs.arxiv.org/html/2401.00001v1"
     svg_only = """<figure id="S1.F1">
-      <img src="2401.00001v1/x1.svg">
-      <figcaption>Figure 1: Vector-only diagram.</figcaption>
+      <img src="data:image/png;base64,AAAA">
+      <figcaption>Figure 1: Inline-data-only diagram.</figcaption>
     </figure>"""
     calls = []
 
@@ -285,15 +286,18 @@ def test_unsafe_image_urls_are_dropped(temp_project):
     slug = paper()
     html = """<figure id="F1"><img src="https://evil.com/x.png">
     <figcaption>Figure 1: off allowlist.</figcaption></figure>
-    <figure id="F2"><img src="x2.svg"><figcaption>Figure 2: svg.</figcaption></figure>
+    <figure id="F2"><img src="x2.svg"><figcaption>Figure 2: svg, now allowed.</figcaption></figure>
     <figure id="F3"><img src="data:image/png;base64,AAAA">
     <figcaption>Figure 3: data uri.</figcaption></figure>
     <figure id="F4"><img src="x4.png"><figcaption>Figure 4: fine.</figcaption></figure>"""
     image = fake_image()
     manifest = figures.derive_for_slug(slug, fetch_html=fake_html(html=html),
                                        fetch_image=image)
-    assert [f["number"] for f in manifest["figures"]] == [4]
-    assert image.calls == ["https://arxiv.org/html/2401.00001v1/x4.png"]
+    # DR-091: an .svg path is no longer dropped at URL time — the download path gates
+    # it by content-type and the _svg_is_safe reject filter (the fake accepts it here).
+    assert [f["number"] for f in manifest["figures"]] == [2, 4]
+    assert image.calls == ["https://arxiv.org/html/2401.00001v1/x2.svg",
+                           "https://arxiv.org/html/2401.00001v1/x4.png"]
 
 
 def test_failed_image_download_drops_only_that_figure(temp_project):
@@ -552,3 +556,119 @@ def test_legacy_empty_done_manifest_is_rederived(temp_project):
     again = figures.derive_for_slug(slug, fetch_html=html2, fetch_image=fake_image())
     assert html2.calls == []
     assert again["figures"] == manifest["figures"]
+
+
+# --- SVG <object> figures (DR-091) -----------------------------------------------------------
+
+SVG_HTML = """<html><body>
+<figure id="S2.F1" class="ltx_figure">
+<object type="image/svg+xml" data="2608.11668v2/kvcache-ssd.svg" width="476" height="244"></object>
+<figcaption>Figure 1: KV cache placement.</figcaption>
+</figure>
+<figure id="S6.F6" class="ltx_figure">
+<img src="hbf_throughput.png" alt="bars"/>
+<figcaption>Figure 6: Throughput.</figcaption>
+</figure>
+<figure id="S9.F9" class="ltx_figure">
+<object type="application/pdf" data="notes.pdf"></object>
+<figcaption>Figure 9: Wrong type, dropped.</figcaption>
+</figure>
+</body></html>"""
+
+
+def test_parse_collects_svg_object_figures():
+    """DR-091: arXiv's native LaTeXML renders pgfplots figures as <object type=image/svg+xml>
+    — measured live, 11 of one paper's 12 figures — which the img-only parse dropped."""
+    figs = figures.parse_figures(SVG_HTML)
+    assert [f["id"] for f in figs] == ["S2.F1", "S6.F6"]   # non-SVG object still dropped
+    assert figs[0]["src"] == "2608.11668v2/kvcache-ssd.svg"
+    assert figs[0]["width"] == 476
+    assert figs[0]["caption"] == "Figure 1: KV cache placement."
+
+
+SAFE_SVG = b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h5"/><text>ok</text></svg>'
+
+
+def test_svg_safety_filter_rejects_active_or_outward_content():
+    assert figures._svg_is_safe(SAFE_SVG) is True
+    bad = [
+        b'<svg><script>alert(1)</script></svg>',
+        b'<svg onload="x()"></svg>',
+        b'<svg><a href="https://evil.example">x</a></svg>',
+        b'<svg><image xlink:href="//evil.example/x.png"/></svg>',
+        b'<svg><style>@import url(x)</style></svg>',
+        b'<svg><foreignObject><body>x</body></foreignObject></svg>',
+        b'<svg><style>*{background:url("https://evil.example/x")}</style></svg>',
+        b'not xml at all',
+        "<svg>\udcff".encode("utf-8", "surrogatepass"),
+    ]
+    for payload in bad:
+        assert figures._svg_is_safe(payload) is False, payload[:40]
+
+
+def test_derive_stores_sanitized_svg_assets(temp_project):
+    slug = paper()
+
+    def image(url):
+        return (SAFE_SVG, ".svg") if url.endswith(".svg") else (b"png-bytes", ".png")
+
+    manifest = figures.derive_for_slug(
+        slug, fetch_html=fake_html(html=SVG_HTML), fetch_image=image)
+    assets = {f["asset"] for f in manifest["figures"]}
+    assert any(a.endswith(".svg") for a in assets)
+    assert manifest["version"] == figures.MANIFEST_VERSION
+    svg_asset = next(a for a in assets if a.endswith(".svg"))
+    assert figures.asset_path(slug, svg_asset).read_bytes() == SAFE_SVG
+
+
+def test_stale_manifest_version_is_a_cache_miss(temp_project):
+    """A pre-SVG 'done' manifest isn't wrong, just blind to vector-first papers — it must
+    re-derive once instead of pinning one figure forever (the DR-091 report itself)."""
+    slug = paper()
+    html, image = fake_html(html=SVG_HTML), fake_image()
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
+    assert len(html.calls) == 1
+
+    stale = dict(manifest, version=1)
+    figures._write_manifest(slug, stale)
+    again = figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
+    assert len(html.calls) == 2                      # re-derived, not reused
+    assert again["version"] == figures.MANIFEST_VERSION
+
+    figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
+    assert len(html.calls) == 2                      # current version: reused again
+
+
+def test_svg_only_native_page_is_now_usable(monkeypatch):
+    """DR-091's inverse of the fallback test above: a vector-first native rendering is
+    exactly the page this fix exists for, so it must be accepted, not shadowed by ar5iv."""
+    native = "https://arxiv.org/html/2401.00001v1"
+    svg_only = """<figure id="S1.F1">
+      <object type="image/svg+xml" data="2401.00001v1/x1.svg"></object>
+      <figcaption>Figure 1: Vector-only diagram.</figcaption>
+    </figure>"""
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __init__(self, text):
+            self.text = text
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response(svg_only)
+
+    monkeypatch.setattr(figures, "_open_client", Client)
+    monkeypatch.setattr(figures, "_resolves_public", lambda url: True)
+    status, final_url, html = figures._fetch_html_impl("2401.00001v1")
+    assert calls == [native]
+    assert (status, final_url) == ("ok", native)
