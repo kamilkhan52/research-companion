@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 
 export const INITIAL_SKELETON_DELAY_MS = 150;
+// Discussion transitions are unusually sensitive to placeholder flashes: a short transcript often
+// arrives in a few hundred milliseconds and replacing the reading canvas for that interval feels
+// like a navigation detour, not progress. Other screens keep the shorter global gate; chat waits
+// long enough that only a genuinely delayed empty-cache load earns a skeleton.
+export const DISCUSSION_SKELETON_DELAY_MS = 500;
 
 /**
  * Delays skeletons for true empty-cache loads so fast cache hits never flash a placeholder.

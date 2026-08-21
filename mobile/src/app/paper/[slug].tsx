@@ -48,7 +48,9 @@ import type {
   DiscussionThreadSummary,
   FavoriteModel,
   Paper,
+  ProjectState,
   ReadingMode,
+  RecentSession,
   RetrievalJob,
   Session,
   SessionState,
@@ -103,9 +105,15 @@ import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
-import { PaperSessionLoadingSkeleton } from '@/components/LoadingSkeletons';
+import {
+  DiscussionLoadingSkeleton,
+  PaperSetupLoadingSkeleton,
+} from '@/components/LoadingSkeletons';
 import { TopBar } from '@/components/TopBar';
-import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
+import {
+  DISCUSSION_SKELETON_DELAY_MS,
+  useDelayedInitialSkeleton,
+} from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
@@ -199,6 +207,34 @@ export function hasStartedDiscussion(
     || state === 'in_discussion'
     || state === 'notes_drafted'
     || state === 'committed';
+}
+
+/** Pick a loading surface only when navigation/cache state makes the eventual screen knowable.
+ * A cold main-thread deep link can resolve to either ComposeFirst or an existing discussion, so
+ * guessing there creates the exact disconnected placeholder transition a skeleton should avoid. */
+export function paperLoadingSurface(
+  state: SessionState,
+  threadId: string,
+  hasSurfaceHint: boolean,
+): 'discussion' | 'setup' | null {
+  if (!hasSurfaceHint) return null;
+  if (threadId !== 'main') return 'discussion';
+  return hasStartedDiscussion(state, 0, threadId) ? 'discussion' : 'setup';
+}
+
+/** Select the lifecycle belonging to the route we are about to show. `null` is meaningful — it
+ * means ComposeFirst — so only `undefined` may fall through to a less-authoritative cache. */
+export function anticipatedPaperState(
+  sessionState: SessionState | undefined,
+  threadId: string,
+  cachedPaperState: SessionState | undefined,
+  cachedRecentState: SessionState | undefined,
+  cachedThreadState: SessionState | undefined,
+): SessionState {
+  if (sessionState !== undefined) return sessionState;
+  if (threadId !== 'main') return cachedThreadState ?? null;
+  if (cachedPaperState !== undefined) return cachedPaperState;
+  return cachedRecentState ?? null;
 }
 
 /** Merge a confirmed title response into the session the reader is actually viewing before
@@ -308,7 +344,25 @@ export default function DiscussionScreen() {
   const showSessionSkeleton = useDelayedInitialSkeleton(
     session.isLoading,
     session.data !== undefined,
+    DISCUSSION_SKELETON_DELAY_MS,
   );
+  // Project state and recents already describe whether this route is an unread setup or an
+  // existing discussion. Reuse those warm caches while the heavier transcript request is empty,
+  // so a delayed placeholder has the same chrome and body geometry as what will replace it.
+  const cachedPaper = pid && slug
+    ? qc.getQueryData<ProjectState>(keys.projectState(pid))?.papers.find((paper) => paper.slug === slug)
+    : undefined;
+  const cachedRecent = pid && slug
+    ? qc.getQueryData<RecentSession[]>(keys.recentSessions)?.find(
+        (recent) => recent.project_id === pid && recent.slug === slug,
+      )
+    : undefined;
+  const cachedMainSession = pid && slug
+    ? qc.getQueryData<Session>(keys.session(pid, slug))
+    : undefined;
+  const cachedThread = activeThread === 'main'
+    ? undefined
+    : cachedMainSession?.threads?.find((candidate) => candidate.id === activeThread);
   // A remembered thread can go stale (paper moved, project state rebuilt): fall back to main
   // instead of wedging the screen on a 404, and forget the stale id.
   useEffect(() => {
@@ -385,10 +439,41 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
+  const anticipatedState = anticipatedPaperState(
+    session.data?.state,
+    activeThread,
+    cachedPaper?.session_state,
+    cachedRecent?.state,
+    cachedThread?.state,
+  );
+  const loadingSurface = session.isLoading
+    ? paperLoadingSurface(
+        anticipatedState,
+        activeThread,
+        activeThread === 'main'
+          ? cachedPaper !== undefined || cachedRecent !== undefined
+          : cachedThread !== undefined,
+      )
+    : null;
+  const loadingExistingDiscussion = loadingSurface === 'discussion';
+  // If this placeholder already earned its 500 ms threshold, keep it continuous while
+  // ComposeFirst's separate opening-draft query settles. Otherwise the sequence is the same
+  // setup skeleton, a blank body, then that setup skeleton again before the real form.
+  const bootstrapKey = `${pid ?? ''}\u0000${slug ?? ''}\u0000${activeThread}`;
+  const setupSkeletonHandoff = useRef({ key: bootstrapKey, visible: false });
+  if (setupSkeletonHandoff.current.key !== bootstrapKey) {
+    setupSkeletonHandoff.current = { key: bootstrapKey, visible: false };
+  }
+  if (showSessionSkeleton && loadingSurface === 'setup') {
+    setupSkeletonHandoff.current.visible = true;
+  }
   // Once a real transcript exists, the discussion owns the entire viewport and the header
   // becomes independent overlay chrome. Pre-discussion/setup/loading states keep the ordinary
-  // in-flow top bar because their forms are not scroll-under reading surfaces.
-  const immersiveDiscussion = !!pid && hasSession && !session.isLoading;
+  // in-flow top bar because their forms are not scroll-under reading surfaces. A known existing
+  // discussion keeps that same overlay chrome during a delayed empty-cache skeleton, preventing
+  // the header from jumping between two unrelated layouts when the transcript arrives.
+  const immersiveDiscussion = !!pid
+    && ((hasSession && !session.isLoading) || loadingExistingDiscussion);
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
@@ -603,12 +688,12 @@ export default function DiscussionScreen() {
           : undefined}>
       <TopBar
         floating={immersiveDiscussion}
-        title={session.data?.paper.title ?? 'Discussion'}
+        title={session.data?.paper.title ?? cachedPaper?.title ?? cachedRecent?.title ?? 'Discussion'}
         // Year first: it situates the paper on the timeline before the workflow state (U.17).
         subtitle={
           [
-            session.data?.paper.year,
-            session.data?.paper.affiliations?.slice(0, 2).join(', '),
+            session.data?.paper.year ?? cachedPaper?.year,
+            (session.data?.paper.affiliations ?? cachedPaper?.affiliations)?.slice(0, 2).join(', '),
             activeThread === 'main'
               ? (state ? STATE_LABEL[state] : undefined)
               : session.data?.threads?.find((item) => item.id === activeThread)?.title,
@@ -727,7 +812,11 @@ export default function DiscussionScreen() {
       {!pid ? (
         <Centered text="No active project." />
       ) : session.isLoading ? (
-        showSessionSkeleton ? <PaperSessionLoadingSkeleton /> : null
+        showSessionSkeleton && loadingSurface
+          ? loadingSurface === 'discussion'
+            ? <DiscussionLoadingSkeleton state={anticipatedState} />
+            : <PaperSetupLoadingSkeleton />
+          : null
       ) : !hasSession ? (
         <ComposeFirst
           pid={pid}
@@ -742,6 +831,7 @@ export default function DiscussionScreen() {
           selectedModel={selectedModel}
           modelLabel={selectedModelLabel}
           onPickModel={() => setModelPickerOpen(true)}
+          loadingSkeletonAlreadyVisible={setupSkeletonHandoff.current.visible}
           retrieved={!!session.data?.paper.retrieved}
           titleConfirmed={!!session.data?.paper.title_confirmed}
         />
@@ -2471,6 +2561,7 @@ export function ComposeFirst({
   titleConfirmed = false,
   modelLabel = 'Project default',
   onPickModel = () => undefined,
+  loadingSkeletonAlreadyVisible = false,
 }: {
   pid: string;
   slug: string;
@@ -2486,6 +2577,8 @@ export function ComposeFirst({
   titleConfirmed?: boolean;
   modelLabel?: string;
   onPickModel?: () => void;
+  /** Continue a setup skeleton already shown by the session bootstrap without blinking. */
+  loadingSkeletonAlreadyVisible?: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -2495,6 +2588,7 @@ export function ComposeFirst({
   const showOpeningSkeleton = useDelayedInitialSkeleton(
     opening.isLoading,
     opening.data !== undefined,
+    DISCUSSION_SKELETON_DELAY_MS,
   );
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
@@ -2820,8 +2914,8 @@ export function ComposeFirst({
   }
 
   if (opening.isLoading) {
-    return showOpeningSkeleton
-      ? <PaperSessionLoadingSkeleton label="Loading paper setup" />
+    return showOpeningSkeleton || loadingSkeletonAlreadyVisible
+      ? <PaperSetupLoadingSkeleton />
       : null;
   }
 

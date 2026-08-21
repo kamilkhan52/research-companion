@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 
 import {
+  DISCUSSION_SKELETON_DELAY_MS,
   INITIAL_SKELETON_DELAY_MS,
   useDelayedInitialSkeleton,
 } from '@/hooks/useDelayedInitialSkeleton';
@@ -47,4 +48,20 @@ test('a completed fast load cancels its pending skeleton', () => {
   hook.rerender({ loading: false, hasData: true });
   act(() => jest.runOnlyPendingTimers());
   expect(hook.result.current).toBe(false);
+});
+
+test('discussion loads get a longer grace period than ordinary screens', () => {
+  const hook = renderHook<boolean, Inputs>(
+    ({ loading, hasData }) => useDelayedInitialSkeleton(
+      loading,
+      hasData,
+      DISCUSSION_SKELETON_DELAY_MS,
+    ),
+    { initialProps: { loading: true, hasData: false } },
+  );
+
+  act(() => jest.advanceTimersByTime(INITIAL_SKELETON_DELAY_MS));
+  expect(hook.result.current).toBe(false);
+  act(() => jest.advanceTimersByTime(DISCUSSION_SKELETON_DELAY_MS - INITIAL_SKELETON_DELAY_MS));
+  expect(hook.result.current).toBe(true);
 });
