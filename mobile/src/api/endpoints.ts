@@ -143,6 +143,19 @@ export const getDevTestFeedback = (itemId: string) =>
   apiGet<{ entries: DevTestFeedbackEntry[] }>(
     `/api/devtest/feedback?item_id=${encodeURIComponent(itemId)}`,
   );
+export type DispatchModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
+export interface DevTestDispatch {
+  id: string;
+  model: DispatchModel;
+  item_id: string | null;
+  log: string;
+  started_at: string;
+}
+// DR-092: spawn a headless Claude Code session from the bubble. item_id omitted = the pending
+// batch (one session, Kamil's pick). Dev-only route.
+export const dispatchToClaude = (model: DispatchModel, itemId?: string) =>
+  apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch',
+    itemId ? { model, item_id: itemId } : { model });
 
 // ---------- projects (management) ----------
 

@@ -591,6 +591,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/devtest/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dispatch To Claude
+         * @description Spawn a detached headless Claude Code session for one item (or the pending batch).
+         *
+         *     Fire-on-tap by Kamil's decision (2026-08-21): dev-only surface, and the response carries
+         *     the log path so a mis-tap is visible and killable. The child is fully detached
+         *     (start_new_session) so an RC_RELOAD restart of this server never takes the session down
+         *     with it.
+         *
+         *     Permissions: `--permission-mode acceptEdits`, deliberately NOT the skip-everything mode
+         *     Kamil's interactive shell wrapper uses. This route is reachable by anything that can
+         *     reach the dev server (which is sometimes behind a public tunnel), and the devtest surface
+         *     is open-auth in dev — an endpoint that spawns a fully unrestricted agent would let anyone
+         *     who finds it run arbitrary commands on the Mac. acceptEdits still lets the session edit,
+         *     test, branch and push under the repo's own allowlists, which covers the triage-and-fix
+         *     loop this exists for.
+         */
+        post: operations["dispatch_to_claude_api_devtest_dispatch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/bundle": {
         parameters: {
             query?: never;
@@ -2027,6 +2060,13 @@ export interface components {
             /** Thread Id */
             thread_id?: string | null;
         };
+        /** DispatchReq */
+        DispatchReq: {
+            /** Item Id */
+            item_id?: string | null;
+            /** Model */
+            model: string;
+        };
         /** EditReq */
         EditReq: {
             /**
@@ -3335,6 +3375,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    dispatch_to_claude_api_devtest_dispatch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

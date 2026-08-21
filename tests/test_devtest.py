@@ -251,3 +251,93 @@ def test_new_item_ids_never_touch_the_ledger(client):
     client.post("/api/devtest/feedback", json={"item_id": "DR-001", "verdict": "fail",
                                                "comment": "x"})
     assert devtest._LEDGER.read_text(encoding="utf-8") == before
+
+
+# --- dispatch to Claude (DR-092) -------------------------------------------------------------
+
+def test_dispatch_spawns_a_detached_session_and_records_it(client, tmp_path, monkeypatch):
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(argv, **kwargs):
+        calls["argv"] = argv
+        calls["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    r = client.post("/api/devtest/dispatch", json={"item_id": "DR-091", "model": "sonnet"})
+    assert r.status_code == 200
+    info = r.json()["dispatch"]
+    assert info["model"] == "sonnet" and info["item_id"] == "DR-091" and info["pid"] == 4242
+    argv = calls["argv"]
+    assert argv[0] == "/usr/bin/claude" and "--model" in argv and "sonnet" in argv
+    # acceptEdits, NOT the skip-everything mode Kamil's interactive shell wrapper uses.
+    assert "--permission-mode" in argv and "acceptEdits" in argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert any("DR-091" in part for part in argv)
+    assert calls["kwargs"]["start_new_session"] is True
+    assert (tmp_path / "inbox" / "dispatch" / "current.json").exists()
+
+
+def test_dispatch_batch_scope_names_all_pending(client, monkeypatch):
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 4244
+
+    def fake_popen(argv, **k):
+        calls["argv"] = argv
+        return FakeProc()
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 200
+    assert r.json()["dispatch"]["item_id"] is None
+    assert any("ALL" in part for part in calls["argv"])
+
+
+def test_dispatch_is_single_flight_while_a_session_lives(client, monkeypatch):
+    import os
+    import subprocess
+
+    class FakeProc:
+        pid = 4243
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)   # pretend the pid is alive
+
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 200
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 409
+
+
+def test_dispatch_rejects_an_unknown_model(client):
+    assert client.post("/api/devtest/dispatch", json={"model": "gpt-9"}).status_code == 400
+
+
+def test_dispatch_rejects_a_malformed_item_id(client, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    # A shell-metacharacter id must never reach the argv (it wouldn't, argv-not-shell, but the
+    # validator refuses it before spawn regardless).
+    injection = "DR-1; " + "danger"
+    assert client.post("/api/devtest/dispatch",
+                       json={"item_id": injection, "model": "sonnet"}).status_code == 400
+
+
+def test_dispatch_is_absent_outside_dev(tmp_path, monkeypatch):
+    monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    monkeypatch.setattr(config, "dev_mode", lambda: False)
+    from app.main import app
+    from starlette.testclient import TestClient
+    c = TestClient(app)
+    assert c.post("/api/devtest/dispatch", json={"model": "sonnet"}).status_code == 404

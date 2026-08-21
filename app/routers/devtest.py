@@ -365,3 +365,108 @@ def append_response(item_id: str, text: str) -> dict:
         "item_id": item_id[:40],
         "text": text[:8000],
     })
+
+
+# --- dispatch to Claude (DR-092) -------------------------------------------------------------
+
+#: Model aliases the `claude` CLI accepts. A picker, not free text: the dispatch runs
+#: unattended on the dev Mac, so an arbitrary string must never reach the command line.
+DISPATCH_MODELS = ("sonnet", "opus", "haiku", "fable")
+
+
+class DispatchReq(BaseModel):
+    #: A ledger/bubble item id, or absent for "address all pending issues" (one batch
+    #: session — Kamil's pick, 2026-08-21 — not one per issue).
+    item_id: str | None = None
+    model: str
+
+
+def _dispatch_dir() -> Path:
+    d = _dir() / "dispatch"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def _dispatch_running() -> dict | None:
+    """The current dispatch, if its process is still alive. One at a time on purpose: two
+    unattended sessions editing one checkout interleave worktrees unpredictably, and the
+    second tap is usually an impatient retry of the first."""
+    import os
+
+    current = _dispatch_dir() / "current.json"
+    try:
+        info = json.loads(current.read_text())
+        os.kill(int(info["pid"]), 0)   # signal 0: existence check, never delivers
+        return info
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _dispatch_prompt(item_id: str | None) -> str:
+    scope = (f"Work ONLY on item {item_id}" if item_id
+             else "Work on ALL unprocessed inbox entries and every actionable open item")
+    return (
+        f"Run the /device-feedback skill for the Research Companion repo. {scope}. "
+        "Triage into the device-review ledger per the skill's rules, investigate and fix "
+        "what is quick and unambiguous on a branch (PR per CLAUDE.md; never edit app/ in the "
+        "live checkout — use a worktree), and reply to Kamil in the bubble via "
+        "devtest.append_response so he sees the outcome on his phone. This session was "
+        "dispatched FROM the phone's DevTest bubble (DR-092), so a reply there is the "
+        "deliverable."
+    )
+
+
+@router.post("/api/devtest/dispatch")
+def dispatch_to_claude(req: DispatchReq):
+    """Spawn a detached headless Claude Code session for one item (or the pending batch).
+
+    Fire-on-tap by Kamil's decision (2026-08-21): dev-only surface, and the response carries
+    the log path so a mis-tap is visible and killable. The child is fully detached
+    (start_new_session) so an RC_RELOAD restart of this server never takes the session down
+    with it.
+
+    Permissions: `--permission-mode acceptEdits`, deliberately NOT the skip-everything mode
+    Kamil's interactive shell wrapper uses. This route is reachable by anything that can
+    reach the dev server (which is sometimes behind a public tunnel), and the devtest surface
+    is open-auth in dev — an endpoint that spawns a fully unrestricted agent would let anyone
+    who finds it run arbitrary commands on the Mac. acceptEdits still lets the session edit,
+    test, branch and push under the repo's own allowlists, which covers the triage-and-fix
+    loop this exists for.
+    """
+    import shutil
+    import subprocess
+
+    _require_dev()
+    if req.model not in DISPATCH_MODELS:
+        raise HTTPException(status_code=400,
+                            detail=f"model must be one of {', '.join(DISPATCH_MODELS)}")
+    item_id = (req.item_id or "").strip()[:40] or None
+    if item_id and not re.fullmatch(r"[A-Za-z0-9-]+", item_id):
+        raise HTTPException(status_code=400, detail="item_id has an unexpected shape")
+    running = _dispatch_running()
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A dispatched session is already running ({running.get('id')}); "
+                   "wait for its bubble reply or kill it first.")
+    binary = shutil.which("claude")
+    if not binary:
+        raise HTTPException(status_code=503,
+                            detail="The claude CLI is not on the dev server's PATH.")
+    dispatch_id = f"dispatch-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    log_path = _dispatch_dir() / f"{dispatch_id}.log"
+    with log_path.open("wb") as log_file:
+        process = subprocess.Popen(
+            [binary, "-p", _dispatch_prompt(item_id),
+             "--model", req.model, "--permission-mode", "acceptEdits"],
+            cwd=str(_REPO_ROOT), stdout=log_file, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    info = {"id": dispatch_id, "pid": process.pid, "model": req.model,
+            "item_id": item_id, "log": str(log_path),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    atomic_write_text(_dispatch_dir() / "current.json", json.dumps(info, indent=1))
+    atomic_write_text(_dispatch_dir() / f"{dispatch_id}.json", json.dumps(info, indent=1))
+    log.info("devtest dispatch %s: model=%s item=%s pid=%d",
+             dispatch_id, req.model, item_id or "ALL", process.pid)
+    return {"dispatch": info}
