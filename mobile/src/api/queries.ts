@@ -46,6 +46,7 @@ export const keys = {
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
   neighbourhood: (pid: string) => ['project', pid, 'neighbourhood'] as const,
+  paperGraph: (pid: string, slug: string) => ['project', pid, 'paperGraph', slug] as const,
   graphAuthors: (pid: string) => ['project', pid, 'graphAuthors'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
@@ -380,6 +381,19 @@ export function useGraph(pid: string | null) {
     queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
     queryFn: () => api.getGraph(pid as string),
     enabled: !!pid && hasUrl,
+  });
+}
+
+/** The per-paper reference graph (ego view): this paper, what it references, what cites it.
+ *  Polls while a build runs so the view fills in once the graph finishes. */
+export function usePaperGraph(pid: string | null, slug: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && slug ? keys.paperGraph(pid, slug) : ['project', 'none', 'paperGraph'],
+    queryFn: () => api.getPaperGraph(pid as string, slug as string),
+    enabled: !!pid && !!slug && hasUrl,
+    refetchInterval: (query) =>
+      query.state.data?.build && query.state.data.build.status === 'running' ? 2000 : false,
   });
 }
 

@@ -48,6 +48,22 @@ def get_graph(pid: str):
     }
 
 
+@project_router.get("/graph/paper/{slug}")
+def get_paper_graph(pid: str, slug: str):
+    """The per-paper reference graph (ego view): this paper, what it references, and what on the
+    reading list cites it — a readable derived view over the built graph, with external citers
+    reported as a count. `ego` is null when the paper isn't a built project node, which the
+    client renders as a build/absent offer rather than an error (DR-046)."""
+    papers = store.list_papers(sessions.session_states())
+    data = graph_store.load()
+    overlaid = graph.overlay_membership(data.get("graph"), papers)
+    ego = graph.paper_ego(overlaid, slug, data.get("forward"))
+    job = graph_jobs.get_job(pid)
+    # `build` lets the client show "map building…" instead of a bare "not built" while a first
+    # build is in flight — the ego view depends on the same graph the Map builds.
+    return {"ego": ego, "build": job.to_dict() if job else None}
+
+
 @project_router.get("/neighbourhood")
 def get_neighbourhood(pid: str):
     """The shared corpus-neighbourhood freshness (DR-052 PR 4). Read-only and cheap — derived

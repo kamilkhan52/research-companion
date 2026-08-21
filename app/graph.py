@@ -811,6 +811,103 @@ def author_board(graph: dict | None, openalex_cache: dict | None,
     return out
 
 
+# The per-paper reference graph (ego view). Deliberately readable rather than force-directed:
+# the paper sits at the centre, what it REFERENCES fans out to the left and what CITES it to the
+# right — the same older→newer left-to-right reading the full Map uses (graph_layout.py), so the
+# two views share a mental model. Positions are computed here so GraphCanvas takes the server
+# coordinates directly (its `hasAllCoords` fast path) and never runs the illegible client sim.
+EGO_MAX_PER_SIDE = 60           # a phone can't read more; keep the most significant (see sort)
+_EGO_ROW = 110.0                # vertical gap between nodes in a column
+_EGO_COL = 340.0                # horizontal gap between stacked columns on one side
+_EGO_CENTRE_GAP = 560.0         # centre node to the first column each side
+_EGO_COL_MAX = 10               # nodes per column before spilling to the next column outward
+
+
+def _ego_rank(node: dict, edge: dict) -> tuple:
+    """Most-significant-first: a significant citation, then global impact, then recency. Drives
+    both which nodes survive the per-side cap and their vertical order (top = most significant)."""
+    return (
+        0 if edge.get("significant") else 1,
+        -int(node.get("citation_count") or 0),
+        -int(str(node.get("year") or 0) or 0),
+    )
+
+
+def _ego_positions(items: list[dict], direction: int) -> None:
+    """Lay `items` (already ranked) into columns on one side of the centre, mutating x/y in place.
+    `direction` is -1 (references, left) or +1 (citers, right); columns spill outward so the most
+    significant stay nearest the centre and the block never grows an unreadably tall single line."""
+    for i, node in enumerate(items):
+        col, row = divmod(i, _EGO_COL_MAX)
+        rows_here = min(_EGO_COL_MAX, len(items) - col * _EGO_COL_MAX)
+        node["x"] = direction * (_EGO_CENTRE_GAP + col * _EGO_COL)
+        node["y"] = (row - (rows_here - 1) / 2) * _EGO_ROW
+
+
+def paper_ego(graph: dict | None, slug: str, forward: dict | None = None) -> dict | None:
+    """The ego subgraph for one project paper: itself, what it references, and what (in the
+    reading list) cites it — a readable derived VIEW over the already-built graph, no LLM or
+    network. Returns None when the paper isn't a built project node (the client shows a
+    build/absent offer, never an error — DR-046).
+
+    Every edge in the store originates from a project paper (source is always in-project), so a
+    paper's outgoing edges are its references (project or external targets) and its incoming
+    edges are exactly the reading-list papers that cite it. External papers that cite it are not
+    edges here — they live in the DR-052 forward substrate and are reported as a count only.
+    """
+    if not graph or not graph.get("nodes"):
+        return None
+    by_id = {n["id"]: n for n in graph["nodes"]}
+    centre = by_id.get(slug)
+    if centre is None or centre.get("kind") != "project":
+        return None
+    edges = graph.get("edges") or []
+
+    # References: outgoing edges, paired with their target node. Citers: incoming edges paired
+    # with their source node. Keep the edge beside the node so the significance sort and the
+    # returned ego edges stay consistent. `target != slug` / `source != slug` drops a self-loop
+    # (a paper citing itself), which would otherwise re-add the centre as a satellite.
+    refs = [(by_id[e["target"]], e) for e in edges
+            if e.get("source") == slug and e.get("target") in by_id and e.get("target") != slug]
+    # A node that BOTH references the paper and is cited by it (a mutual citation between two
+    # reading-list papers) must appear ONCE, not on both sides — a duplicate id would collide as
+    # a React key and be laid out twice. References win the tie; the citer edge still draws.
+    ref_ids = {n["id"] for n, _ in refs}
+    citers = [(by_id[e["source"]], e) for e in edges
+              if e.get("target") == slug and e.get("source") in by_id
+              and e.get("source") != slug and e.get("source") not in ref_ids]
+    refs.sort(key=lambda pair: _ego_rank(*pair))
+    citers.sort(key=lambda pair: _ego_rank(*pair))
+    refs_total, citers_total = len(refs), len(citers)
+    refs, citers = refs[:EGO_MAX_PER_SIDE], citers[:EGO_MAX_PER_SIDE]
+
+    centre_node = dict(centre, x=0.0, y=0.0)
+    ref_nodes = [dict(n) for n, _ in refs]
+    citer_nodes = [dict(n) for n, _ in citers]
+    _ego_positions(ref_nodes, -1)
+    _ego_positions(citer_nodes, +1)
+
+    kept = {centre_node["id"], *(n["id"] for n in ref_nodes), *(n["id"] for n in citer_nodes)}
+    ego_edges = [e for e in edges
+                 if (e.get("source") == slug and e.get("target") in kept)
+                 or (e.get("target") == slug and e.get("source") in kept)]
+
+    fwd = (forward or {}).get(slug) or {}
+    external_citers = set(fwd.get("citers") or []) | set(fwd.get("s2_citers") or [])
+    return {
+        "center_id": slug,
+        "nodes": [centre_node, *ref_nodes, *citer_nodes],
+        "edges": ego_edges,
+        "references_count": refs_total,
+        "citers_count": citers_total,
+        # In-project citers shown vs. external works citing this paper (forward substrate, id-only
+        # so a count, not nodes). None-yet vs zero are distinct: null = no forward scan has run.
+        "external_citer_count": len(external_citers) if fwd else None,
+        "capped": refs_total > EGO_MAX_PER_SIDE or citers_total > EGO_MAX_PER_SIDE,
+        "layout": {"algo": "ego-v1"},
+    }
+
+
 def overlay_membership(graph: dict | None, papers: list[Paper]) -> dict | None:
     """Re-derive node membership from the CURRENT reading list on a stored graph snapshot.
 
