@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { LayoutChangeEvent, ScrollView, Text as RNText, useWindowDimensions, View } from 'react-native';
 
-import { fitMathBlock, getSvgXml, texToPlain, texToSvg } from '@/lib/math';
+import { fitMathBlock, getSvgXml, splitTexForLines, texToPlain, texToSvg } from '@/lib/math';
 import { useTheme } from '@/theme/ThemeProvider';
 import { fonts, space } from '@/theme/tokens';
 
@@ -46,7 +46,17 @@ export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: num
   );
 }
 
-export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: number }) {
+export function MathBlock({
+  tex,
+  fontSize = 17,
+  noSplit = false,
+}: {
+  tex: string;
+  fontSize?: number;
+  /** Set on the stacked lines a split produced: a piece that is still too wide falls back to
+   *  the scroll strip rather than re-splitting (also the recursion guard). */
+  noSplit?: boolean;
+}) {
   // These hooks must run even while a streamed TeX span is temporarily incomplete. If they
   // lived after the fallback return, the same component could render plain text on one frame
   // and SVG on the next, changing its hook count and crashing React.
@@ -102,6 +112,28 @@ export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: numb
         {svg}
       </View>
     );
+  }
+  // DR-098 (Kamil: "We want all equations to be fully readable… multiple lines are
+  // acceptable"): before surrendering to the scroll strip — which read as "cut off" on his
+  // device even though it scrolls — try breaking the TeX at its own top-level connectives
+  // and stacking the pieces as display lines, each fitted independently. Only genuinely
+  // unbreakable content (one huge fraction/matrix) still scrolls below.
+  if (!noSplit) {
+    const pieces = splitTexForLines(tex);
+    if (pieces && pieces.length > 1) {
+      return (
+        <View
+          testID="math-block-lines"
+          onLayout={onLayout}
+          style={{ alignSelf: 'stretch', width: '100%', maxWidth: '100%' }}
+          accessible
+          accessibilityLabel={tex}>
+          {pieces.map((piece, idx) => (
+            <MathBlock key={idx} tex={piece} fontSize={fontSize} noSplit />
+          ))}
+        </View>
+      );
+    }
   }
   // Too wide to shrink readably: scroll horizontally, left-aligned, with a persistent scrollbar
   // (Android) / indicator so the truncation reads as "swipe to see more", not "broken".

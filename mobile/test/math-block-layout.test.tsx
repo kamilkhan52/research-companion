@@ -11,9 +11,14 @@ jest.mock('@/lib/math', () => {
   return {
     ...actual,
     getSvgXml: () => SvgStub,
-    texToSvg: (tex: string) => tex === 'incomplete'
-      ? null
-      : ({ svg: '<svg />', widthEx: 200, heightEx: 8, depthEx: 0 }),
+    texToSvg: (tex: string) => {
+      if (tex === 'incomplete') return null;
+      // DR-098: the split test's pieces must be narrower than the whole, as they are in
+      // reality — a flat width would make every stacked line "too wide" again.
+      const narrowPieces = ['A', '\\rightarrow B_{\\text{long}}', '\\rightarrow C'];
+      const widthEx = narrowPieces.includes(tex) ? 20 : 200;
+      return { svg: '<svg />', widthEx, heightEx: 8, depthEx: 0 };
+    },
   };
 });
 
@@ -38,4 +43,17 @@ test('a streamed equation can move from fallback text to SVG without changing ho
 
   expect(() => view.rerender(<MathBlock tex="complete" />)).not.toThrow();
   expect(screen.getByTestId('math-svg')).toBeTruthy();
+});
+
+// DR-098 — a wide equation with top-level connectives stacks as fitted lines instead of
+// falling into the scroll strip; the strip remains only for genuinely unbreakable content
+// (covered by the very-wide test above, whose prose tex has no connectives).
+test('a wide chain equation wraps into stacked display lines, not a scroll strip', () => {
+  render(<MathBlock tex="A \rightarrow B_{\text{long}} \rightarrow C" />);
+
+  const root = screen.getByTestId('math-block-lines');
+  fireEvent(root, 'layout', { nativeEvent: { layout: { width: 300, height: 60, x: 0, y: 0 } } });
+  expect(screen.queryByTestId('math-block-scroll')).toBeNull();
+  // Three pieces, each its own (fitted) math block.
+  expect(screen.getAllByTestId('math-block').length).toBe(3);
 });

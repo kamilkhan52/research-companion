@@ -92,6 +92,77 @@ export function fitMathBlock(
   return { width: naturalW, height: naturalH, scroll: true };
 }
 
+// ---- multi-line wrapping for over-wide display math (DR-098) -------------------------------
+//
+// MathJax v3 emits one indivisible SVG — it cannot line-break. But the equations LLMs write
+// are usually top-level CHAINS (A → B → C, or x = y = z), and those break naturally at their
+// own connectives. So before an over-wide equation falls back to the horizontal scroll strip
+// (which Kamil read as "cut off"), we try splitting its TeX at top-level arrows/relations and
+// stacking the pieces as separate display lines — his explicitly sanctioned "multiple lines".
+// The break happens BEFORE the operator (each continuation line leads with its arrow), the
+// standard convention for displayed math.
+
+/** Connectives worth breaking at, in preference order: arrows first (sequence/dataflow chains
+ *  — splitting a chain at `=` when arrows exist would cut mid-step), then relations. */
+const ARROW_COMMANDS = new Set([
+  'rightarrow', 'to', 'Rightarrow', 'longrightarrow', 'Longrightarrow', 'mapsto',
+  'leftarrow', 'Leftarrow', 'implies', 'iff',
+]);
+const RELATION_COMMANDS = new Set([
+  'approx', 'le', 'leq', 'ge', 'geq', 'neq', 'ne', 'sim', 'simeq', 'propto', 'equiv',
+]);
+
+/**
+ * Split display-math TeX at its top-level connectives, or return null when there is no safe
+ * split. "Top-level" is brace/environment depth 0: `{…}`, `\left…\right`, and
+ * `\begin{…}…\end{…}` all guard their contents, so a `cases` body or a `\text{…}` never
+ * splits internally. Escaped braces (`\{`) are commands, not delimiters.
+ */
+export function splitTexForLines(tex: string): string[] | null {
+  const arrowPoints: number[] = [];
+  const relationPoints: number[] = [];
+  let depth = 0;
+  let i = 0;
+  while (i < tex.length) {
+    const c = tex[i];
+    if (c === '\\') {
+      const cmd = /^\\([a-zA-Z]+)/.exec(tex.slice(i));
+      if (cmd) {
+        const name = cmd[1];
+        // \begin{env} / \end{env}: the name braces that follow balance themselves, so only
+        // the command itself moves the depth.
+        if (name === 'left' || name === 'begin') depth++;
+        else if (name === 'right' || name === 'end') depth--;
+        else if (depth === 0 && ARROW_COMMANDS.has(name)) arrowPoints.push(i);
+        else if (depth === 0 && RELATION_COMMANDS.has(name)) relationPoints.push(i);
+        i += cmd[0].length;
+        continue;
+      }
+      i += 2; // an escaped symbol: \{ \} \, \\ …
+      continue;
+    }
+    if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0 && c === '=') relationPoints.push(i);
+    i++;
+  }
+  const points = arrowPoints.length > 0 ? arrowPoints : relationPoints;
+  if (points.length === 0) return null;
+  const pieces: string[] = [];
+  let start = 0;
+  for (const p of points) {
+    const piece = tex.slice(start, p).trim();
+    if (piece) pieces.push(piece);
+    start = p;
+  }
+  const tail = tex.slice(start).trim();
+  if (tail) pieces.push(tail);
+  // No tiny-piece guard: this only runs on equations already too wide to fit, where even an
+  // uneven split ("A" + a long tail) beats the scroll strip. Short equations never get here.
+  if (pieces.length < 2) return null;
+  return pieces;
+}
+
 // MathJax document, created lazily so app startup never pays the init cost.
 let mathDocument: { convert: (tex: string, options: { display: boolean }) => unknown } | null = null;
 let mathAdaptor: { outerHTML: (node: unknown) => string; firstChild: (node: unknown) => unknown } | null = null;
