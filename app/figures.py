@@ -665,6 +665,40 @@ def warm_async(slug: str) -> WarmJob | None:
         return None
 
 
+#: How long a chat turn waits for a just-started warm before building its prompt without the
+#: figures. arXiv HTML + a dozen images is usually a few seconds; past this the turn proceeds
+#: and the NEXT turn has the cards — a slow host must not add its timeout to the reader's wait.
+ENSURE_WAIT_S = 8.0
+
+
+def ensure_manifest(slug: str, wait_s: float = ENSURE_WAIT_S) -> dict | None:
+    """Make sure a discussion turn sees the paper's figures when they can be had (DR-091,
+    second round). Extraction used to run ONLY at retrieval warm and graph-build enrichment,
+    so a paper retrieved before the warm existed — or whose manifest predates the current
+    format — had no figures in any discussion until some unrelated build happened to run.
+    Kamil asked a paper to "walk through all the figures" and got prose: it had no manifest
+    at all. Called on the chat-job thread before the prompt is assembled; starts the warm when
+    the served manifest is missing or stale and waits a bounded time for it. Never raises."""
+    try:
+        if not _SAFE_SLUG.match(slug or ""):
+            return None
+        current = manifest_for(slug)
+        if current is not None and current.get("version") == MANIFEST_VERSION:
+            return current
+        if not store.arxiv_base_id(_current_id(slug)):
+            return None  # no arXiv identity ⇒ nothing to extract from
+        job = warm_async(slug)
+        if job is None:
+            return None
+        deadline = time.monotonic() + max(0.0, wait_s)
+        while job.status == "running" and time.monotonic() < deadline:
+            time.sleep(0.2)
+        return manifest_for(slug)
+    except Exception:  # noqa: BLE001 — a figure miss must never cost the turn
+        log.info("ensure_manifest failed for %s", slug, exc_info=True)
+        return None
+
+
 # --- graph-build enrichment pass -------------------------------------------------------------
 
 # Same stall containment as affiliations: a worker past its deadline can't be killed, so it's

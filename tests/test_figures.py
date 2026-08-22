@@ -169,6 +169,39 @@ def test_derive_writes_manifest_and_assets(temp_project):
     assert len(html.calls) == 1
 
 
+def test_ensure_manifest_derives_on_demand_for_a_turn(temp_project, monkeypatch):
+    """DR-091, second round: a paper retrieved before the warm existed had no manifest and no
+    discussion ever triggered one. A chat turn now derives (bounded wait) before its prompt."""
+    slug = paper()
+    html, image = fake_html(), fake_image()
+
+    # The conftest stubs warm_async to None (no background work in tests); stand in with a
+    # synchronous warm that reports done, which is what the turn waits on.
+    def warm(s):
+        figures.derive_for_slug(s, fetch_html=html, fetch_image=image)
+        return figures.WarmJob(id="w", slug=s, status="done")
+
+    monkeypatch.setattr(figures, "warm_async", warm)
+    assert figures.manifest_for(slug) is None
+    manifest = figures.ensure_manifest(slug, wait_s=10)
+    assert manifest is not None and [f["number"] for f in manifest["figures"]] == [1, 2]
+    assert len(html.calls) == 1
+    # A current manifest is served as-is: no job, no refetch.
+    monkeypatch.setattr(figures, "warm_async", lambda s: (_ for _ in ()).throw(AssertionError))
+    assert figures.ensure_manifest(slug)["fetched_ts"] == manifest["fetched_ts"]
+
+
+def test_ensure_manifest_is_silent_without_identity_or_on_failure(temp_project, monkeypatch):
+    slug = paper(arxiv_id=None)
+    monkeypatch.setattr(figures, "warm_async",
+                        lambda s: (_ for _ in ()).throw(AssertionError("no warm")))
+    assert figures.ensure_manifest(slug) is None
+    slug2 = paper("other", "Other")
+    monkeypatch.setattr(figures, "warm_async",
+                        lambda s: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert figures.ensure_manifest(slug2) is None  # never raises into the turn
+
+
 def test_all_image_downloads_failing_tries_next_source_never_empty_done(temp_project):
     """Every listed image failing at download time (dead links, bad types, oversized) must
     not cache a 'done' manifest with zero entries — the next renderer is tried, and full

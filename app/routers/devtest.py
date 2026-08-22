@@ -76,6 +76,13 @@ _ROW_RE = re.compile(
     r"^\|\s*(DR-\d+)\s*\|\s*([0-9-]+)\s*\|\s*(.+?)\s*\|\s*`([^`]+)`\s*\|\s*(.+?)\s*\|\s*$"
 )
 
+#: DR-097: a phone-raised item's provisional id, as the triage skill records it in the row it
+#: creates ("provisional id `NEW-1787325358`"). That mention is the ONLY link between the inbox
+#: item and its DR row — without reading it, the NEW item stayed listed as untriaged forever
+#: while every reply was filed under the DR id, so Kamil never saw an answer on the item he had
+#: opened.
+_PROVISIONAL_RE = re.compile(r"NEW-\d+")
+
 #: States the tester acts on, in the order the app should surface them.
 OPEN_STATES = ("open", "partial", "planned")
 VERIFY_STATE = "implemented — verify"
@@ -111,8 +118,39 @@ def parse_ledger(text: str) -> list[dict]:
             # The evidence column is where "what to test and how" lives — verify steps are
             # written there by convention (the ledger's own workflow section says so).
             "how_to_test": evidence,
+            # Provisional NEW-… ids this row was triaged from (usually one; a row that absorbs
+            # two phone items lists both). Sorted for a stable response shape.
+            "aliases": sorted(set(_PROVISIONAL_RE.findall(feedback + " " + evidence))),
         })
     return items
+
+
+def _alias_map(items: list[dict]) -> dict[str, str]:
+    """provisional NEW id → the DR row it became. First row wins if two claim one id."""
+    out: dict[str, str] = {}
+    for item in items:
+        for alias in item.get("aliases") or ():
+            out.setdefault(alias, item["id"])
+    return out
+
+
+def _canonical_ids(item_id: str | None) -> set[str]:
+    """Every id whose inbox entries belong to `item_id`: itself plus, for a DR row, the
+    provisional ids it was triaged from; for a NEW id, the DR row it became (and that row's
+    other aliases)."""
+    if not item_id:
+        return set()
+    try:
+        items = parse_ledger(_LEDGER.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return {item_id}
+    aliases = _alias_map(items)
+    canonical = aliases.get(item_id, item_id)
+    ids = {item_id, canonical}
+    for item in items:
+        if item["id"] == canonical:
+            ids.update(item.get("aliases") or ())
+    return ids
 
 
 def _feedback_path() -> Path:
@@ -168,7 +206,10 @@ def list_items():
         items = parse_ledger(_LEDGER.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         items = []
-    known = {i["id"] for i in items}
+    # DR-097: a NEW item whose id a ledger row names as its provisional id HAS been triaged —
+    # it folds into that row rather than lingering as a second, reply-less card.
+    aliases = _alias_map(items)
+    known = {i["id"] for i in items} | set(aliases)
     inbox = _read_feedback()
     for entry in inbox:
         if entry.get("kind") == "new_item" and entry.get("id") not in known:
@@ -177,15 +218,19 @@ def list_items():
                 "title": entry.get("title") or "(untitled)",
                 "state": "new — untriaged",
                 "how_to_test": entry.get("description") or "",
+                "aliases": [],
             })
             known.add(entry["id"])
     counts: dict[str, int] = {}
     response_counts: dict[str, int] = {}
     for entry in inbox:
-        if entry.get("kind") == "feedback" and entry.get("item_id"):
-            counts[entry["item_id"]] = counts.get(entry["item_id"], 0) + 1
-        elif entry.get("kind") == "response" and entry.get("item_id"):
-            response_counts[entry["item_id"]] = response_counts.get(entry["item_id"], 0) + 1
+        # Entries recorded under the provisional id (a verdict given before triage, or a
+        # reply filed against it) count toward the row it became.
+        target = aliases.get(entry.get("item_id") or "", entry.get("item_id"))
+        if entry.get("kind") == "feedback" and target:
+            counts[target] = counts.get(target, 0) + 1
+        elif entry.get("kind") == "response" and target:
+            response_counts[target] = response_counts.get(target, 0) + 1
     for item in items:
         item["feedback_count"] = counts.get(item["id"], 0)
         # DR-080: an agent reply is the signal the tester can decide pass/close from — the
@@ -322,7 +367,10 @@ def list_feedback(item_id: str | None = None):
     _require_dev()
     entries = [e for e in _read_feedback() if e.get("kind") in ("feedback", "response")]
     if item_id:
-        entries = [e for e in entries if e.get("item_id") == item_id]
+        # DR-097: one history per item across its provisional and ledger ids — the fail he
+        # filed under NEW-… and the replies filed under DR-… belong to the same card.
+        ids = _canonical_ids(item_id)
+        entries = [e for e in entries if e.get("item_id") in ids]
     return {"entries": entries[-200:]}
 
 
