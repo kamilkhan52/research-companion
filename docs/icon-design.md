@@ -28,6 +28,9 @@ The result should feel quiet, exact, and useful: a research instrument rather th
 - Canvas: 1024 × 1024, opaque square for the generic/iOS launcher asset.
 - Palette: deep ink `#0B0D12` and warm paper `#F3F0E8` only.
 - Geometry: two bold filled planes, no strokes, gradients, shadows, gloss, or embedded corner mask.
+- Optical scale: the mark spans about 65% of the generic canvas width; the adaptive foreground
+  uses about 68% of Android's guaranteed-safe diameter. This avoids a timid double-inset after
+  launchers apply their own masks while retaining safe-zone clearance.
 - Aperture: a true cut-out in mark-only assets so Android theming and splash contexts remain valid.
 - Compact proof: the aperture must remain open at 32 px.
 - Android: meaningful foreground geometry stays inside the 66/108 adaptive-icon safe zone; the

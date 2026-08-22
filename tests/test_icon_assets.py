@@ -57,7 +57,7 @@ def test_canonical_icon_is_the_name_independent_quiet_aperture():
     assert "Seminar Quiet Aperture mark" in svg
     assert 'fill="#F3F0E8"' in svg
     assert '<mask id="aperture"' in svg
-    assert "M512 452L572 512L512 572L452 512Z" in svg
+    assert "M512 440L584 512L512 584L440 512Z" in svg
     assert "<circle" not in svg
     assert "stroke=" not in svg
     assert "<text" not in svg
@@ -105,6 +105,15 @@ def test_platform_icon_dimensions_and_layer_contracts():
     for name in ("icon.png", "favicon.png"):
         assert all(pixel[3] == 255 for pixel in images[name][2])
 
+    _, _, icon = images["icon.png"]
+    icon_mark = [
+        (index % 1024, index // 1024)
+        for index, pixel in enumerate(icon)
+        if pixel[:3] != INK
+    ]
+    icon_xs = [point[0] for point in icon_mark]
+    assert max(icon_xs) - min(icon_xs) + 1 >= 1024 * 0.64
+
     for name in ("android-icon-foreground.png", "android-icon-monochrome.png", "splash-icon.png"):
         width, _, pixels = images[name]
         center = pixels[(width // 2) * width + width // 2]
@@ -119,6 +128,8 @@ def test_platform_icon_dimensions_and_layer_contracts():
         for index, pixel in enumerate(foreground)
         if pixel[3] > 0
     ]
+    foreground_xs = [point[0] for point in foreground_alpha]
+    assert max(foreground_xs) - min(foreground_xs) + 1 >= 1024 * 0.43
     safe_radius = 1024 * (33 / 108)
     center = (1024 - 1) / 2
     assert max(
