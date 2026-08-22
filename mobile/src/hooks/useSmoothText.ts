@@ -29,7 +29,7 @@ const MAX_LAG = 1000;
 const SLOW_TICK_ABOVE_CHARS = 4000;
 const SLOW_TICK_MS = 66;
 
-export function useSmoothText(target: string): string {
+export function useSmoothText(target: string, paused = false): string {
   const [, bump] = useState(0);
   const shownRef = useRef(0);
 
@@ -37,6 +37,11 @@ export function useSmoothText(target: string): string {
   if (target.length < shownRef.current) shownRef.current = target.length;
 
   useEffect(() => {
+    // DR-089 — while the reader is away from the live edge, hold the reveal entirely: a
+    // growing message is what drags a scrolled-up viewport, so the arriving text banks in
+    // the backlog instead. Un-pausing re-runs this effect and catches up (MAX_LAG included,
+    // so a long read resumes near live rather than replaying the banked thousands).
+    if (paused) return;
     if (shownRef.current >= target.length) return;
     const tickMs = target.length > SLOW_TICK_ABOVE_CHARS ? SLOW_TICK_MS : TICK_MS;
     const pace = tickMs / TICK_MS; // keeps reveal rate per second constant across tick sizes
@@ -53,7 +58,7 @@ export function useSmoothText(target: string): string {
       bump((n) => n + 1);
     }, tickMs);
     return () => clearInterval(id);
-  }, [target]);
+  }, [target, paused]);
 
   return target.slice(0, shownRef.current);
 }

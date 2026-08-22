@@ -119,6 +119,11 @@ import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
+import {
+  RevealPausedContext,
+  useReaderAwayFromLive,
+  useRevealPaused,
+} from '@/hooks/useStreamPinnedScroll';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
@@ -1646,6 +1651,9 @@ function DiscussionThread({
   // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
   // useRef nullability; the cast bridges that without changing runtime behavior.
   const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
+  // DR-089 — is the reader away from the live edge? While they are, the streamed reveal
+  // pauses (RevealPausedContext → SmoothMarkdown), so the transcript cannot drag under them.
+  const readerPin = useReaderAwayFromLive();
 
   // Reconcile authored text against what the server accepted: once the submitted edit shows
   // up in the transcript, drop the local draft.
@@ -2423,6 +2431,10 @@ function DiscussionThread({
 
   return (
     <>
+    {/* DR-089 — while the reader is away from the live edge during a streaming turn, the
+        streamed reveal (SmoothMarkdown) holds still so the transcript cannot drag under
+        them. Streaming gates the flag so an idle reader browsing history pays nothing. */}
+    <RevealPausedContext.Provider value={readerPin.away && stream.streaming}>
     <Chat<DiscussionMessage>
       messages={messages}
       user={DISCUSSION_USER}
@@ -2460,6 +2472,11 @@ function DiscussionThread({
       messagesContainerStyle={styles.messagesContainer}
       listProps={{
         keyboardShouldPersistTaps: 'handled',
+        // DR-089 — track whether the reader is away from the live edge; while away, the
+        // streamed reveal pauses (see useStreamPinnedScroll for why every viewport-side
+        // correction lost to this list). The library forwards onScroll on the JS thread
+        // in reanimated's event shape.
+        onScroll: readerPin.onScroll,
         // The composer floats over the list, so pad the inverted list's visual bottom by the
         // composer's measured height — the newest message scrolls up clear of the pill instead
         // of sitting permanently under it (R12.6). Inverted list ⇒ paddingTop is visual-bottom.
@@ -2482,6 +2499,7 @@ function DiscussionThread({
       }}
       {...ROW_STYLES_PROP}
     />
+    </RevealPausedContext.Provider>
     <OptionsSheet
       visible={!!msgMenu}
       onClose={() => setMsgMenu(null)}
@@ -3487,7 +3505,9 @@ function SmoothMarkdown({ text }: { text: string }) {
   // DR-068 — streamed text is still Discussion content ("Apply changes immediately to...
   // streaming response text"), so it scales the same as the settled transcript.
   const { discussionTextScale } = useThemeMode();
-  return <Markdown text={useSmoothText(text)} textScale={discussionTextScale} />;
+  // DR-089 — the reveal holds still while the reader is away from the live edge.
+  const paused = useRevealPaused();
+  return <Markdown text={useSmoothText(text, paused)} textScale={discussionTextScale} />;
 }
 
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
