@@ -28,9 +28,30 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-20)
+## Current position (updated 2026-08-21)
 
-**Delta since the 2026-08-10 write-up below** (which remains accurate for its date):
+**Delta at 2026-08-21** (a heavy device-feedback + feature session; nothing below changed the
+M-milestone picture — M4 is still blocked only on H8's merchant account):
+- **DR-052 (Map/Discover merge) is COMPLETE** — all four PRs merged (#407/#409/#431/#432/#436).
+  See `corpus-neighbourhood-spec.md` §7. Never measured against a real production Discover run.
+- **A per-paper reference graph shipped** (#437, DR-093): a readable ego view (paper centred,
+  references left, citers right) reusing the Map canvas, replacing the old "open the full Map"
+  behaviour of a paper's Reference-graph action.
+- **The Seminar rename finished**: in-app strings (#426), legal pages (#427), and the new
+  **"Quiet Aperture" app icon** (#438, DR-094 — needs a dev-client rebuild to see).
+- **The immersive discussion canvas merged** (#413, DR-095) after two days of device preview.
+  **DR-089 (chat scrolls during streaming when scrolled up) merged UNFIXED and now targets
+  main** — the next known UI fix (an explicit viewport-pin guard).
+- Also merged: arXiv SVG figures (#434, DR-091), Claude-dispatch from the DevTest bubble
+  (#435, DR-092 — tailnet/loopback-only, an RCE gate caught in review), Continue-Reading
+  stale-title fix (#433, DR-090).
+- **Repo hygiene**: 317 stale remote branches + all local leftovers deleted; remote is now
+  `main` only; the sole worktree is `device-main` (Metro 8081 serves it, so the phone gets the
+  full merged state). Deleted-branch SHAs recorded in the session scratchpad as a recovery net.
+- **~45 ledger rows sit at `implemented — verify`** — device acceptance, not code, is the
+  standing bottleneck.
+
+**Delta since the 2026-08-10 write-up below** (accurate for its date):
 - **M3 closed fully on 2026-08-14** — web-search metering was the last seam (detail below,
   dated 2026-08-12, and §8.4 of the pricing analysis).
 - **M4 is in progress and blocked on exactly one thing that is Kamil's**: the Google Payments

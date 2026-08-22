@@ -125,7 +125,18 @@ way they did. This is an index, not a substitute for reading them.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
 - `committer.py` — the one component that writes approved changes and git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.
+  `graph.paper_ego` derives the per-paper reference graph (DR-093): a readable ego VIEW over the
+  built graph (paper centred, references left, citers right), server-laid-out so the client's
+  `GraphCanvas` reuses it directly.
 - `discovery.py` — goals → ranked reading suggestions.
+- `neighbourhood.py` — the DR-052 corpus-neighbourhood substrate: anchor resolution, the
+  forward-citer delta lane (who newly cites the reading list), and `status()` (the shared
+  freshness both Map and Discover show). The forward records are Discovery-maintained; the Map
+  build never writes them.
+- `significance.py` — DR-052 lane-1: a deterministic Valenzuela pre-filter over new-citation
+  edges, then a cheap-model classification of the raw citation sentences (EXTENDS/USES/…),
+  ledger-cached by context hash. "Significant" is a 5–15% slice — the pre-filter keeps the LLM
+  off the incidental majority.
 - `jobs.py` — the shared `JobRegistry` behind every background job: thread spawn, the contextvar
   rebind of invariant 2, error capture, and persist-plus-reservation-settle before publishing
   done/error. Cooperative Stop is visible immediately, but `finished_at` remains null until its
