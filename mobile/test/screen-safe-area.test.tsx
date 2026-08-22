@@ -39,3 +39,17 @@ test('Screen pads its very first frame with the provider insets', async () => {
   // edges=['top'] must not also pad the bottom.
   expect(style?.paddingBottom).toBe(0);
 });
+
+test('an edge-to-edge Screen does not put the top inset into layout', async () => {
+  await renderAsync(
+    <SafeAreaProvider initialMetrics={metrics}>
+      <Screen edges={[]}>
+        <Text>immersive content</Text>
+      </Screen>
+    </SafeAreaProvider>,
+  );
+
+  const style = paddedNode(screen.toJSON());
+  expect(style?.paddingTop).toBe(0);
+  expect(style?.paddingBottom).toBe(0);
+});

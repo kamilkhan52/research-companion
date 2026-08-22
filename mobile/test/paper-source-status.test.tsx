@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
-import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
 jest.mock('@kesha-antonov/react-native-chat', () => ({
@@ -11,11 +11,13 @@ jest.mock('@kesha-antonov/react-native-chat', () => ({
 }));
 
 import {
+  anticipatedPaperState,
   applyPaperUpdateToActiveSession,
   CanonicalTitleSheet,
   ComposeFirst,
   hasStartedDiscussion,
   OverflowMenu,
+  paperLoadingSurface,
   RenamePaperSheet,
   shouldSuggestCanonicalTitle,
 } from '@/app/paper/[slug]';
@@ -62,6 +64,69 @@ const doneJob: RetrievalJob = {
   analysis_error: null,
   enrichment: null,
 };
+
+test('the opening skeleton shares the route bootstrap deadline without a second delay', async () => {
+  jest.useFakeTimers();
+  jest.mocked(api.getOpeningDraft).mockImplementation(
+    () => new Promise<Awaited<ReturnType<typeof api.getOpeningDraft>>>(() => undefined),
+  );
+  const stream = { streaming: false, items: [], run: jest.fn(), stop: jest.fn() };
+  const bootstrapStartedAt = Date.now() - 500;
+
+  const view = await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        sessionState={null}
+        selectedModel={null}
+        retrieved={false}
+        bootstrapStartedAt={bootstrapStartedAt}
+        bootstrapHadSetupSurface
+      />,
+    ),
+  );
+  act(() => jest.advanceTimersByTime(0));
+
+  expect(view.getByTestId('paper-setup-loading-skeleton')).toBeTruthy();
+  expect(view.queryByText('Reading modes')).toBeNull();
+  await view.unmountAsync();
+  jest.useRealTimers();
+});
+
+test('a setup handoff uses the remaining route budget instead of restarting it', async () => {
+  jest.useFakeTimers();
+  jest.mocked(api.getOpeningDraft).mockImplementation(
+    () => new Promise<Awaited<ReturnType<typeof api.getOpeningDraft>>>(() => undefined),
+  );
+  const stream = { streaming: false, items: [], run: jest.fn(), stop: jest.fn() };
+  const view = await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        sessionState={null}
+        selectedModel={null}
+        retrieved={false}
+        bootstrapStartedAt={Date.now() - 300}
+        bootstrapHadSetupSurface
+      />,
+    ),
+  );
+
+  act(() => jest.advanceTimersByTime(199));
+  expect(view.queryByTestId('paper-setup-loading-skeleton')).toBeNull();
+  act(() => jest.advanceTimersByTime(1));
+  expect(view.getByTestId('paper-setup-loading-skeleton')).toBeTruthy();
+  await view.unmountAsync();
+  jest.useRealTimers();
+});
 
 test('explicit Fetch updates durable source status without starting the discussion', async () => {
   jest.mocked(api.startRetrievalJob).mockResolvedValue({ job: doneJob });
@@ -517,6 +582,27 @@ test('durable discussion state never falls back to ComposeFirst on an empty refe
   expect(hasStartedDiscussion(null, 0, 'main')).toBe(false);
   expect(hasStartedDiscussion('retrieving', 0, 'main')).toBe(false);
   expect(hasStartedDiscussion(null, 0, 'thread-live')).toBe(true);
+});
+
+test('paper loading skeleton is shown only when its eventual surface is knowable', () => {
+  expect(paperLoadingSurface('in_discussion', 'main', true)).toBe('discussion');
+  expect(paperLoadingSurface(null, 'main', true)).toBe('setup');
+  expect(paperLoadingSurface(null, 'thread-live', true)).toBe('discussion');
+  expect(paperLoadingSurface(null, 'thread-stale', false)).toBeNull();
+  expect(paperLoadingSurface(null, 'main', false)).toBeNull();
+});
+
+test('paper loading lifecycle keeps null setup state and follows the active thread', () => {
+  expect(anticipatedPaperState(undefined, 'main', null, 'committed', undefined)).toBeNull();
+  expect(anticipatedPaperState(
+    undefined,
+    'thread-live',
+    'committed',
+    'committed',
+    'in_discussion',
+  )).toBe('in_discussion');
+  expect(anticipatedPaperState('notes_drafted', 'thread-live', 'committed', null, 'in_discussion'))
+    .toBe('notes_drafted');
 });
 
 test('paper overflow menu retains the destructive delete action', async () => {

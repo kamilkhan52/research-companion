@@ -48,7 +48,9 @@ import type {
   DiscussionThreadSummary,
   FavoriteModel,
   Paper,
+  ProjectState,
   ReadingMode,
+  RecentSession,
   RetrievalJob,
   Session,
   SessionState,
@@ -71,6 +73,11 @@ import { ReportContentSheet, reportReference } from '@/components/ReportContentS
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
+import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import {
+  discussionChromeLayout,
+  discussionComposerPadding,
+} from '@/components/chat/discussionLayout';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { showToast } from '@/ui/Toast';
@@ -98,9 +105,16 @@ import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
-import { PaperSessionLoadingSkeleton } from '@/components/LoadingSkeletons';
+import {
+  DiscussionLoadingSkeleton,
+  PaperSetupLoadingSkeleton,
+} from '@/components/LoadingSkeletons';
 import { TopBar } from '@/components/TopBar';
-import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
+import {
+  DISCUSSION_SKELETON_DELAY_MS,
+  INITIAL_SKELETON_DELAY_MS,
+  useDelayedInitialSkeleton,
+} from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
@@ -196,6 +210,34 @@ export function hasStartedDiscussion(
     || state === 'committed';
 }
 
+/** Pick a loading surface only when navigation/cache state makes the eventual screen knowable.
+ * A cold main-thread deep link can resolve to either ComposeFirst or an existing discussion, so
+ * guessing there creates the exact disconnected placeholder transition a skeleton should avoid. */
+export function paperLoadingSurface(
+  state: SessionState,
+  threadId: string,
+  hasSurfaceHint: boolean,
+): 'discussion' | 'setup' | null {
+  if (!hasSurfaceHint) return null;
+  if (threadId !== 'main') return 'discussion';
+  return hasStartedDiscussion(state, 0, threadId) ? 'discussion' : 'setup';
+}
+
+/** Select the lifecycle belonging to the route we are about to show. `null` is meaningful — it
+ * means ComposeFirst — so only `undefined` may fall through to a less-authoritative cache. */
+export function anticipatedPaperState(
+  sessionState: SessionState | undefined,
+  threadId: string,
+  cachedPaperState: SessionState | undefined,
+  cachedRecentState: SessionState | undefined,
+  cachedThreadState: SessionState | undefined,
+): SessionState {
+  if (sessionState !== undefined) return sessionState;
+  if (threadId !== 'main') return cachedThreadState ?? null;
+  if (cachedPaperState !== undefined) return cachedPaperState;
+  return cachedRecentState ?? null;
+}
+
 /** Merge a confirmed title response into the session the reader is actually viewing before
  * refetching it. The transcript/state/thread id stay intact; the old path invalidated a
  * main-shaped query prefix without applying the response to the active snapshot first. */
@@ -218,6 +260,8 @@ export async function applyPaperUpdateToActiveSession(
 export default function DiscussionScreen() {
   const router = useRouter();
   const qc = useQueryClient();
+  const insets = useSafeAreaInsets();
+  const styles = useThemedStyles(makeStyles);
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
   const { slug, source, project, thread, autoStart } = useLocalSearchParams<{
@@ -297,11 +341,35 @@ export default function DiscussionScreen() {
     },
     [pid, slug],
   );
+  // Session and opening-draft requests are two stages of one route bootstrap. Anchor both
+  // placeholders to the same deadline so ComposeFirst never starts a second 500 ms blank window
+  // after the session request settles. useMemo scopes the clock to this route without mutating a
+  // ref during render; revisiting another paper/thread earns a fresh initial-load gate.
+  const bootstrapKey = `${pid ?? ''}\u0000${slug ?? ''}\u0000${activeThread}`;
+  const bootstrapStartedAt = useMemo(() => Date.now(), [bootstrapKey]);
   const session = useSession(pid, slug ?? null, activeThread);
   const showSessionSkeleton = useDelayedInitialSkeleton(
     session.isLoading,
     session.data !== undefined,
+    DISCUSSION_SKELETON_DELAY_MS,
   );
+  // Project state and recents already describe whether this route is an unread setup or an
+  // existing discussion. Reuse those warm caches while the heavier transcript request is empty,
+  // so a delayed placeholder has the same chrome and body geometry as what will replace it.
+  const cachedPaper = pid && slug
+    ? qc.getQueryData<ProjectState>(keys.projectState(pid))?.papers.find((paper) => paper.slug === slug)
+    : undefined;
+  const cachedRecent = pid && slug
+    ? qc.getQueryData<RecentSession[]>(keys.recentSessions)?.find(
+        (recent) => recent.project_id === pid && recent.slug === slug,
+      )
+    : undefined;
+  const cachedMainSession = pid && slug
+    ? qc.getQueryData<Session>(keys.session(pid, slug))
+    : undefined;
+  const cachedThread = activeThread === 'main'
+    ? undefined
+    : cachedMainSession?.threads?.find((candidate) => candidate.id === activeThread);
   // A remembered thread can go stale (paper moved, project state rebuilt): fall back to main
   // instead of wedging the screen on a 404, and forget the stale id.
   useEffect(() => {
@@ -378,6 +446,43 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
+  const anticipatedState = anticipatedPaperState(
+    session.data?.state,
+    activeThread,
+    cachedPaper?.session_state,
+    cachedRecent?.state,
+    cachedThread?.state,
+  );
+  const loadingSurface = session.isLoading
+    ? paperLoadingSurface(
+        anticipatedState,
+        activeThread,
+        activeThread === 'main'
+          ? cachedPaper !== undefined || cachedRecent !== undefined
+          : cachedThread !== undefined,
+      )
+    : null;
+  const loadingExistingDiscussion = loadingSurface === 'discussion';
+  // Only a setup-shaped stage-one placeholder can hand directly to ComposeFirst. A cold deep
+  // link deliberately rendered no skeleton while its destination was unknown, so even after the
+  // route deadline elapses it still gets a short flash guard for a fast opening-draft response.
+  const cachedMainState = anticipatedPaperState(
+    undefined,
+    'main',
+    cachedPaper?.session_state,
+    cachedRecent?.state,
+    undefined,
+  );
+  const bootstrapHadSetupSurface = activeThread === 'main'
+    && (cachedPaper !== undefined || cachedRecent !== undefined)
+    && paperLoadingSurface(cachedMainState, 'main', true) === 'setup';
+  // Once a real transcript exists, the discussion owns the entire viewport and the header
+  // becomes independent overlay chrome. Pre-discussion/setup/loading states keep the ordinary
+  // in-flow top bar because their forms are not scroll-under reading surfaces. A known existing
+  // discussion keeps that same overlay chrome during a delayed empty-cache skeleton, preventing
+  // the header from jumping between two unrelated layouts when the transcript arrives.
+  const immersiveDiscussion = !!pid
+    && ((hasSession && !session.isLoading) || loadingExistingDiscussion);
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
@@ -420,11 +525,10 @@ export default function DiscussionScreen() {
       Alert.alert('Could not switch mode', (e as Error).message ?? 'Request failed.');
     }
   }, [activeThread, pid, qc, readingMode, slug]);
-  // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
-  // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
-  // sits above it in this app's layout, so without correcting for that height the composer
-  // stays partly under the keyboard. Measure the real header height and hand back the
-  // corrected total (device inset + header) as the override.
+  // The measured height does two jobs. In ordinary setup states it corrects the chat library's
+  // keyboard offset for the in-flow bar. In an immersive discussion it becomes the list's visual
+  // top inset, so the oldest content can rest below the floating chrome while still scrolling
+  // underneath it.
   const [headerHeight, setHeaderHeight] = useState(0);
 
   // Auto-analysis can fetch and open the first discussion while this screen is elsewhere.
@@ -577,15 +681,28 @@ export default function DiscussionScreen() {
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
     <ExternalRefSheet pid={pid} refItem={externalRef} onClose={() => setExternalRef(null)} />
-    <Screen edges={['top']}>
-      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+    <Screen edges={immersiveDiscussion ? [] : ['top']}>
+      {immersiveDiscussion ? (
+        <DiscussionEdgeFade
+          edge="top"
+          height={headerHeight + 48}
+          style={styles.discussionTopFade}
+        />
+      ) : null}
+      <View
+        onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}
+        pointerEvents="box-none"
+        style={immersiveDiscussion
+          ? [styles.discussionHeaderOverlay, { paddingTop: insets.top }]
+          : undefined}>
       <TopBar
-        title={session.data?.paper.title ?? 'Discussion'}
+        floating={immersiveDiscussion}
+        title={session.data?.paper.title ?? cachedPaper?.title ?? cachedRecent?.title ?? 'Discussion'}
         // Year first: it situates the paper on the timeline before the workflow state (U.17).
         subtitle={
           [
-            session.data?.paper.year,
-            session.data?.paper.affiliations?.slice(0, 2).join(', '),
+            session.data?.paper.year ?? cachedPaper?.year,
+            (session.data?.paper.affiliations ?? cachedPaper?.affiliations)?.slice(0, 2).join(', '),
             activeThread === 'main'
               ? (state ? STATE_LABEL[state] : undefined)
               : session.data?.threads?.find((item) => item.id === activeThread)?.title,
@@ -704,7 +821,11 @@ export default function DiscussionScreen() {
       {!pid ? (
         <Centered text="No active project." />
       ) : session.isLoading ? (
-        showSessionSkeleton ? <PaperSessionLoadingSkeleton /> : null
+        showSessionSkeleton && loadingSurface
+          ? loadingSurface === 'discussion'
+            ? <DiscussionLoadingSkeleton state={anticipatedState} />
+            : <PaperSetupLoadingSkeleton />
+          : null
       ) : !hasSession ? (
         <ComposeFirst
           pid={pid}
@@ -719,6 +840,8 @@ export default function DiscussionScreen() {
           selectedModel={selectedModel}
           modelLabel={selectedModelLabel}
           onPickModel={() => setModelPickerOpen(true)}
+          bootstrapStartedAt={bootstrapStartedAt}
+          bootstrapHadSetupSurface={bootstrapHadSetupSurface}
           retrieved={!!session.data?.paper.retrieved}
           titleConfirmed={!!session.data?.paper.title_confirmed}
         />
@@ -747,6 +870,7 @@ export default function DiscussionScreen() {
             qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
+          headerOverlays={immersiveDiscussion}
         />
       )}
     </Screen>
@@ -1418,6 +1542,7 @@ function DiscussionThread({
   readingMode,
   onContinue,
   headerHeight,
+  headerOverlays,
   onMutated,
   reviewReadyNonce,
 }: {
@@ -1438,6 +1563,8 @@ function DiscussionThread({
   readingMode: ReadingMode;
   onContinue: () => void;
   headerHeight: number;
+  /** True when the transcript is the base layer and the header floats above it. */
+  headerOverlays: boolean;
   onMutated: () => void;
   /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
   reviewReadyNonce: number;
@@ -1503,11 +1630,17 @@ function DiscussionThread({
   }, [threadId]);
 
   const disabled = stream.streaming;
-  // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
-  // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
-  // the keyboard without this correction.
+  // An in-flow header consumes space above the library and belongs in its keyboard offset.
+  // The immersive header is an overlay, so counting it would shrink the transcript twice.
   const insets = useSafeAreaInsets();
-  const keyboardVerticalOffset = insets.top + headerHeight;
+  const chromeLayout = discussionChromeLayout({
+    topInset: insets.top,
+    headerHeight,
+    composerHeight,
+    headerOverlays,
+    listGap: space.sm,
+    headerGap: space.lg,
+  });
   // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
   // useRef nullability; the cast bridges that without changing runtime behavior.
   const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
@@ -2110,28 +2243,50 @@ function DiscussionThread({
       // Committed is a resting point, not a dead end (polish plan H.2): the quiet inline
       // affordance reopens the composer; the same action lives in the kebab menu.
       return (
-        <View style={styles.committedBar}>
-          <Text variant="caption" style={{ textAlign: 'center' }}>
-            Notes committed to this project's record.
-          </Text>
-          <Button
-            title="Continue discussion"
-            variant="ghost"
-            onPress={onContinue}
-            style={{ alignSelf: 'center', marginTop: space.xs }}
+        <View
+          style={styles.composerOverlay}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
+          <DiscussionEdgeFade
+            edge="bottom"
+            height={chromeLayout.bottomFadeHeight}
+            transparentInset={chromeLayout.bottomFadeTransparentInset}
           />
+          <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
+            <View style={styles.committedBar}>
+              <Text variant="caption" style={{ textAlign: 'center' }}>
+                Notes committed to this project's record.
+              </Text>
+              <Button
+                title="Continue discussion"
+                variant="ghost"
+                onPress={onContinue}
+                style={{ alignSelf: 'center', marginTop: space.xs }}
+              />
+            </View>
+          </View>
         </View>
       );
     }
     if (state === 'notes_drafted') {
       return (
-        <View style={styles.committedBar}>
-          <Button
-            title="Review notes"
-            onPress={() => setReviewOpen(true)}
-            disabled={stream.streaming}
-            style={{ alignSelf: 'center' }}
+        <View
+          style={styles.composerOverlay}
+          onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
+          <DiscussionEdgeFade
+            edge="bottom"
+            height={chromeLayout.bottomFadeHeight}
+            transparentInset={chromeLayout.bottomFadeTransparentInset}
           />
+          <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
+            <View style={styles.committedBar}>
+              <Button
+                title="Review notes"
+                onPress={() => setReviewOpen(true)}
+                disabled={stream.streaming}
+                style={{ alignSelf: 'center' }}
+              />
+            </View>
+          </View>
         </View>
       );
     }
@@ -2143,33 +2298,40 @@ function DiscussionThread({
       <View
         style={styles.composerOverlay}
         onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-        <SentenceCommentComposer
-          active={annotatingAssistant !== null}
-          comments={sentenceComments}
-          selected={selectedSentence}
-          draft={sentenceCommentText}
-          onChangeDraft={setSentenceCommentText}
-          onSave={saveSentenceComment}
-          onCancelSelection={() => {
-            setSelectedSentence(null);
-            setSentenceCommentText('');
-          }}
-          onOpen={openQueuedComment}
-          onRemove={removeQueuedComment}
-          onDone={() => {
-            setAnnotatingAssistant(null);
-            setSelectedSentence(null);
-            setSentenceCommentText('');
-          }}
+        <DiscussionEdgeFade
+          edge="bottom"
+          height={chromeLayout.bottomFadeHeight}
+          transparentInset={chromeLayout.bottomFadeTransparentInset}
         />
-        <InputToolbar
-          {...props}
-          containerStyle={styles.toolbar}
-          primaryStyle={styles.composerCard}
-          renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
-          renderSend={renderSend}
-          renderAccessory={renderAccessory}
-        />
+        <View style={styles.composerForeground}>
+          <SentenceCommentComposer
+            active={annotatingAssistant !== null}
+            comments={sentenceComments}
+            selected={selectedSentence}
+            draft={sentenceCommentText}
+            onChangeDraft={setSentenceCommentText}
+            onSave={saveSentenceComment}
+            onCancelSelection={() => {
+              setSelectedSentence(null);
+              setSentenceCommentText('');
+            }}
+            onOpen={openQueuedComment}
+            onRemove={removeQueuedComment}
+            onDone={() => {
+              setAnnotatingAssistant(null);
+              setSelectedSentence(null);
+              setSentenceCommentText('');
+            }}
+          />
+          <InputToolbar
+            {...props}
+            containerStyle={[styles.toolbar, discussionComposerPadding(insets.bottom)]}
+            primaryStyle={styles.composerCard}
+            renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
+            renderSend={renderSend}
+            renderAccessory={renderAccessory}
+          />
+        </View>
       </View>
     );
   }, [
@@ -2186,6 +2348,10 @@ function DiscussionThread({
     state,
     stream.streaming,
     styles,
+    composerHeight,
+    chromeLayout.bottomFadeHeight,
+    chromeLayout.bottomFadeTransparentInset,
+    insets.bottom,
   ]);
 
   // DR-083 interim: retry a turn whose worker vanished — continue_job re-runs the recorded
@@ -2270,7 +2436,7 @@ function DiscussionThread({
       }}
       colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
-      keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
+      keyboardAvoidingViewProps={{ keyboardVerticalOffset: chromeLayout.keyboardVerticalOffset }}
       isScrollToBottomEnabled
       // The library's default is a bare "V" text glyph on a white circle — restyle it into
       // the app's circular icon-button idiom.
@@ -2279,7 +2445,7 @@ function DiscussionThread({
       // The button is positioned absolutely against the list's bottom (library default 30px up).
       // The composer now floats there (R12.6), so lift the button above the measured composer so
       // it isn't hidden behind the pill.
-      scrollToBottomStyle={{ bottom: composerHeight + space.sm }}
+      scrollToBottomStyle={{ bottom: chromeLayout.scrollButtonBottom }}
       isDayAnimationEnabled={false}
       renderDay={() => null}
       renderTime={() => null}
@@ -2295,7 +2461,7 @@ function DiscussionThread({
         // The composer floats over the list, so pad the inverted list's visual bottom by the
         // composer's measured height — the newest message scrolls up clear of the pill instead
         // of sitting permanently under it (R12.6). Inverted list ⇒ paddingTop is visual-bottom.
-        contentContainerStyle: { paddingTop: composerHeight },
+        contentContainerStyle: chromeLayout.listContentPadding,
         // The inverted list has no explicit auto-scroll effect (see the library's own
         // MessagesContainer source) — it relies on staying at scroll offset 0 while the
         // streaming message (index 0) grows. Without this, RN's default FlatList still
@@ -2405,6 +2571,8 @@ export function ComposeFirst({
   titleConfirmed = false,
   modelLabel = 'Project default',
   onPickModel = () => undefined,
+  bootstrapStartedAt,
+  bootstrapHadSetupSurface = false,
 }: {
   pid: string;
   slug: string;
@@ -2420,15 +2588,39 @@ export function ComposeFirst({
   titleConfirmed?: boolean;
   modelLabel?: string;
   onPickModel?: () => void;
+  /** Start of the route's session bootstrap; the opening query shares its 500 ms deadline. */
+  bootstrapStartedAt?: number;
+  /** Whether stage one could already have painted this same setup-shaped placeholder. */
+  bootstrapHadSetupSurface?: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const qc = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const opening = useOpeningDraft(pid, slug);
+  // Only the first opening load shares the route deadline. Once real opening data has rendered,
+  // a later data-less refetch gets a fresh delay instead of inheriting a permanently-open latch.
+  const [initialOpeningLoad, setInitialOpeningLoad] = useState(opening.data === undefined);
+  useEffect(() => {
+    if (opening.data !== undefined) setInitialOpeningLoad(false);
+  }, [opening.data]);
+  const openingBootstrapStartedAt = useMemo(
+    () => bootstrapStartedAt ?? Date.now(),
+    [bootstrapStartedAt],
+  );
+  const initialOpeningDelayMs = useMemo(() => {
+    const remaining = Math.max(
+      0,
+      DISCUSSION_SKELETON_DELAY_MS - (Date.now() - openingBootstrapStartedAt),
+    );
+    return bootstrapHadSetupSurface
+      ? remaining
+      : Math.max(remaining, INITIAL_SKELETON_DELAY_MS);
+  }, [bootstrapHadSetupSurface, openingBootstrapStartedAt]);
   const showOpeningSkeleton = useDelayedInitialSkeleton(
     opening.isLoading,
     opening.data !== undefined,
+    initialOpeningLoad ? initialOpeningDelayMs : DISCUSSION_SKELETON_DELAY_MS,
   );
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
@@ -2754,9 +2946,7 @@ export function ComposeFirst({
   }
 
   if (opening.isLoading) {
-    return showOpeningSkeleton
-      ? <PaperSessionLoadingSkeleton label="Loading paper setup" />
-      : null;
+    return showOpeningSkeleton ? <PaperSetupLoadingSkeleton /> : null;
   }
 
   if (stream.streaming) {
@@ -3439,6 +3629,14 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   // ---- thread ----
   messagesContainer: { backgroundColor: t.bg },
+  discussionHeaderOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 30,
+  },
+  discussionTopFade: { zIndex: 20 },
   assistantCard: { backgroundColor: t.surface },
   branchRow: {
     flexDirection: 'row',
@@ -3449,31 +3647,21 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   finishSteps: { marginBottom: space.md, marginTop: space.xs },
   assistantBody: {
-    paddingHorizontal: tight ? space.sm : space.md,
-    paddingVertical: tight ? 6 : space.sm,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingTop: tight ? space.sm : 10,
+    paddingBottom: tight ? space.md : space.lg,
   },
-  // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
-  // those read as "floating chat bubble" cues that don't make sense once the tinted card
-  // reaches both screen edges. A top/bottom border is enough to separate turns.
+  // Assistant turns are long-form reading content on the transcript's base layer. They do not
+  // get a card, border, or bubble silhouette; whitespace and the quiet action row separate them.
   analystBubble: {
-    backgroundColor: t.surface,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: t.line,
-    // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
-    // full-width band shows rounded notches against both screen edges.
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     ...SQUARE_CORNERS,
   },
-  // The paper summary is the one turn that is not a reply, so it reads as the document the
-  // discussion is about: a raised fill against the ordinary `surface` bands, and a mint rule
-  // along the top. Only the TOP border is accented — a left/right accent would show as a
-  // rounded notch against the screen edges, which is the same reason `analystBubble` is square.
+  // The opening summary stays identifiable through its semantic label, not a competing panel.
   summaryBubble: {
-    backgroundColor: t.elevated,
-    borderTopWidth: 2,
-    borderTopColor: t.mint,
-    borderBottomWidth: 1,
-    borderBottomColor: t.line,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     ...SQUARE_CORNERS,
   },
   summaryHeader: {
@@ -3545,13 +3733,13 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     right: 0,
     bottom: 0,
     backgroundColor: 'transparent',
+    zIndex: 10,
   },
+  composerForeground: { zIndex: 1 },
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: 'transparent',
-    paddingHorizontal: tight ? space.sm : space.md,
     paddingTop: space.xs,
-    paddingBottom: space.sm,
   },
   composerCard: {
     flexDirection: 'row',
@@ -3587,11 +3775,13 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     paddingVertical: 6,
   },
   committedBar: {
-    borderTopWidth: 1,
-    borderTopColor: t.line,
+    marginHorizontal: tight ? space.sm : space.md,
     padding: tight ? space.sm : space.md,
-    paddingBottom: space.lg,
-    backgroundColor: t.bg,
+    borderWidth: 1,
+    borderColor: t.line2,
+    borderRadius: radius.lg,
+    backgroundColor: t.elevated,
+    ...floatShadow,
   },
   accessoryRow: {
     flexDirection: 'row',
