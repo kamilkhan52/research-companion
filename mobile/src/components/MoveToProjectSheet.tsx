@@ -1,10 +1,11 @@
 // Relocate-to-existing-project confirm sheet. The Library makes Move vs Copy explicit before
 // choosing a destination; this sheet handles notes choices and final confirmation.
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
 import type { RelocationResult } from '@/api/endpoints';
+import { MoveWaitAborted, moveWhenIdle, waitMessage } from '@/api/moveQueue';
 import { useMoveProject } from '@/api/queries';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Button, Text } from '@/ui';
@@ -39,20 +40,37 @@ export function MoveToProjectSheet({
   const [draftNotes, setDraftNotes] = useState(true);
   const [cleanupSource, setCleanupSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // DR-102: set while a busy-project 409 keeps the request queued; the sheet stays open.
+  const [waiting, setWaiting] = useState<string | null>(null);
+  const waitAbort = useRef<AbortController | null>(null);
 
   const count = slugs.length;
   const remove = operation === 'move';
+  const busy = move.isPending || !!waiting;
+
+  function close() {
+    waitAbort.current?.abort();
+    setWaiting(null);
+    onClose();
+  }
 
   async function handleMove() {
-    if (!pid || !destPid || count === 0 || move.isPending) return;
+    if (!pid || !destPid || count === 0 || busy) return;
     setError(null);
+    setWaiting(null);
+    const controller = new AbortController();
+    waitAbort.current = controller;
+    const body = {
+      dest_pid: destPid,
+      slugs,
+      remove_from_source: remove,
+      draft_destination_notes: notesEligible && draftNotes,
+      cleanup_source_notes: notesEligible && remove && cleanupSource,
+    };
     try {
-      const res = await move.mutateAsync({
-        dest_pid: destPid,
-        slugs,
-        remove_from_source: remove,
-        draft_destination_notes: notesEligible && draftNotes,
-        cleanup_source_notes: notesEligible && remove && cleanupSource,
+      const res = await moveWhenIdle(() => move.mutateAsync(body), {
+        signal: controller.signal,
+        onWaiting: (wait) => setWaiting(waitMessage(wait, operation)),
       });
       const movedMessage = remove
           ? `Moved ${res.moved} paper${res.moved === 1 ? '' : 's'} to “${res.name}”`
@@ -70,12 +88,17 @@ export function MoveToProjectSheet({
       setCleanupSource(false);
       onDone(res);
     } catch (e) {
-      setError((e as Error).message ?? `Could not ${operation} the papers.`);
+      if (!(e instanceof MoveWaitAborted)) {
+        setError((e as Error).message ?? `Could not ${operation} the papers.`);
+      }
+    } finally {
+      if (waitAbort.current === controller) waitAbort.current = null;
+      setWaiting(null);
     }
   }
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} maxHeightPct={85} scrollable>
+    <BottomSheet visible={visible} onClose={close} maxHeightPct={85} scrollable>
       <Text variant="title">
         {operation === 'move' ? 'Move' : 'Copy'} to “{destName}”
       </Text>
@@ -120,18 +143,22 @@ export function MoveToProjectSheet({
         </>
       ) : null}
 
-      {error ? (
+      {waiting ? (
+        <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
+          {waiting}
+        </Text>
+      ) : error ? (
         <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
           {error}
         </Text>
       ) : null}
 
       <View style={styles.actions}>
-        <Button title="Cancel" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+        <Button title="Cancel" variant="ghost" onPress={close} style={{ flex: 1 }} />
         <Button
           title={remove ? 'Move papers' : 'Copy papers'}
           onPress={handleMove}
-          loading={move.isPending}
+          loading={busy}
           disabled={count === 0 || !destPid}
           style={{ flex: 1 }}
         />

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Switch, View } from 'react-native';
 
 import * as api from '@/api/endpoints';
+import { MoveWaitAborted, moveWhenIdle, waitMessage } from '@/api/moveQueue';
 import { getActiveQueryClient } from '@/api/queryClient';
 import type { Paper, PaperLocation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
@@ -77,6 +78,9 @@ export function ExistingPaperOfferHost() {
   const [cleanupSource, setCleanupSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  // DR-102: set while a busy-project 409 keeps the request queued; the sheet stays open.
+  const [waiting, setWaiting] = useState<string | null>(null);
+  const waitAbort = useRef<AbortController | null>(null);
   const offerRef = useRef<PendingReuse | null>(null);
   offerRef.current = offer;
 
@@ -91,9 +95,12 @@ export function ExistingPaperOfferHost() {
       setCleanupSource(false);
       setError(null);
       setMoving(false);
+      waitAbort.current?.abort();
+      setWaiting(null);
     };
     return () => {
       dispatch = null;
+      waitAbort.current?.abort();
       offerRef.current?.resolve({ action: 'cancelled', paper: null });
     };
   }, []);
@@ -101,30 +108,42 @@ export function ExistingPaperOfferHost() {
   function finish(outcome: AddPaperOutcome) {
     const pending = offerRef.current;
     if (!pending) return;
+    waitAbort.current?.abort();
     setOffer(null);
     setSelected(null);
     setError(null);
     setMoving(false);
+    setWaiting(null);
     pending.resolve(outcome);
   }
 
   async function reuse() {
     if (!offer || !selected || moving) return;
     setError(null);
+    setWaiting(null);
     setMoving(true);
+    const controller = new AbortController();
+    waitAbort.current = controller;
+    const body = {
+      dest_pid: offer.targetPid,
+      slugs: [selected.slug],
+      remove_from_source: removeFromSource,
+      draft_destination_notes:
+        offer.canUpdateNotes && selected.has_notes && draftNotes,
+      cleanup_source_notes:
+        offer.canUpdateNotes
+        && selected.has_notes
+        && removeFromSource
+        && cleanupSource,
+    };
     try {
-      const result = await api.moveProject(selected.project_id, {
-        dest_pid: offer.targetPid,
-        slugs: [selected.slug],
-        remove_from_source: removeFromSource,
-        draft_destination_notes:
-          offer.canUpdateNotes && selected.has_notes && draftNotes,
-        cleanup_source_notes:
-          offer.canUpdateNotes
-          && selected.has_notes
-          && removeFromSource
-          && cleanupSource,
-      });
+      const result = await moveWhenIdle(
+        () => api.moveProject(selected.project_id, body),
+        {
+          signal: controller.signal,
+          onWaiting: (wait) => setWaiting(waitMessage(wait, removeFromSource ? 'move' : 'copy')),
+        },
+      );
       // Keep cross-project surfaces live even though the add mutation itself did not call the
       // ordinary add endpoint. Shapes mirror api/queries.ts without importing it (which would
       // cycle useAddPaper -> this host -> useMoveProject).
@@ -159,8 +178,13 @@ export function ExistingPaperOfferHost() {
       // are reviewed and committed at the migration point, not discovered later.
       if (result.notes_jobs?.destination) router.push('/notes/working');
     } catch (e) {
-      setError((e as Error).message ?? 'Could not reuse the saved paper.');
+      // The sheet was closed mid-wait: finish() already resolved the add as cancelled.
+      if (!(e instanceof MoveWaitAborted)) {
+        setError((e as Error).message ?? 'Could not reuse the saved paper.');
+      }
     } finally {
+      if (waitAbort.current === controller) waitAbort.current = null;
+      setWaiting(null);
       setMoving(false);
     }
   }
@@ -305,7 +329,11 @@ export function ExistingPaperOfferHost() {
             </Text>
           ) : null}
 
-          {error ? (
+          {waiting ? (
+            <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
+              {waiting}
+            </Text>
+          ) : error ? (
             <Text variant="caption" color={t.danger} style={{ marginTop: space.md }}>
               {error}
             </Text>
