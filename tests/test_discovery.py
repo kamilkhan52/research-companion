@@ -1299,3 +1299,40 @@ def test_a_stopped_run_never_commits_the_sweep(temp_project):
 
     discovery._commit_forward_delta({})       # the cancelled path hands up nothing
     assert graph_store.load()["forward"] == {}
+
+
+def test_generate_queries_grounds_the_plan_in_library_titles():
+    # DR-096 (Kamil, 2026-08-22): a typed query used to reach the planner alone, so a meta
+    # request produced queries unrelated to the corpus. The library titles must ride along.
+    seen = {}
+
+    def capture_llm(model, system, user, max_tokens):
+        seen["user"] = user
+        return (
+            '{"focus": "f", "queries": [{"query": "all:x", "search_terms": "x",'
+            ' "phase": "broad"}]}'
+        )
+
+    class P:
+        def __init__(self, title):
+            self.title = title
+
+    papers = [P("Attention Is All You Need"), P("Fast Transformer Decoding")]
+    discovery.generate_queries("find new related works", "m", capture_llm, papers=papers)
+    assert "Attention Is All You Need" in seen["user"]
+    assert "Fast Transformer Decoding" in seen["user"]
+    assert "find new related works" in seen["user"]
+
+
+def test_generate_queries_without_a_library_sends_the_goals_verbatim():
+    seen = {}
+
+    def capture_llm(model, system, user, max_tokens):
+        seen["user"] = user
+        return (
+            '{"focus": "f", "queries": [{"query": "all:x", "search_terms": "x",'
+            ' "phase": "broad"}]}'
+        )
+
+    discovery.generate_queries("understand 3D DRAM", "m", capture_llm, papers=[])
+    assert seen["user"] == "understand 3D DRAM"
