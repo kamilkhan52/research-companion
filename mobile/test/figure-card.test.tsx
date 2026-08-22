@@ -66,3 +66,32 @@ describe('figure cards in the discussion', () => {
     expect(screen.getByText(/Figure 1 shows/)).toBeTruthy();
   });
 });
+
+// DR-099 — the chat text renders without waiting for figures (the manifest is a separate
+// query), and each card's reserved image box pulses as a skeleton until the bytes arrive.
+describe('figure image skeleton (DR-099)', () => {
+  const md = 'As Figure 1 shows, the stages compose.';
+
+  test('the skeleton fills the reserved box until the image loads', async () => {
+    const { fireEvent } = require('@testing-library/react-native');
+    await renderAsync(
+      <Markdown text={md} figureContext={context([figure(1, 'Figure 1: the pipeline.')])} />,
+    );
+    expect(screen.getByTestId('figure-skeleton')).toBeTruthy();
+    fireEvent(screen.getByTestId('figure-image'), 'load', { nativeEvent: { source: { width: 476, height: 244 } } });
+    expect(screen.queryByTestId('figure-skeleton')).toBeNull();
+  });
+
+  test('a failed image drops the whole box — no orphaned skeleton pulsing forever', async () => {
+    const { fireEvent } = require('@testing-library/react-native');
+    await renderAsync(
+      <Markdown text={md} figureContext={context([figure(1, 'Figure 1: the pipeline.')])} />,
+    );
+    fireEvent(screen.getByTestId('figure-image'), 'error', { nativeEvent: { error: 'boom' } });
+    expect(screen.queryByTestId('figure-skeleton')).toBeNull();
+    expect(screen.queryByTestId('figure-image')).toBeNull();
+    // The graceful degrade keeps caption + source link.
+    expect(screen.getByText('Figure 1: the pipeline.')).toBeTruthy();
+    expect(screen.getByText('from arXiv HTML')).toBeTruthy();
+  });
+});

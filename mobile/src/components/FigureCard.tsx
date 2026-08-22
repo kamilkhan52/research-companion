@@ -11,6 +11,7 @@ import { Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { figureAssetSource } from '@/api/endpoints';
 import type { PaperFigure } from '@/api/types';
+import { SkeletonGroup } from '@/components/Skeleton';
 import { Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
@@ -30,6 +31,10 @@ export function FigureCard({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [failed, setFailed] = useState(false);
+  // DR-099 — the image area pulses as a skeleton until the bytes arrive. The box itself is
+  // reserved up front (aspectRatio below), so the chat text never reflows; this only replaces
+  // the silent blank rectangle readers saw while a figure downloaded over the tunnel.
+  const [loaded, setLoaded] = useState(false);
   const source = figureAssetSource(pid, slug, figure.asset, version);
   // Known dimensions keep the layout stable (no reflow when the image loads); otherwise a
   // sensible max height with contain fit.
@@ -44,12 +49,25 @@ export function FigureCard({
     <View style={styles.card}>
       {!failed ? (
         <Pressable onPress={openSource} accessibilityRole="imagebutton" accessibilityLabel={figure.alt || heading}>
-          <Image
-            source={source}
-            style={[styles.image, aspectRatio ? { aspectRatio } : { height: 220 }]}
-            contentFit="contain"
-            onError={() => setFailed(true)}
-          />
+          <View style={aspectRatio ? { aspectRatio, width: '100%' } : { height: 220 }}>
+            <Image
+              testID="figure-image"
+              source={source}
+              style={[styles.image, StyleSheet.absoluteFill]}
+              contentFit="contain"
+              onLoad={() => setLoaded(true)}
+              onError={() => setFailed(true)}
+            />
+            {!loaded ? (
+              <SkeletonGroup
+                label={`${heading} loading`}
+                testID="figure-skeleton"
+                style={StyleSheet.absoluteFill}
+              >
+                <View style={[styles.skeletonFill, { backgroundColor: t.skeleton }]} />
+              </SkeletonGroup>
+            ) : null}
+          </View>
         </Pressable>
       ) : null}
       {figure.caption ? (
@@ -90,6 +108,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: t.surface,
   },
+  skeletonFill: { flex: 1, borderRadius: radius.sm },
   caption: { lineHeight: 18 },
   source: { fontSize: 11 },
 });
