@@ -70,7 +70,9 @@ way they did. This is an index, not a substitute for reading them.
   `use_project` dependency (a module may expose both). Modules: `system`, `settings`, `catalogue`,
   `projects_api`, `usage`, `audio`, `session` (retrieval + every turn-delivery path), `notes`
   (notes + review/approve + add-paper), `discovery`, `graph`, `account`, `legal`, `covers`,
-  `figures_api`. A new route goes in its feature module, or a new module registered in `main.py` —
+  `figures_api`, `devtest` (dev-only: the DevTest bubble's ledger/inbox/dispatch surface —
+  RC_DEV-gated, and its Claude dispatch refuses Cloudflare-edge requests). A new route goes in
+  its feature module, or a new module registered in `main.py` —
   never in `main.py` itself.
 - `config.py` — settings (app-global), the active-project contextvar, vault/path precedence.
 - `auth.py` — Supabase / static-token / open auth, and `assert_environment_safe`.

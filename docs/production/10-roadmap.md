@@ -28,7 +28,29 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-21)
+## Current position (updated 2026-08-22)
+
+**Delta at 2026-08-22** (a device-feedback day — ten PRs #441–#450, all merged; the milestone
+picture is unchanged, M4 still blocked only on H8's merchant account):
+- **The DevTest bubble's Claude dispatch works end-to-end.** The first real dispatch was
+  sandbox-mute and opened #441 itself (inbox `--add-dir` + the skill's tool allowlist); its
+  second run shipped #446 autonomously (DR-097 + DR-091 round 2). Replies now reconcile:
+  phone-raised `NEW-…` items fold into their DR rows (DR-097 — before this, every
+  `append_response` to a DR id was invisible on a phone-raised item).
+- **Kamil's biggest device pass: 15 rows closed** (#442). New rows DR-096–DR-101 all shipped
+  same-day: grounded Discover query plans (#444), on-demand figure manifests at chat-turn
+  start (#446), multi-line wrapping for over-wide display math (#447, DR-098), figure-image
+  skeletons (#448, DR-099), transcript first-paint — profile-driven list tuning + skeleton
+  held to the list's first viewable item (#449, DR-100; research + deferred levers in
+  `docs/transcript-first-paint.md`), and the skeleton pulse itself (#450, DR-101 — RN
+  Animated's loop is JS-orchestrated and froze under load; skeletons now pulse via Reanimated
+  on the UI thread, and the discussion skeleton is long-form prose, not chat bubbles).
+- **DR-089 (scroll during streaming) FIXED** (#443): the streamed reveal pauses while the
+  reader is scrolled up — content pinning, after two instrumented viewport-correction designs
+  lost to the inverted list. DR-043's silent menu taps fixed in the same PR.
+- **Still never measured**: a real production Discover run against the DR-052 + DR-096 lanes.
+- **69 ledger rows at `implemented — verify`** (21 closed, 1 open, 5 partial) — device
+  acceptance remains the bottleneck.
 
 **Delta at 2026-08-21** (a heavy device-feedback + feature session; nothing below changed the
 M-milestone picture — M4 is still blocked only on H8's merchant account):
