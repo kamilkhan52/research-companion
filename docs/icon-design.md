@@ -29,8 +29,9 @@ The result should feel quiet, exact, and useful: a research instrument rather th
 - Palette: deep ink `#0B0D12` and warm paper `#F3F0E8` only.
 - Geometry: two bold filled planes, no strokes, gradients, shadows, gloss, or embedded corner mask.
 - Optical scale: the mark spans about 65% of the generic canvas width; the adaptive foreground
-  uses about 68% of Android's guaranteed-safe diameter. This avoids a timid double-inset after
-  launchers apply their own masks while retaining safe-zone clearance.
+  uses about 72.5% of Android's guaranteed-safe diameter. This avoids a timid double-inset after
+  launchers apply their own masks while retaining roughly 8% radial safe-zone clearance at the
+  farthest corner.
 - Aperture: a true cut-out in mark-only assets so Android theming and splash contexts remain valid.
 - Compact proof: the aperture must remain open at 32 px.
 - Android: meaningful foreground geometry stays inside the 66/108 adaptive-icon safe zone; the
@@ -61,7 +62,9 @@ alone cannot change the icon installed on the phone.
 
 ## Figma deliverable
 
-The editable Figma board uses the same canonical paths and contains:
+The editable Figma board contains the approved component and platform proofs listed below. Its
+geometry still needs the same 1.20× scale sync after the Desktop Bridge reconnects; until then,
+the canonical SVG and generated PNGs are the production source of truth.
 
 - vector master;
 - primary launcher proof;
