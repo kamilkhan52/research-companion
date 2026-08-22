@@ -4,7 +4,7 @@
 // (polish plan F.5) — per-message long-press and retry menus included; never use the native
 // action sheet.
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { DevTestModalTrigger } from '@/components/DevTestModalTrigger';
@@ -21,6 +21,10 @@ export interface SheetOption {
   accent?: string;
   selected?: boolean;
   disabled?: boolean;
+  /** DR-043 — why the row is disabled, shown IN the row when a disabled row is tapped. A
+   *  silently swallowed tap reads as a dead button, and a toast can't be used here: it would
+   *  paint in the base layer, under this native Modal's own window (the DR-078 lesson). */
+  disabledHint?: string;
   /** Draw a divider above this row (section break). */
   section?: boolean;
   /** Keep the menu open after this row, for a nested choice revealed in-place. */
@@ -52,6 +56,12 @@ export function OptionsSheet({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  // DR-043 — which row's disabled-reason is showing. Reset on every open so a stale hint
+  // from the last visit doesn't greet the next one.
+  const [hintKey, setHintKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (visible) setHintKey(null);
+  }, [visible]);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
@@ -79,10 +89,14 @@ export function OptionsSheet({
                 ) : (
                   <Pressable
                     onPress={() => {
+                      if (opt.disabled) {
+                        if (opt.disabledHint) setHintKey(opt.key);
+                        return;
+                      }
                       if (opt.closeOnPress !== false) onClose();
                       opt.onPress();
                     }}
-                    disabled={opt.disabled}
+                    disabled={opt.disabled && !opt.disabledHint}
                     accessibilityRole="menuitem"
                     accessibilityState={{
                       selected: !!opt.selected,
@@ -109,6 +123,11 @@ export function OptionsSheet({
                       {opt.subtitle ? (
                         <Text variant="caption" numberOfLines={1}>
                           {opt.subtitle}
+                        </Text>
+                      ) : null}
+                      {opt.disabled && opt.disabledHint && hintKey === opt.key ? (
+                        <Text variant="caption" color={t.amber} numberOfLines={2}>
+                          {opt.disabledHint}
                         </Text>
                       ) : null}
                     </View>
