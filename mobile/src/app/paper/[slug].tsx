@@ -124,6 +124,7 @@ import {
   useReaderAwayFromLive,
   useRevealPaused,
 } from '@/hooks/useStreamPinnedScroll';
+import { useTranscriptFirstPaint } from '@/hooks/useTranscriptFirstPaint';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
@@ -1654,6 +1655,9 @@ function DiscussionThread({
   // DR-089 — is the reader away from the live edge? While they are, the streamed reveal
   // pauses (RevealPausedContext → SmoothMarkdown), so the transcript cannot drag under them.
   const readerPin = useReaderAwayFromLive();
+  // DR-100 — the discussion skeleton stays overlaid until the list reports its first
+  // viewable message; session data arriving is NOT the same as the transcript being visible.
+  const firstPaint = useTranscriptFirstPaint(transcript.length > 0);
 
   // Reconcile authored text against what the server accepted: once the submitted edit shows
   // up in the transcript, drop the local draft.
@@ -2477,6 +2481,22 @@ function DiscussionThread({
         // correction lost to this list). The library forwards onScroll on the JS thread
         // in reanimated's event shape.
         onScroll: readerPin.onScroll,
+        // DR-100 — first-paint signal for the skeleton overlay: the first non-empty
+        // viewable set means a real message is on screen.
+        viewabilityConfig: firstPaint.viewabilityConfig,
+        onViewableItemsChanged: firstPaint.onViewableItemsChanged,
+        // DR-100 — keep the first commit small: chat items here are HEAVY (a single
+        // analysis message can be hundreds of Markdown blocks and dozens of SVG
+        // equations), and the RN defaults (initialNumToRender 10, windowSize 21) mounted
+        // a dozen of them before the first frame — measured ~4.7s of blank on a long
+        // thread, ~2.5s with these. The reader lands at the newest message, so rendering
+        // it (+ a couple above) first is exactly the right order. removeClippedSubviews
+        // stays OFF: RN documents it as bug-prone, and the inverted list's scaleY
+        // transform is the documented failure class.
+        initialNumToRender: 3,
+        maxToRenderPerBatch: 3,
+        windowSize: 7,
+        updateCellsBatchingPeriod: 50,
         // The composer floats over the list, so pad the inverted list's visual bottom by the
         // composer's measured height — the newest message scrolls up clear of the pill instead
         // of sitting permanently under it (R12.6). Inverted list ⇒ paddingTop is visual-bottom.
@@ -2500,6 +2520,20 @@ function DiscussionThread({
       {...ROW_STYLES_PROP}
     />
     </RevealPausedContext.Provider>
+    {/* DR-100 — the same skeleton the loading gate shows, held OVER the mounting list until
+        its first message is actually viewable. Without this the skeleton vanished when the
+        session DATA arrived (~10ms) and the reader stared at a blank surface for the seconds
+        the heavy first commit takes. pointerEvents box-none — it is purely visual. */}
+    {!firstPaint.painted ? (
+      <View
+        style={StyleSheet.absoluteFill}
+        pointerEvents="box-none"
+        testID="transcript-first-paint-overlay">
+        <DiscussionLoadingSkeleton
+          state={state === 'notes_drafted' || state === 'committed' ? state : 'in_discussion'}
+        />
+      </View>
+    ) : null}
     <OptionsSheet
       visible={!!msgMenu}
       onClose={() => setMsgMenu(null)}
