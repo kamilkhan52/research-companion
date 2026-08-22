@@ -244,6 +244,11 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                     "phase": "analysis",
                     "remaining_known": False,
                 }
+        # DR-091: the prompt (assembler's figure-caption block, the explicit-display layer) reads
+        # the figure manifest, so make sure one exists for this paper before the runner builds
+        # it. Papers retrieved before the figure warm existed never had one, and nothing else
+        # re-derived on demand. Bounded wait; a slow arXiv just means the next turn has them.
+        figures.ensure_manifest(job.slug)
         history = sessions.build_history(job.slug)
         events = runner(job.slug, history)
         # One clock for the WHOLE turn, started here rather than per leg: the agentic run and the

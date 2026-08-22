@@ -254,6 +254,49 @@ def test_new_item_ids_never_touch_the_ledger(client):
     assert devtest._LEDGER.read_text(encoding="utf-8") == before
 
 
+# --- provisional-id reconciliation (DR-097) -------------------------------------------------
+
+LEDGER_WITH_ALIAS = LEDGER_SAMPLE + (
+    "| DR-091 | 2026-08-21 | Kamil: \"Only one figure?\" | `implemented — verify` | "
+    "Kamil, via the bubble (provisional id `NEW-1787325358`), screenshot attached. |\n"
+)
+
+
+def test_triaged_new_item_folds_into_its_ledger_row(client, monkeypatch, tmp_path):
+    """The first real round: a NEW item stayed listed as untriaged and its fail verdict and
+    three agent replies lived under different ids, so the phone never showed a reply."""
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_WITH_ALIAS, encoding="utf-8")
+    monkeypatch.setattr(devtest, "_LEDGER", ledger)
+    devtest._append_feedback({"kind": "new_item", "id": "NEW-1787325358",
+                              "title": "Only one figure?", "description": ""})
+    client.post("/api/devtest/feedback", json={"item_id": "NEW-1787325358", "verdict": "fail",
+                                               "comment": "still no images"})
+    devtest.append_response("DR-091", "fixed, please re-test")
+
+    items = client.get("/api/devtest/items").json()["items"]
+    ids = [i["id"] for i in items]
+    assert "NEW-1787325358" not in ids
+    row = next(i for i in items if i["id"] == "DR-091")
+    assert row["aliases"] == ["NEW-1787325358"]
+    assert row["feedback_count"] == 1 and row["response_count"] == 1
+
+    # One history under either id: the phone may still ask by the id it created.
+    for asked in ("DR-091", "NEW-1787325358"):
+        kinds = [e["kind"] for e in client.get("/api/devtest/feedback",
+                                                params={"item_id": asked}).json()["entries"]]
+        assert kinds == ["feedback", "response"], asked
+
+
+def test_untriaged_new_item_still_lists(client, monkeypatch, tmp_path):
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_WITH_ALIAS, encoding="utf-8")
+    monkeypatch.setattr(devtest, "_LEDGER", ledger)
+    devtest._append_feedback({"kind": "new_item", "id": "NEW-1", "title": "t", "description": ""})
+    items = client.get("/api/devtest/items").json()["items"]
+    assert next(i for i in items if i["id"] == "NEW-1")["state"] == "new — untriaged"
+
+
 # --- dispatch to Claude (DR-092) -------------------------------------------------------------
 
 def test_dispatch_spawns_a_detached_session_and_records_it(client, tmp_path, monkeypatch):
