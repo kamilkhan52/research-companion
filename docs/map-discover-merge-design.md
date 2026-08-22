@@ -3,7 +3,12 @@
 *Drafted 2026-08-10. Kamil: "We should be merging Map and Discover… That's a quality of life
 upgrade we must push before we are production ready. Think about why; the two have common steps
 and differ in context a little. This can be a single function that can fulfil all requirements
-based on options or context." Status: design — nothing here is built.*
+based on options or context." Status: **BUILT — all four delivery PRs merged by 2026-08-21**
+(#407 substrate, #409 delta lane, #431/#432 significance + lane-3 primitives, #436 client
+convergence). The open questions below were resolved in
+[`corpus-neighbourhood-spec.md`](corpus-neighbourhood-spec.md) §1; this file remains the
+architectural record. One correction learned at PR 4: the freshness line is DISCOVERY's (the
+forward sweep), shown read-only on the Map — the Map build never writes forward records.*
 
 ## Why they merge: the shared spine
 

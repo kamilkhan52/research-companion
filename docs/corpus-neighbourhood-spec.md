@@ -146,14 +146,25 @@ with "resembles you" and inherits index lag. We hold the reference graph, so:
 - **A pick-one-algorithm UI** — the evidence says combine.
 - **Merging the rankers or the tabs** — unchanged from the merge design.
 
-## 7. Delivery
+## 7. Delivery — **ALL MERGED as of 2026-08-21**
 
-| PR | Ships | Visible change |
-|---|---|---|
-| **1 · Substrate** | Store revisioning + merge-on-save (closes a live write race); neighbourhood module; per-anchor citer sets begin persisting | None — behavior-identical |
-| **2 · Discover reads it** | Neighbourhood job; OpenAlex lanes + recommendations consume the substrate; forward recall becomes the stored-set delta; contexts per new edge; composition auto-fix | Second button near-instant; no re-paying for identity |
-| **3 · Significance** | Lane-1 pre-filter + context classification; corpus-connectivity and Momentum in the blend; S2 recommendations-with-negatives and snippet search in lane 3 | Evidence line on suggestions; ranking improves on recent papers |
-| **4 · Client convergence** | Shared freshness line, one-tap time-refresh, cross-links | The merge becomes visible; DR-051 rides the substrate afterwards |
+| PR | Ships | Visible change | Status |
+|---|---|---|---|
+| **1 · Substrate** | Store revisioning + merge-on-save (closes a live write race); neighbourhood module; per-anchor citer sets begin persisting | None — behavior-identical | ✅ #407 |
+| **2 · Discover reads it** | Neighbourhood job; OpenAlex lanes + recommendations consume the substrate; forward recall becomes the stored-set delta; contexts per new edge; composition auto-fix | Second button near-instant; no re-paying for identity | ✅ #409 |
+| **3 · Significance** | Lane-1 pre-filter + context classification (`app/significance.py`); corpus-connectivity and Momentum in the blend; S2 recommendations-with-negatives and snippet search in lane 3 | Evidence line on suggestions; ranking improves on recent papers | ✅ #431 (significance + blend) / #432 (lane-3 primitives) |
+| **4 · Client convergence** | Shared freshness line; refresh via each tab's own action; cross-links deferred | The merge becomes visible; DR-051 rides the substrate afterwards | ✅ #436 |
+
+**Post-delivery notes (2026-08-21):**
+- The freshness line reflects the **forward-citation** neighbourhood, which only Discovery
+  maintains (the Map build writes no forward records). So it's Discover's to refresh; the Map
+  shows it read-only, and only once a scan exists.
+- "One-tap time-refresh" is currently a full Discover re-run (which re-sweeps). A dedicated
+  lightweight forward-sweep-only job was deferred — a clean follow-up primitive.
+- **Never measured in production**: no real Discover run has been observed against the
+  significance/lane-3 lanes (DR-029 shape). Worth one measured run before further tuning.
+- The per-paper reference graph (DR-093, #437) is a related but separate feature — a readable
+  ego VIEW over the same built graph, not part of this pipeline.
 
 **Cost shape:** the delta sweep is one to two provider calls per corpus paper (fractions of a cent
 per project per week); contexts ride the same calls; LLM triage runs only on gate survivors and
