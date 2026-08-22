@@ -563,9 +563,11 @@ export default function DiscussionScreen() {
   // put it. The agent can start the same job itself via its propose_notes_update tool.
   async function updateNotesFromDiscussion() {
     if (!pid || !slug) return;
+    // DR-043 (Kamil, 2026-08-22): feedback BEFORE the network — an awaited POST with the
+    // toast on the far side means a slow or dead request looks like a dead button.
+    showToast('Drafting a Paper Notes update from the discussion…');
     try {
       await api.startNotesDiscussionUpdate(pid, slug, activeThread);
-      showToast('Drafting a Paper Notes update from the discussion…');
       router.push(`/notes/${encodeURIComponent(slug)}`);
     } catch (e) {
       if (presentSpendRefusal(e, { operation: 'other', retry: updateNotesFromDiscussion })) return;
@@ -888,9 +890,8 @@ const STATE_LABEL: Record<string, string> = {
 
 // ---------- top bar: overflow menu + model picker ----------
 
-// DR-068 — the "current size" label reads the EXACT resolved serifBody size (Comfortable 17 /
-// Tight 15.5, mobile/src/ui/index.tsx) rather than a hardcoded number, so it can never drift
-// from what Markdown.tsx's own scaling actually multiplies.
+// DR-068 — the readout is the percentage alone (Kamil, 2026-08-22: "Just keep the
+// percentage, not size in the UI"); the resolved pt size stays out of the label.
 function TextSizeStepperRow({
   scale,
   onChange,
@@ -899,8 +900,6 @@ function TextSizeStepperRow({
   onChange: (next: number) => void;
 }) {
   const t = useTheme();
-  const baseText = useThemedStyles(makeTextStyles);
-  const resolvedSize = Math.round(baseText.serifBody.fontSize * scale * 10) / 10;
   const percent = Math.round(scale * 100);
   const atMin = scale <= MIN_TEXT_SCALE;
   const atMax = scale >= MAX_TEXT_SCALE;
@@ -928,7 +927,7 @@ function TextSizeStepperRow({
           <Icon name="minus" size={16} color={t.text} />
         </Pressable>
         <Text variant="caption" color={t.muted} style={stepperStyles.segValue} numberOfLines={1}>
-          {`${percent}% · ${resolvedSize}`}
+          {`${percent}%`}
         </Text>
         <Pressable
           onPress={() => onChange(scale + TEXT_SCALE_STEP)}
@@ -1089,6 +1088,7 @@ export function OverflowMenu({
       icon: 'check-square',
       accent: t.mint,
       disabled: finishReadingDisabled,
+      disabledHint: 'Wait for the current response to finish.',
       onPress: onFinishReading,
     });
   }
@@ -1110,6 +1110,7 @@ export function OverflowMenu({
       icon: 'edit-3',
       accent: t.mint,
       disabled: updateNotesDisabled,
+      disabledHint: 'Wait for the current response to finish.',
       onPress: onUpdateNotes,
     });
   }
@@ -1173,6 +1174,7 @@ export function OverflowMenu({
       icon: 'trash',
       accent: t.danger,
       disabled: clearChatsDisabled,
+      disabledHint: 'Wait for the current response to finish.',
       onPress: onClearChats,
     });
   }

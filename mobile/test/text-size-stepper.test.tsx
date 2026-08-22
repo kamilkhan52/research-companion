@@ -54,9 +54,10 @@ async function openMenu() {
   await fireEventAsync.press(screen.getByLabelText('More actions'));
 }
 
-test('the text-size row shows the default 100% and resolved size', async () => {
+// DR-068 close-out (Kamil, 2026-08-22): "Just keep the percentage, not size in the UI."
+test('the text-size row shows the percentage alone', async () => {
   await openMenu();
-  expect(screen.getByText('100% · 17')).toBeTruthy();
+  expect(screen.getByText('100%')).toBeTruthy();
 });
 
 test('pressing increase steps the scale up, applies instantly, and the sheet stays open', async () => {
@@ -65,7 +66,7 @@ test('pressing increase steps the scale up, applies instantly, and the sheet sta
   // reader focusing it after a step announces the new percentage without swiping back to the
   // value text — assert against that live-updating label, not a bare action name.
   await fireEventAsync.press(screen.getByLabelText('Increase Discussion text size, currently 100 percent'));
-  expect(screen.getByText('110% · 18.7')).toBeTruthy();
+  expect(screen.getByText('110%')).toBeTruthy();
   expect(screen.getByLabelText('Increase Discussion text size, currently 110 percent')).toBeTruthy();
   // Still open: "More actions" trigger is a sibling, not visible while the sheet covers it,
   // but an unrelated row (e.g. Model) is still reachable without reopening.
@@ -80,7 +81,7 @@ test('the decrease button disables at the minimum instead of going negative', as
   const decrease = screen.getByLabelText('Decrease Discussion text size, currently 90 percent');
   expect(decrease.props.accessibilityState.disabled).toBe(true);
   await fireEventAsync.press(decrease);
-  expect(screen.getByText('90% · 15.3')).toBeTruthy();
+  expect(screen.getByText('90%')).toBeTruthy();
 });
 
 test('the increase button disables at the maximum', async () => {
@@ -108,7 +109,7 @@ test('the segmented control reads minus, value, plus — left to right', async (
   // three elements (Pressable wraps its own View internally).
   const json = JSON.stringify(screen.toJSON());
   const decreaseAt = json.indexOf('Decrease Discussion text size, currently 100 percent');
-  const valueAt = json.indexOf('100% · 17');
+  const valueAt = json.indexOf('"100%"');
   const increaseAt = json.indexOf('Increase Discussion text size, currently 100 percent');
   expect(decreaseAt).toBeGreaterThan(-1);
   expect(valueAt).toBeGreaterThan(-1);
