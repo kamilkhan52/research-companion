@@ -159,9 +159,11 @@ export function UsageLoadingSkeleton() {
 
 /**
  * The empty-cache state for an existing discussion. It mirrors the actual immersive viewport:
- * long-form assistant prose is the base layer, a compact reader bubble interrupts it, and the
- * floating composer plus bottom fade remain connected to that same canvas. There is deliberately
- * no fake title inside the transcript — the real floating TopBar already owns paper identity.
+ * the TAIL of one long assistant analysis — continuous prose paragraphs with a heading and a
+ * blockquote, ending in the message's action row (DR-101, Kamil: "We are usually just seeing
+ * the last part of a long message by the AI, not a short back and forth like a chat app").
+ * The floating composer plus bottom fade remain connected to that same canvas. There is
+ * deliberately no fake title inside the transcript — the real floating TopBar owns identity.
  */
 export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?: SessionState }) {
   const insets = useSafeAreaInsets();
@@ -180,34 +182,33 @@ export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?:
         label="Loading discussion"
         style={[paperStyles.discussionTranscript, { paddingTop: insets.top + 84 }]}
         testID="discussion-loading-transcript">
+        {/* One long analysis, mid-flow: paragraph → heading → paragraph → indented quote →
+            closing paragraphs → the message's own action row. Line widths echo justified
+            serif prose (near-full lines, a short last line per paragraph). */}
         {[
-          { kind: 'assistant', widths: [92, 97, 81, 88, 62] },
-          { kind: 'reader', widths: [] },
-          { kind: 'assistant', widths: [96, 89, 93, 74] },
-          { kind: 'reader', widths: [] },
-          { kind: 'assistant', widths: [91, 98, 86, 94, 68] },
-          { kind: 'assistant', widths: [95, 84, 90, 57] },
-        ].map((turn, turnIndex) => turn.kind === 'reader' ? (
+          { kind: 'paragraph', widths: [97, 94, 98, 91, 58] },
+          { kind: 'heading', widths: [44] },
+          { kind: 'paragraph', widths: [96, 98, 92, 71] },
+          { kind: 'quote', widths: [88, 93, 64] },
+          { kind: 'paragraph', widths: [95, 97, 90, 96, 47] },
+          { kind: 'paragraph', widths: [98, 93, 89, 66] },
+        ].map((block, blockIndex) => (
           <View
-            key={`reader-${turnIndex}`}
-            style={paperStyles.readerTurn}
-            testID="discussion-reader-turn-skeleton">
-            <Skeleton width={turnIndex === 1 ? '64%' : '52%'} height={52} radius={radius.lg} />
-          </View>
-        ) : (
-          <View
-            key={`assistant-${turnIndex}`}
-            style={paperStyles.assistantTurn}
-            testID="discussion-assistant-turn-skeleton">
-            {turn.widths.map((width, lineIndex) => (
+            key={`block-${blockIndex}`}
+            style={[
+              paperStyles.assistantTurn,
+              block.kind === 'quote' && paperStyles.quoteBlock,
+            ]}
+            testID={`discussion-${block.kind}-skeleton`}>
+            {block.widths.map((width, lineIndex) => (
               <Skeleton
                 key={`line-${lineIndex}`}
                 width={`${width}%`}
-                height={15}
-                radius={7}
+                height={block.kind === 'heading' ? 22 : 15}
+                radius={block.kind === 'heading' ? 8 : 7}
               />
             ))}
-            {turnIndex === 5 ? (
+            {blockIndex === 5 ? (
               <View style={paperStyles.messageActions}>
                 <Skeleton width={46} height={13} />
                 <Skeleton width={42} height={13} />
@@ -346,7 +347,9 @@ const makePaperLoadingStyles = (t: ThemePalette, density: DensityMode) => {
       overflow: 'hidden',
     },
     assistantTurn: { gap: tight ? 6 : space.sm },
-    readerTurn: { alignItems: 'flex-end', paddingVertical: tight ? space.xs : space.sm },
+    // DR-101 — the blockquote hint: inset with a leading rule, like Markdown.tsx's quotes.
+    quoteBlock: { marginLeft: space.lg, paddingLeft: space.md, borderLeftWidth: 3,
+      borderLeftColor: t.line2 },
     messageActions: { flexDirection: 'row', gap: space.lg, paddingTop: space.sm },
     discussionBottomFade: { zIndex: 10 },
     composerOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 20 },

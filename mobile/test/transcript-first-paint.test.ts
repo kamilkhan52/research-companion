@@ -55,3 +55,32 @@ test('a transcript that later gains content does not resurrect the overlay', () 
   rerender({ has: true });
   expect(result.current.painted).toBe(true);
 });
+
+// DR-101 — the skeleton must be committed and pulsing BEFORE the heavy transcript mount
+// blocks the JS thread; mounting both in one commit left the pulse queued behind seconds of
+// work and the reader saw a frozen skeleton.
+describe('useDeferredFirstMount', () => {
+  test('defers exactly two frames, then mounts', () => {
+    const { useDeferredFirstMount } = require('@/hooks/useTranscriptFirstPaint');
+    const raf: FrameRequestCallback[] = [];
+    const spy = jest
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => raf.push(cb));
+    try {
+      const { result } = renderHook(() => useDeferredFirstMount(true));
+      expect(result.current).toBe(false);
+      act(() => void raf.shift()!(0)); // frame 1: skeleton painted
+      expect(result.current).toBe(false);
+      act(() => void raf.shift()!(0)); // frame 2: pulse started
+      expect(result.current).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('no deferral when there is nothing heavy to wait for', () => {
+    const { useDeferredFirstMount } = require('@/hooks/useTranscriptFirstPaint');
+    const { result } = renderHook(() => useDeferredFirstMount(false));
+    expect(result.current).toBe(true);
+  });
+});

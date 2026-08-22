@@ -124,7 +124,7 @@ import {
   useReaderAwayFromLive,
   useRevealPaused,
 } from '@/hooks/useStreamPinnedScroll';
-import { useTranscriptFirstPaint } from '@/hooks/useTranscriptFirstPaint';
+import { useDeferredFirstMount, useTranscriptFirstPaint } from '@/hooks/useTranscriptFirstPaint';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
@@ -1658,6 +1658,9 @@ function DiscussionThread({
   // DR-100 — the discussion skeleton stays overlaid until the list reports its first
   // viewable message; session data arriving is NOT the same as the transcript being visible.
   const firstPaint = useTranscriptFirstPaint(transcript.length > 0);
+  // DR-101 — commit the skeleton ALONE first (milliseconds), so its pulse starts on the UI
+  // thread before the multi-second transcript mount blocks JS; then mount the list under it.
+  const mountTranscript = useDeferredFirstMount(!firstPaint.painted);
 
   // Reconcile authored text against what the server accepted: once the submitted edit shows
   // up in the transcript, drop the local draft.
@@ -2437,7 +2440,10 @@ function DiscussionThread({
     <>
     {/* DR-089 — while the reader is away from the live edge during a streaming turn, the
         streamed reveal (SmoothMarkdown) holds still so the transcript cannot drag under
-        them. Streaming gates the flag so an idle reader browsing history pays nothing. */}
+        them. Streaming gates the flag so an idle reader browsing history pays nothing.
+        DR-101 — the whole Chat waits two frames behind the skeleton overlay below, so the
+        skeleton is committed and pulsing before the heavy transcript mount blocks JS. */}
+    {mountTranscript ? (
     <RevealPausedContext.Provider value={readerPin.away && stream.streaming}>
     <Chat<DiscussionMessage>
       messages={messages}
@@ -2520,6 +2526,7 @@ function DiscussionThread({
       {...ROW_STYLES_PROP}
     />
     </RevealPausedContext.Provider>
+    ) : null}
     {/* DR-100 — the same skeleton the loading gate shows, held OVER the mounting list until
         its first message is actually viewable. Without this the skeleton vanished when the
         session DATA arrived (~10ms) and the reader stared at a blank surface for the seconds
