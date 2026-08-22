@@ -426,9 +426,15 @@ _REVIEW_FINISH = (
 
 _DISCOVER_QUERIES = """You design multi-source scholarly search queries for a researcher. \
 You are given the researcher's description of what they want to understand, learn, or \
-explore. Produce 4-6 concepts that together cover the topic BROADLY (the general area and \
-field-standard terminology, so landmark conference work can surface) and NARROWLY (the \
-specific sub-topics, techniques, system names, and important synonyms implied).
+explore, and usually also the titles of papers already in their project library. Produce \
+4-6 concepts that together cover the topic BROADLY (the general area and field-standard \
+terminology, so landmark conference work can surface) and NARROWLY (the specific \
+sub-topics, techniques, system names, and important synonyms implied).
+
+The library is your grounding: queries must serve the request IN THE CONTEXT of what this \
+researcher actually reads, not the request's words alone. When the request is generic or \
+meta ("find new related work", "what's new in this area"), derive the concepts from the \
+library itself — its recurring systems, techniques, and themes are the real query material.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 

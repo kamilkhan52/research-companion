@@ -421,10 +421,32 @@ def _plain_search_terms(arxiv_query: str) -> str:
     return " ".join(text.replace('"', " ").split())
 
 
-def generate_queries(goals: str, model: str, llm_fn: LlmFn) -> tuple[str, list[dict]]:
-    """Goals -> (focus, [{query, search_terms, phase, rationale}, ...]), capped."""
+#: How many reading-list titles ground the query plan. One call per run (unlike the per-batch
+#: profile), so this can afford to be wider than _profile_text's 10.
+QUERY_PLAN_LIBRARY_TITLES = 30
+
+
+def generate_queries(goals: str, model: str, llm_fn: LlmFn,
+                     papers: list | None = None) -> tuple[str, list[dict]]:
+    """Goals + library -> (focus, [{query, search_terms, phase, rationale}, ...]), capped.
+
+    DR-096 (Kamil, 2026-08-22): the plan used to see ONLY the goals text, so a terse or meta
+    request ("find new works related to my library") produced queries from those words alone —
+    generic results unrelated to the corpus. The reading-list titles now ride along as
+    grounding, and the prompt derives its concepts from the library whenever the request
+    itself names none. Passing titles in the USER content (not the prompt) keeps every
+    operator prompt override working unchanged.
+    """
+    titles = [t for t in (getattr(p, "title", "") for p in (papers or [])) if t]
+    user_content = goals
+    if titles:
+        library = "\n".join(f"- {t[:120]}" for t in titles[:QUERY_PLAN_LIBRARY_TITLES])
+        user_content = (
+            f"RESEARCHER'S REQUEST:\n{goals}\n\n"
+            f"PROJECT LIBRARY (papers they already read; ground your concepts here):\n{library}"
+        )
     parsed = _parse_json(
-        llm_fn(model, prompts.get("discover_queries"), goals, QUERIES_MAX_TOKENS)
+        llm_fn(model, prompts.get("discover_queries"), user_content, QUERIES_MAX_TOKENS)
     )
     raw = parsed.get("queries")
     if not isinstance(raw, list):
@@ -1267,7 +1289,7 @@ def run_discovery(
     else:
         plan_error = ""
         try:
-            focus, queries = generate_queries(goals, model, llm_fn)
+            focus, queries = generate_queries(goals, model, llm_fn, papers=papers)
         except DiscoveryError as e:
             # Query planning is a convenience. The reader's own words are a usable fallback and
             # neither grounded nor topic recall depends on a valid JSON plan.
