@@ -395,6 +395,27 @@ _dispatch_lock = threading.Lock()
 DISPATCH_MAX_AGE_S = 3 * 3600.0
 
 
+#: What the headless session may run without a human at the prompt. The first real dispatch
+#: (2026-08-22, DR-092) ran with acceptEdits alone and every step the /device-feedback skill
+#: prescribes was refused as "requires approval" — the inbox read, the devtest helper calls
+#: (`append_response`, `mark_processed_through`), the loopback devtest routes, tests — so the
+#: session could edit files but neither read its input nor reply to the bubble. Headless `-p`
+#: has nobody to approve, so a denial is final. This list is the skill's own toolset and
+#: nothing broader: the interpreter in the repo venv (which the skill's helper invocations and
+#: pytest both need — note `python -c` is general execution, the price of the skill's
+#: helper-call shape), git/gh for the branch-and-PR step, and the dev server's devtest routes.
+#: No blanket Bash, no skip-permissions: inbox text is untrusted (phone form), and the prompt
+#: says so.
+DISPATCH_ALLOWED_TOOLS = (
+    "Bash(.venv/bin/python:*)",
+    "Bash(git:*)",
+    "Bash(gh:*)",
+    "Bash(curl -s http://127.0.0.1:8000/api/devtest/*)",
+    "Bash(npx tsc:*)",
+    "Read", "Edit", "Write", "Grep", "Glob",
+)
+
+
 def _dispatch_dir() -> Path:
     d = _dir() / "dispatch"
     d.mkdir(exist_ok=True)
@@ -478,8 +499,10 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
       checkout's own allowlists cover git push / gh / python). Dispatch is refused for any
       request bearing Cloudflare edge headers — it works from the tailnet (the phone's baked
       stable path) and loopback only. The feedback/screenshot routes are unaffected.
-    - **`--permission-mode acceptEdits`, never skip-permissions.** Even from the tailnet the
-      session stays inside the repo's own tool allowlists rather than running unrestricted.
+    - **`--permission-mode acceptEdits` plus an explicit `--allowedTools` list, never
+      skip-permissions.** Even from the tailnet the session runs only the skill's own toolset
+      (`DISPATCH_ALLOWED_TOOLS`) rather than unrestricted; `--add-dir` admits the inbox, which
+      lives in the main checkout rather than the worktree the session runs in.
     """
     import shutil
     import subprocess
@@ -512,7 +535,12 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
         with log_path.open("wb") as log_file:
             process = subprocess.Popen(
                 [binary, "-p", _dispatch_prompt(item_id),
-                 "--model", req.model, "--permission-mode", "acceptEdits"],
+                 "--model", req.model, "--permission-mode", "acceptEdits",
+                 # The inbox lives in the MAIN checkout while the session runs in the
+                 # device-main worktree; without this the headless session's reads of
+                 # feedback.jsonl / screenshots are refused as outside its working directory.
+                 "--add-dir", str(_dir()),
+                 "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
                 cwd=_dispatch_cwd(), stdout=log_file, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )

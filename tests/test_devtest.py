@@ -281,6 +281,13 @@ def test_dispatch_spawns_a_detached_session_and_records_it(client, tmp_path, mon
     # acceptEdits, NOT the skip-everything mode Kamil's interactive shell wrapper uses.
     assert "--permission-mode" in argv and "acceptEdits" in argv
     assert "--dangerously-skip-permissions" not in argv
+    # The inbox is in the main checkout, the session runs in a worktree: without --add-dir the
+    # headless session cannot read its own input, and without an allowlist it cannot run the
+    # skill's helper calls or reply to the bubble (2026-08-22, first real dispatch).
+    assert argv[argv.index("--add-dir") + 1] == str(tmp_path / "inbox")
+    allowed = argv[argv.index("--allowedTools") + 1:]
+    assert "Bash(.venv/bin/python:*)" in allowed and "Bash(git:*)" in allowed
+    assert not any(a in ("Bash", "Bash(*)") for a in allowed)
     assert any("DR-091" in part for part in argv)
     assert calls["kwargs"]["start_new_session"] is True
     assert (tmp_path / "inbox" / "dispatch" / "current.json").exists()
