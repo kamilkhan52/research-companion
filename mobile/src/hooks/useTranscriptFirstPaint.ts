@@ -23,6 +23,33 @@ import type { ViewabilityConfig, ViewToken } from 'react-native';
  *  worse than a slow paint, and the ceiling only fires when something is already wrong. */
 export const FIRST_PAINT_CEILING_MS = 6000;
 
+/** DR-101 — mount the heavy transcript one beat AFTER the skeleton has committed.
+ *
+ *  The overlay skeleton and the transcript used to mount in the SAME commit, so the
+ *  skeleton's pulse (an Animated.loop started from a mount effect) could not begin until
+ *  that multi-second commit finished — which is exactly when the overlay is torn down. The
+ *  reader saw a frozen skeleton (logcat: the reduce-motion resolve and the loop start both
+ *  queued behind the blocked JS thread). Deferring the transcript by two frames commits the
+ *  skeleton alone (milliseconds), lets its native-driver pulse start on the UI thread —
+ *  where it keeps running while JS is busy — and only then pays for the big mount. */
+export function useDeferredFirstMount(defer: boolean): boolean {
+  const [mounted, setMounted] = useState(!defer);
+  useEffect(() => {
+    if (mounted) return;
+    let second = 0;
+    // Frame 1 paints the skeleton; frame 2 gives its animation loop a started frame.
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setMounted(true));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      if (second) cancelAnimationFrame(second);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return mounted;
+}
+
 export function useTranscriptFirstPaint(hasContent: boolean) {
   // An empty transcript has nothing to wait for — painted from the start. `hasContent` is
   // read once: this hook models the INITIAL mount, and a later transcript change must not

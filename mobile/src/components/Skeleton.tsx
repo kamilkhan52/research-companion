@@ -1,13 +1,19 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import {
-  Animated,
-  Easing,
   StyleSheet,
   View,
   type DimensionValue,
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { useReduceMotion } from '@/hooks/useReduceMotion';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -29,36 +35,37 @@ export function SkeletonGroup({
   style?: StyleProp<ViewStyle>;
   testID?: string;
 }) {
-  const opacity = useRef(new Animated.Value(SKELETON_STATIC_OPACITY)).current;
-  // Stay static until the asynchronous OS setting resolves; this prevents even a brief pulse for
+  const opacity = useSharedValue(SKELETON_STATIC_OPACITY);
+  // Stay static until the OS setting is known (the module cache in useReduceMotion makes it
+  // known synchronously after the app's first resolve); this prevents even a brief pulse for
   // readers who have requested reduced motion.
   const reduceMotion = useReduceMotion(true);
 
   useEffect(() => {
     if (reduceMotion) {
-      opacity.stopAnimation();
-      opacity.setValue(SKELETON_STATIC_OPACITY);
+      cancelAnimation(opacity);
+      opacity.value = SKELETON_STATIC_OPACITY;
       return;
     }
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(opacity, {
-          toValue: SKELETON_MAX_OPACITY,
-          duration: SKELETON_HALF_CYCLE_MS,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(opacity, {
-          toValue: SKELETON_MIN_OPACITY,
-          duration: SKELETON_HALF_CYCLE_MS,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]),
+    // DR-101 — Reanimated, not RN Animated, and the choice is load-bearing: this pulse's whole
+    // job is to run while the JS thread is BLOCKED mounting the surface it covers. RN
+    // Animated's loop/sequence restarts round-trip through JS (and its pulse measured frozen
+    // on device even mid-cycle); withRepeat(withTiming) lives entirely on the UI thread.
+    opacity.value = SKELETON_MIN_OPACITY;
+    opacity.value = withRepeat(
+      withTiming(SKELETON_MAX_OPACITY, {
+        duration: SKELETON_HALF_CYCLE_MS,
+        easing: Easing.inOut(Easing.ease),
+      }),
+      -1,
+      true,
     );
-    pulse.start();
-    return () => pulse.stop();
+    return () => {
+      cancelAnimation(opacity);
+    };
   }, [opacity, reduceMotion]);
+
+  const pulseStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
     <Animated.View
@@ -68,7 +75,7 @@ export function SkeletonGroup({
       accessibilityLabel={label}
       accessibilityLiveRegion="polite"
       accessibilityState={{ busy: true }}
-      style={[style, { opacity }]}
+      style={[style, pulseStyle]}
     >
       {children}
     </Animated.View>

@@ -1,5 +1,5 @@
 import { renderAsync } from '@testing-library/react-native';
-import { AccessibilityInfo, Animated, StyleSheet } from 'react-native';
+import { AccessibilityInfo, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import {
@@ -21,15 +21,24 @@ beforeEach(() => {
 
 afterEach(() => jest.restoreAllMocks());
 
-test('one skeleton group owns one native-driver pulse and one accessible loading state', async () => {
-  const start = jest.fn();
-  const stop = jest.fn();
-  const loop = jest.spyOn(Animated, 'loop').mockReturnValue({ start, stop } as never);
-  const timing = jest.spyOn(Animated, 'timing');
+jest.mock('react-native-reanimated', () => {
+  const actual = jest.requireActual('react-native-reanimated');
+  return {
+    __esModule: true,
+    ...actual,
+    default: actual.default,
+    withRepeat: jest.fn(actual.withRepeat),
+  };
+});
 
+test('one skeleton group owns one UI-thread pulse and one accessible loading state', async () => {
+  // DR-101 — the pulse is Reanimated (withRepeat on the UI thread), because RN Animated's
+  // loop measured frozen exactly when the skeleton matters: while JS is blocked mounting the
+  // surface it covers. The jest mock settles animations instantly, so "the pulse is armed"
+  // shows as the opacity having LEFT its static resting value.
   const view = await renderAsync(
     <ThemeProvider>
-      <SkeletonGroup label="Loading test content">
+      <SkeletonGroup label="Loading test content" testID="pulse-group">
         <Skeleton height={12} testID="decorative-block-one" />
         <Skeleton height={12} testID="decorative-block-two" />
       </SkeletonGroup>
@@ -40,15 +49,9 @@ test('one skeleton group owns one native-driver pulse and one accessible loading
   expect(view.getByRole('progressbar').props.accessibilityState).toEqual({ busy: true });
   expect(view.getByTestId('decorative-block-one', { includeHiddenElements: true }).props.accessible)
     .toBe(false);
-  expect(loop).toHaveBeenCalledTimes(1);
-  expect(start).toHaveBeenCalledTimes(1);
-  expect(timing).toHaveBeenCalledTimes(2);
-  for (const [, config] of timing.mock.calls) {
-    expect(config).toEqual(expect.objectContaining({ useNativeDriver: true }));
-  }
+  expect(jest.requireMock('react-native-reanimated').withRepeat).toHaveBeenCalledTimes(1);
 
   await view.unmountAsync();
-  expect(stop).toHaveBeenCalledTimes(1);
 });
 
 test('group layout styles apply to the animated container that directly owns the blocks', async () => {
@@ -71,17 +74,20 @@ test('group layout styles apply to the animated container that directly owns the
 test('reduced motion keeps the skeleton static', async () => {
   jest.restoreAllMocks();
   jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
-  const loop = jest.spyOn(Animated, 'loop');
 
-  await renderAsync(
+  const view = await renderAsync(
     <ThemeProvider>
-      <SkeletonGroup label="Loading static content">
+      <SkeletonGroup label="Loading static content" testID="static-group">
         <Skeleton height={12} />
       </SkeletonGroup>
     </ThemeProvider>,
   );
 
-  expect(loop).not.toHaveBeenCalled();
+  const opacity = StyleSheet.flatten(
+    view.getByTestId('static-group', { includeHiddenElements: true }).props.style,
+  ).opacity;
+  expect(opacity).toBe(0.72);
+  expect(jest.requireMock('react-native-reanimated').withRepeat).not.toHaveBeenCalled();
 });
 
 test.each([
@@ -120,8 +126,13 @@ test('discussion skeleton is one continuous transcript canvas with matching floa
     </SafeAreaProvider>,
   );
 
-  expect(view.getAllByTestId('discussion-assistant-turn-skeleton')).toHaveLength(4);
-  expect(view.getAllByTestId('discussion-reader-turn-skeleton')).toHaveLength(2);
+  // DR-101 (Kamil): the skeleton mirrors what a discussion actually looks like — the tail of
+  // ONE long assistant analysis (paragraphs, a heading, a blockquote), not a back-and-forth
+  // of chat bubbles. No reader-bubble shapes at all.
+  expect(view.getAllByTestId('discussion-paragraph-skeleton')).toHaveLength(4);
+  expect(view.getAllByTestId('discussion-heading-skeleton')).toHaveLength(1);
+  expect(view.getAllByTestId('discussion-quote-skeleton')).toHaveLength(1);
+  expect(view.queryByTestId('discussion-reader-turn-skeleton')).toBeNull();
   expect(view.getByTestId(
     'discussion-composer-skeleton',
     { includeHiddenElements: true },
