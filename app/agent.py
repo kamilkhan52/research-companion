@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from . import assembler, config, figures, llm, prompts, sessions
+from . import assembler, config, figures, llm, model_provenance, prompts, sessions
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
@@ -184,12 +184,15 @@ _EDITOR_END_RE = re.compile(r"^#{1,6}\s*END\s*#{0,6}\s*$", re.M)
 
 
 def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
-                   paper_title: str, notes_block: str, model: str | None = None) -> tuple[str, str]:
+                   paper_slug: str, paper_title: str, notes_block: str, full_text: str,
+                   model: str | None = None) -> tuple[str, str]:
     """DR-058 — the synthesis-editor pass: plan first, then the complete rewritten Project
     Notes. A SEPARATE call from the finish turn, so the model that just spent its whole context
     on the paper is not the one deciding how much of the Project Notes to rewrite: this pass
-    sees the paper only at committed-notes size, must state its change plan before touching the
-    document, and the plan ships to review beside the diff.
+    must state its change plan before touching the document, and the plan ships to review beside
+    the diff. It receives both the committed-size Paper Notes and the full paper as framed
+    evidence, letting it check scope and qualifications without allowing paper text to masquerade
+    as instructions.
 
     Returns (plan, synthesis). Raises AgentError when the output carries no usable SYNTHESIS —
     the caller fails the turn rather than proposing a commit that would erase the Project Notes.
@@ -198,6 +201,9 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
     task reasoning models are for, and the finish wait already covers the latency (DR-056's
     "Updating Project Notes" stage is this pass).
     """
+    framed_full_text = model_provenance.frame(
+        "paper_full_text", full_text.strip(), source=paper_slug,
+    ) if full_text.strip() else "(full text is not cached for this paper)"
     user = (
         f"# Project: {project_name}\n"
         + (f"\n## Research goals\n{goals}\n" if goals.strip() else "")
@@ -205,9 +211,12 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
         + (current_synthesis.strip() or "(empty — no synthesis yet)")
         + f"\n\n## Newly finished paper: {paper_title}\n### Its drafted Paper Notes block\n"
         + notes_block.strip()
+        + "\n\n## Full paper text (source evidence)\n"
+        + framed_full_text
     )
     raw = _complete(
-        [{"role": "system", "content": prompts.get("synthesis_editor")},
+        [{"role": "system", "content": (prompts.get("synthesis_editor") + "\n\n"
+                                           + model_provenance.SYSTEM_POLICY)},
          {"role": "user", "content": user}],
         model=model,
         max_tokens=16_000,

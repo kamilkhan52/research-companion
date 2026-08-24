@@ -113,9 +113,11 @@ def _fake_editor(monkeypatch, plan="Plan: fold in the 40% result.",
                  synthesis="## Project Notes\nEdited by the second pass."):
     calls = []
 
-    def fake(*, project_name, goals, current_synthesis, paper_title, notes_block, model=None):
+    def fake(*, project_name, goals, current_synthesis, paper_slug, paper_title, notes_block,
+             full_text, model=None):
         calls.append({"project_name": project_name, "current": current_synthesis,
-                      "title": paper_title, "notes_block": notes_block})
+                      "slug": paper_slug, "title": paper_title, "notes_block": notes_block,
+                      "full_text": full_text})
         return plan, synthesis
 
     monkeypatch.setattr(chat_jobs.agent, "edit_synthesis", fake)
@@ -127,6 +129,7 @@ def test_finish_turn_runs_the_synthesis_editor_and_overwrites_drift(temp_project
     when the model drifts and emits a SYNTHESIS section anyway, which must be overwritten or
     the over-weighted single-shot rewrite silently returns."""
     calls = _fake_editor(monkeypatch)
+    monkeypatch.setattr(chat_jobs.store, "read_full_text", lambda slug: "Complete paper text.")
     sessions.start_session("p", "Paper P")
     sessions.record_user("p", "Draft notes now", kind="finish")
     proposed = """###CANONICAL###
@@ -155,8 +158,10 @@ Drifted single-shot synthesis that must NOT survive.
     assert commit["plan"] == "Plan: fold in the 40% result."
     assert "Drifted" not in commit["synthesis"]
     assert finished.state == "notes_drafted"
-    # The editor saw the paper as its NOTES, not its full text — the whole point.
+    # The separate editor receives both the bounded Paper Notes and the complete source paper.
     assert calls[0]["notes_block"] == "## Notes\nRequested."
+    assert calls[0]["full_text"] == "Complete paper text."
+    assert calls[0]["slug"] == "p"
     # title_for falls back to the slug for a paper not on the reading list (this seed's case).
     assert calls[0]["title"] == "p"
     # DR-056's second stage covers this pass.
