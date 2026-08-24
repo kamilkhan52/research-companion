@@ -224,18 +224,75 @@ const isThematicBreak = (line: string) => /^(-{3,}|_{3,}|\*{3,})$/.test(line.rep
 const DISPLAY_MATH_RE = /^(?:\\\[([\s\S]+)\\\]|\$\$([\s\S]+)\$\$)$/;
 const SENTENCE_END_RE = /(?<=[.!?])(?:["”’')\]]*)\s+/g;
 
+/**
+ * Which offsets sit INSIDE an inline markup span (DR-110).
+ *
+ * Each annotatable sentence is rendered by `Inline`, so it keeps its emphasis, links and math —
+ * but only if the split leaves each sentence's markup balanced. A boundary the sentence splitter
+ * loved, "**4. A trace table…**", cut between `**4.` and the rest, and BOTH halves then carried
+ * one unmatched `**`, which `Inline` correctly renders as literal asterisks. The model writes
+ * "**Bold lead-in.** Then the point." constantly, so this was not an edge case: a response lost
+ * its formatting the moment a comment was attached to it.
+ */
+function inlineSpanDepth(text: string): boolean[] {
+  const open: boolean[] = new Array(text.length + 1).fill(false);
+  let code = false, strong = false, em = false, math = false, link = 0;
+  let i = 0;
+  const mark = (from: number, to: number) => {
+    for (let k = from; k <= to && k < open.length; k++) open[k] = true;
+  };
+  while (i < text.length) {
+    const c = text[i];
+    const two = text.slice(i, i + 2);
+    if (c === '\\' && (two === '\\(' || two === '\\)')) {
+      math = two === '\\(';
+      i += 2;
+    } else if (c === '\\') {
+      i += 2;                                   // an escaped character, markup or not
+      continue;
+    } else if (c === '`') {
+      code = !code;
+      i += 1;
+    } else if (!code && (two === '**' || two === '__')) {
+      strong = !strong;
+      i += 2;
+    } else if (!code && (c === '*' || c === '_')) {
+      em = !em;
+      i += 1;
+    } else if (!code && c === '$') {
+      math = !math;
+      i += 1;
+    } else if (!code && c === '[') {
+      link += 1;
+      i += 1;
+    } else if (!code && c === ')' && link > 0) {
+      link -= 1;
+      i += 1;
+    } else {
+      i += 1;
+    }
+    if (code || strong || em || math || link > 0) mark(i - 1, i);
+  }
+  return open;
+}
+
 /** Sentence/block granularity for the mobile annotation flow. This deliberately matches the
- *  preview-cue boundary: terminal punctuation followed by whitespace. The final fragment is
- *  included because it is stable committed text even when it has no terminal punctuation. */
+ *  preview-cue boundary: terminal punctuation followed by whitespace — except where that
+ *  boundary falls inside inline markup (DR-110), which would hand both halves unbalanced
+ *  markers and lose the formatting. The final fragment is included because it is stable
+ *  committed text even when it has no terminal punctuation. */
 export function splitAnnotatableSentences(text: string): string[] {
+  const inside = inlineSpanDepth(text);
   const sentences: string[] = [];
   let start = 0;
   SENTENCE_END_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = SENTENCE_END_RE.exec(text)) !== null) {
-    const sentence = text.slice(start, SENTENCE_END_RE.lastIndex).trim();
+    const end = SENTENCE_END_RE.lastIndex;
+    if (inside[match.index]) continue;          // mid-emphasis / mid-link / mid-formula
+    const sentence = text.slice(start, end).trim();
     if (sentence) sentences.push(sentence);
-    start = SENTENCE_END_RE.lastIndex;
+    start = end;
   }
   const tail = text.slice(start).trim();
   if (tail) sentences.push(tail);

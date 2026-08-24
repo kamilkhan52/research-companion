@@ -149,6 +149,40 @@ describe('sentence annotation render path', () => {
     ]);
   });
 
+  // DR-110 — a sentence boundary INSIDE inline markup handed both halves an unmatched marker,
+  // and `Inline` then rendered the markers literally: attaching a comment to a response made it
+  // lose its formatting. The model writes "**Bold lead-in.** Then the point." constantly, and
+  // "**4. A trace table…**" is the case that exposed it (the split fell after "4.").
+  test('a boundary inside emphasis, a link, or a formula is not a sentence boundary', () => {
+    expect(splitAnnotatableSentences(
+      '**4. A trace table — atomic:** Then prose. And more.',
+    )).toEqual(['**4. A trace table — atomic:** Then prose.', 'And more.']);
+
+    expect(splitAnnotatableSentences('**Bold lead.** Then the point. A third one.'))
+      .toEqual(['**Bold lead.** Then the point.', 'A third one.']);
+
+    expect(splitAnnotatableSentences('See [LoongServe (v1. beta)](rc-search:LoongServe) next. Done.'))
+      .toEqual(['See [LoongServe (v1. beta)](rc-search:LoongServe) next.', 'Done.']);
+
+    expect(splitAnnotatableSentences('Inline \\(a. b\\) math. After.'))
+      .toEqual(['Inline \\(a. b\\) math.', 'After.']);
+
+    expect(splitAnnotatableSentences('Code `x = 1. y = 2` here. After.'))
+      .toEqual(['Code `x = 1. y = 2` here.', 'After.']);
+  });
+
+  test('emphasis survives the annotation path, markers and all', async () => {
+    await renderAsync(
+      <Markdown
+        text="**4. A trace table — atomic:** Then prose."
+        sentenceAnnotations={{ active: true, onSentencePress: jest.fn() }}
+      />,
+    );
+    // The rendered text carries no literal markers — the bold ran through `Inline` intact.
+    expect(screen.queryByText(/\*\*/)).toBeNull();
+    expect(screen.getByText('4. A trace table — atomic:')).toBeTruthy();
+  });
+
   test('is fully opt-in for ordinary Markdown surfaces', async () => {
     await renderAsync(<Markdown text="First claim. Second claim." />);
     expect(screen.queryByTestId('md-sentence-0')).toBeNull();

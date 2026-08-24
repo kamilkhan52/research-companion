@@ -19,8 +19,10 @@ import TrackPlayer, {
 } from 'react-native-track-player';
 import { useKeyboardState } from 'react-native-keyboard-controller';
 import { checkpointPlayback } from '../../playback-persistence';
+import { seekSentence } from '../../sentence-seek';
 
 import { useAudio } from '@/audio/AudioProvider';
+import { SKIP_SECONDS } from '@/audio/setup';
 import { Marquee } from '@/ui/Marquee';
 import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
@@ -145,15 +147,35 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
             />
           </Pressable>
 
+          {/* DR-103 (Kamil): "controls for next and previous sentence can be added besides the
+             play and pause… The paper title in this view is already available at the top." So
+             the title gives up weight and a line of size to the two controls that matter while
+             listening; the full-screen player keeps the ±15s skips and the scrubber. */}
+          <Pressable
+            onPress={() => void seekSentence(TrackPlayer, -1, SKIP_SECONDS)}
+            hitSlop={8}
+            style={styles.sideBtn}
+            accessibilityLabel="Previous sentence">
+            <Feather name="skip-back" size={16} color={t.text} />
+          </Pressable>
+
           <View style={{ flex: 1, minWidth: 0 }}>
             <Marquee
               text={String(track.title ?? 'Narration')}
-              textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: t.text }}
+              textStyle={{ fontFamily: fonts.body, fontSize: 13, lineHeight: 18, color: t.text }}
             />
             <Text variant="caption" color={buffering ? t.mint : undefined} numberOfLines={1}>
               {status}
             </Text>
           </View>
+
+          <Pressable
+            onPress={() => void seekSentence(TrackPlayer, 1, SKIP_SECONDS)}
+            hitSlop={8}
+            style={styles.sideBtn}
+            accessibilityLabel="Next sentence">
+            <Feather name="skip-forward" size={16} color={t.text} />
+          </Pressable>
 
           <Feather name="chevron-up" size={18} color={t.muted} />
           <Pressable
@@ -213,7 +235,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     justifyContent: 'center',
   },
   sideBtn: {
-    width: 32,
+    width: 30,
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
