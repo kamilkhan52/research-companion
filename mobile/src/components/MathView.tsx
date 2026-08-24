@@ -49,13 +49,14 @@ export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: num
 export function MathBlock({
   tex,
   fontSize = 17,
-  noSplit = false,
+  splitTier = 0,
 }: {
   tex: string;
   fontSize?: number;
-  /** Set on the stacked lines a split produced: a piece that is still too wide falls back to
-   *  the scroll strip rather than re-splitting (also the recursion guard). */
-  noSplit?: boolean;
+  /** The tier this line may start splitting at. A line produced by a split re-splits only at
+   *  the tier BELOW the one that produced it, which both bounds the recursion and stops a
+   *  connective that was already used from being tried again. */
+  splitTier?: number;
 }) {
   // These hooks must run even while a streamed TeX span is temporarily incomplete. If they
   // lived after the fallback return, the same component could render plain text on one frame
@@ -98,7 +99,8 @@ export function MathBlock({
   // never exceed the screen even if an ancestor is content-sized (grows to the formula's width).
   // Pre-layout (measuredW 0) falls back to the window width, so the first frame is bounded too.
   const fallbackW = Math.max(windowW - space.xl * 2, 1);
-  const fit = fitMathBlock(naturalW, naturalH, Math.min(measuredW || fallbackW, windowW));
+  const availW = Math.min(measuredW || fallbackW, windowW);
+  const fit = fitMathBlock(naturalW, naturalH, availW);
   const svg = <SvgXml xml={rendered.svg} width={fit.width} height={fit.height} color={t.text} />;
 
   if (!fit.scroll) {
@@ -115,12 +117,17 @@ export function MathBlock({
   }
   // DR-098 (Kamil: "We want all equations to be fully readable… multiple lines are
   // acceptable"): before surrendering to the scroll strip — which read as "cut off" on his
-  // device even though it scrolls — try breaking the TeX at its own top-level connectives
-  // and stacking the pieces as display lines, each fitted independently. Only genuinely
-  // unbreakable content (one huge fraction/matrix) still scrolls below.
-  if (!noSplit) {
-    const pieces = splitTexForLines(tex);
-    if (pieces && pieces.length > 1) {
+  // device even though it scrolls — try breaking the TeX at its own connectives and stacking
+  // the pieces as display lines, each fitted independently. Round 2 (his re-test): a LINE the
+  // split produced may still overflow — `A = \min(b, c, d, e, f)` breaks at the `=` into a
+  // stub and a 540px remainder — so each line re-splits at the next tier down, and only
+  // genuinely atomic content (one huge fraction, a matrix) reaches the scroll strip below.
+  // `targetPieces` tells the argument tier how many lines this actually needs, so a six-term
+  // list becomes two balanced lines rather than six stubs.
+  {
+    const targetPieces = availW > 0 ? Math.max(2, Math.ceil(naturalW / availW)) : 2;
+    const split = splitTexForLines(tex, splitTier, targetPieces);
+    if (split && split.pieces.length > 1) {
       return (
         <View
           testID="math-block-lines"
@@ -128,8 +135,8 @@ export function MathBlock({
           style={{ alignSelf: 'stretch', width: '100%', maxWidth: '100%' }}
           accessible
           accessibilityLabel={tex}>
-          {pieces.map((piece, idx) => (
-            <MathBlock key={idx} tex={piece} fontSize={fontSize} noSplit />
+          {split.pieces.map((piece, idx) => (
+            <MathBlock key={idx} tex={piece} fontSize={fontSize} splitTier={split.tier + 1} />
           ))}
         </View>
       );
