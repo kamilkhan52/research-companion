@@ -28,7 +28,35 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-22)
+## Current position (updated 2026-08-24)
+
+**Delta at 2026-08-24** (a device-feedback day — four PRs #454–#457, all merged; the milestone
+picture is unchanged, M4 still blocked only on H8's merchant account):
+- **Eleven bubble entries triaged** (#454): DR-098 reopened by a fail, six new rows DR-103–DR-108,
+  and every one answered in the bubble.
+- **DR-098 round 2** (#455): the round-1 split fired ONCE at the top level, so a still-over-wide
+  line dropped to the scroll strip (measured: 540px and 615px remainders in a 364px column).
+  Splitting is now tiered and recursive — arrows → relations → top-level `+`/`-` → argument
+  commas, with `\right.`/`\left.` rebalancing — and the tests assert the property (every line
+  fits, measured with the app's own MathJax) rather than a fixed set of break points.
+- **DR-104 + DR-107** (#456): citation targets now carry the work's full title (prompt AND the
+  client, which was discarding the target in favour of the short label); a 200 carrying no
+  completion is retried like a 5xx, metered before it is discarded, and logged by SHAPE — the
+  Finish failure Kamil hit had no diagnostics at all.
+- **DR-103/105/108 + DR-110** (#457): the notes indicator moved below the answer; the comment tray
+  collapses to an "N comments" pill; the mini player gained sentence jumps; the top-bar marquee
+  moved to the UI thread (DR-101's lesson again — a JS-callback reset is lost under load); and a
+  sentence boundary inside inline markup no longer splits a span in half, which was making a
+  commented response lose its formatting.
+- **Two defects found by verification, not by Kamil**: DR-109 (inline math drawn over its
+  neighbouring words — not reproducible on demand, recorded with evidence) and DR-110 (fixed
+  above).
+- **Still never measured**: a real production Discover run against the DR-052 + DR-096 lanes.
+  Needs Kamil's go-ahead — it spends real money on the production account.
+- **76 ledger rows at `implemented — verify`** (21 closed, 3 open, 5 partial, 3 planned) — device
+  acceptance remains the bottleneck.
+
+## Position at 2026-08-22 (superseded by the block above)
 
 **Delta at 2026-08-22** (a device-feedback day — ten PRs #441–#450, all merged; the milestone
 picture is unchanged, M4 still blocked only on H8's merchant account):
