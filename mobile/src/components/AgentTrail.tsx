@@ -52,12 +52,48 @@ export function ToolLine({ name, detail }: { name: string; detail: string }) {
   );
 }
 
-export function AgentTrail({ trail, slug }: { trail: AgentTrailItem[]; slug?: string }) {
+/** Did this turn start a notes update? The link that answers it lives BELOW the answer (DR-105),
+ *  so the paper screen asks separately rather than the trail rendering it. */
+export function startedNotesUpdate(items: { kind: string; name?: string }[]): boolean {
+  return items.some((it) => it.kind === 'tool' && it.name === NOTES_UPDATE_TOOL);
+}
+
+/** The way back to a notes proposal the agent started mid-conversation.
+ *
+ * DR-105 (Kamil): "the notification to open it is at the top of the response, but I'm likely
+ * looking at the bottom of the response." It used to render inside the agent trail, which sits
+ * above the answer — on a long analysis that is several screens away from where the reader
+ * finishes. It is now rendered after the message body by whoever owns the message.
+ */
+export function NotesUpdateLink({ slug, live = false }: { slug: string; live?: boolean }) {
   const t = useTheme();
   const router = useRouter();
+  // Tense-neutral for a finished turn (Opus review, PR #371): a persisted trail carries no live
+  // job status, so it renders identically for a turn from seconds ago and one from last week
+  // whose proposal was reviewed and applied days ago. `live` is only set from the turn that is
+  // streaming right now, where "preparing" is a fact rather than a claim.
+  const label = live
+    ? 'Preparing a notes update from this discussion — open notes'
+    : 'Notes update requested from this discussion — open notes';
+  return (
+    <Pressable
+      testID="notes-update-link"
+      onPress={() => router.push(`/notes/${encodeURIComponent(slug)}`)}
+      style={[styles.notesUpdateRow, { borderColor: t.mint }]}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}. Tap to open notes.`}
+    >
+      <Icon name="edit-3" size={13} color={t.mint} />
+      <Text variant="caption" color={t.mint} style={styles.notesUpdateText}>{label}</Text>
+      <Icon name="chevron-right" size={13} color={t.mint} />
+    </Pressable>
+  );
+}
+
+export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
+  const t = useTheme();
   const [open, setOpen] = useState(false);
   const tools = trail.filter((item) => item.kind === 'tool').length;
-  const startedNotesUpdate = trail.some((it) => it.kind === 'tool' && it.name === NOTES_UPDATE_TOOL);
   const summary = tools > 0
     ? `Researched with ${tools} tool ${tools === 1 ? 'call' : 'calls'}`
     : 'Agent activity';
@@ -87,24 +123,6 @@ export function AgentTrail({ trail, slug }: { trail: AgentTrailItem[]; slug?: st
             ),
           )
         : null}
-      {startedNotesUpdate && slug ? (
-        <Pressable
-          onPress={() => router.push(`/notes/${encodeURIComponent(slug)}`)}
-          style={[styles.notesUpdateRow, { borderColor: t.mint }]}
-          accessibilityRole="button"
-          accessibilityLabel="A notes update was requested from this discussion. Tap to open notes."
-        >
-          <Icon name="edit-3" size={13} color={t.mint} />
-          {/* Tense-neutral on purpose (Opus review, PR #371): this trail item comes from the
-              persisted transcript with no live job-status check, so it renders identically for
-              a turn from seconds ago and one from last week whose proposal was reviewed and
-              applied days ago. "is drafting" claimed an in-progress state this can't verify. */}
-          <Text variant="caption" color={t.mint} style={styles.notesUpdateText}>
-            Notes update requested from this discussion — open notes
-          </Text>
-          <Icon name="chevron-right" size={13} color={t.mint} />
-        </Pressable>
-      ) : null}
     </View>
   );
 }

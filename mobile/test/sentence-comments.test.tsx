@@ -123,13 +123,75 @@ test('attached-comment chips reopen and remove queued comments', async () => {
     />,
   );
 
-  expect(screen.getByText('2 comments attached')).toBeTruthy();
   await fireEventAsync.press(screen.getByLabelText('Edit comment on: First claim.'));
   expect(onOpen).toHaveBeenCalledWith(first);
   await fireEventAsync.press(screen.getByLabelText('Remove comment on: Second claim.'));
   expect(onRemove).toHaveBeenCalledWith(second);
-  await fireEventAsync.press(screen.getByText('Done'));
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
   expect(onDone).toHaveBeenCalled();
+});
+
+// DR-108 — Kamil: "The 'Done' button on the Comments Attachment view doesn't do anything. Can't
+// tell if it even registers the press." It did register; it only left sentence-SELECTION mode,
+// and with comments attached the tray was unchanged afterwards. Done now collapses the tray to
+// one "N comments" chip, which is both a visible result and the reading space he asked back for.
+test('Done collapses the attached comments to a single chip, and the chip brings them back', async () => {
+  const onDone = jest.fn();
+  await renderAsync(
+    <SentenceCommentComposer
+      active={false}
+      comments={[first, second]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={onDone}
+    />,
+  );
+  expect(screen.getByTestId('sentence-comment-queue')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
+  expect(onDone).toHaveBeenCalled();                       // still exits annotation mode
+  expect(screen.queryByTestId('sentence-comment-queue')).toBeNull();
+  expect(screen.getByText('2 comments')).toBeTruthy();     // the chip states what is attached
+
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-chip'));
+  expect(screen.getByTestId('sentence-comment-queue')).toBeTruthy();
+});
+
+test('a newly attached comment re-opens the tray so the reader sees it land', async () => {
+  const props = {
+    active: false, selected: null, draft: '', onChangeDraft: jest.fn(), onSave: jest.fn(),
+    onCancelSelection: jest.fn(), onOpen: jest.fn(), onRemove: jest.fn(), onDone: jest.fn(),
+  };
+  const view = await renderAsync(<SentenceCommentComposer {...props} comments={[first]} />);
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
+  expect(screen.queryByTestId('sentence-comment-queue')).toBeNull();
+
+  await view.rerenderAsync(<SentenceCommentComposer {...props} comments={[first, second]} />);
+  expect(screen.getByTestId('sentence-comment-queue')).toBeTruthy();
+  expect(screen.queryByTestId('sentence-comment-chip')).toBeNull();
+});
+
+test('the collapsed chip carries no count header row above it — that space is the point', async () => {
+  await renderAsync(
+    <SentenceCommentComposer
+      active={false}
+      comments={[first]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={jest.fn()}
+    />,
+  );
+  expect(screen.queryByText(/comments? attached/)).toBeNull();
 });
 
 test('annotation mode explains the next step before a sentence is selected', async () => {
@@ -201,8 +263,13 @@ test('both Done controls meet the real minimum touch target, not just a hitSlop 
       onDone={jest.fn()}
     />,
   );
-  expect(minHeightOf(queueScreen.getByText('Done'))).toBeGreaterThanOrEqual(control.minTouch);
-  expect(nearestAncestorWith(queueScreen.getByText('Done'), 'hitSlop')).toBeTruthy();
+  // DR-108 replaced the tray's text "Done" with the collapse control beside the chips; it is
+  // sized as real layout for the same reason (a hitSlop is clipped to its parent's bounds).
+  const collapse = queueScreen.getByTestId('sentence-comment-collapse');
+  const collapseStyle = StyleSheet.flatten(collapse.props.style) as
+    { minHeight?: number; width?: number };
+  expect(collapseStyle.minHeight).toBeGreaterThanOrEqual(control.minTouch);
+  expect(collapseStyle.width).toBeGreaterThanOrEqual(control.minTouch);
 });
 
 test('the attached-comments tray has a real surface, not text floating with no background', async () => {
@@ -223,7 +290,7 @@ test('the attached-comments tray has a real surface, not text floating with no b
   // Walk up from the queue head text to the nearest ancestor whose flattened style actually
   // paints a surface — the exact composite depth to the tray View isn't a contract worth
   // hard-coding.
-  let node: ReactTestInstance | null = screen.getByText('1 comment attached');
+  let node: ReactTestInstance | null = screen.getByTestId('sentence-comment-queue');
   let style: Record<string, unknown> = {};
   while (node) {
     style = (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;

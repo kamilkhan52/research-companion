@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import Animated, {
   FadeInDown,
@@ -38,7 +39,25 @@ export function SentenceCommentComposer({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  if (!active && !selected && comments.length === 0) return null;
+  // DR-108 (Kamil: "The 'Done' button… doesn't do anything. Can't tell if it even registers the
+  // press."). It did register — it only left sentence-SELECTION mode, and with comments already
+  // attached the tray looked identical afterwards, which is indistinguishable from a dead button.
+  // Done now COLLAPSES the attached comments into a single "N comments" chip beside the composer,
+  // which is both a visible result and the screen space he asked for back ("This helps free
+  // screen area for reading the response").
+  const [collapsed, setCollapsed] = useState(false);
+  const count = comments.length;
+  // A newly attached comment expands: the reader needs to see it land. Tracked by count so
+  // re-expanding is tied to the comment arriving, not to every render.
+  const seen = useRef(count);
+  useEffect(() => {
+    if (count > seen.current) setCollapsed(false);
+    seen.current = count;
+  }, [count]);
+  // Selecting a sentence always brings the editor forward, collapsed chip or not.
+  const showQueue = count > 0 && !collapsed;
+
+  if (!active && !selected && count === 0) return null;
 
   return (
     <Animated.View
@@ -46,7 +65,7 @@ export function SentenceCommentComposer({
       exiting={FadeOutDown.duration(140)}
       layout={LinearTransition.duration(180)}
       style={styles.wrap}>
-      {active && !selected && comments.length === 0 ? (
+      {active && !selected && count === 0 ? (
         <View style={styles.hint}>
           <Icon name="message-square" size={15} color={t.violet} />
           <Text variant="caption" color={t.muted} style={styles.hintText}>
@@ -95,16 +114,15 @@ export function SentenceCommentComposer({
         </View>
       ) : null}
 
-      {comments.length ? (
-        <View style={styles.queue}>
-          <View style={styles.queueHead}>
-            <Text variant="overline" color={t.violet}>
-              {comments.length} comment{comments.length === 1 ? '' : 's'} attached
-            </Text>
-            <Pressable onPress={onDone} hitSlop={12} style={styles.doneBtn} accessibilityRole="button">
-              <Text variant="label" color={t.muted}>Done</Text>
-            </Pressable>
-          </View>
+      {showQueue ? (
+        // Just the chips: the count header the tray used to carry said what the chips already
+        // show, and cost a row of reading space to do it (DR-108).
+        <Animated.View
+          entering={FadeInDown.duration(160)}
+          exiting={FadeOutDown.duration(120)}
+          layout={LinearTransition.duration(180)}
+          testID="sentence-comment-queue"
+          style={styles.queue}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -133,7 +151,40 @@ export function SentenceCommentComposer({
               </View>
             ))}
           </ScrollView>
-        </View>
+          <Pressable
+            testID="sentence-comment-collapse"
+            onPress={() => {
+              setCollapsed(true);
+              onDone();
+            }}
+            style={styles.collapseBtn}
+            accessibilityRole="button"
+            accessibilityLabel={`Done. Collapse ${count} attached comment${count === 1 ? '' : 's'}.`}>
+            <Icon name="chevron-down" size={16} color={t.violet} />
+          </Pressable>
+        </Animated.View>
+      ) : null}
+
+      {count > 0 && collapsed ? (
+        <Animated.View
+          entering={FadeInDown.duration(160)}
+          exiting={FadeOutDown.duration(120)}
+          layout={LinearTransition.duration(180)}>
+          <Pressable
+            testID="sentence-comment-chip"
+            onPress={() => setCollapsed(false)}
+            style={styles.countChip}
+            accessibilityRole="button"
+            accessibilityLabel={
+              `${count} comment${count === 1 ? '' : 's'} attached. Tap to show them.`
+            }>
+            <Icon name="message-square" size={14} color={t.violet} />
+            <Text variant="label" color={t.violet}>
+              {count} comment{count === 1 ? '' : 's'}
+            </Text>
+            <Icon name="chevron-up" size={14} color={t.violet} />
+          </Pressable>
+        </Animated.View>
       ) : null}
     </Animated.View>
   );
@@ -196,19 +247,35 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // deliberate part of the composer stack. A real surface (matching `hint`'s card treatment
   // above) makes it read as attached, not incidental.
   queue: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: space.xs,
-    paddingVertical: space.sm,
+    paddingVertical: space.xs,
     paddingHorizontal: space.sm,
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: t.line2,
     backgroundColor: t.elevated,
   },
-  queueHead: {
+  // The one control the header row used to hold, kept as a real 44px target beside the chips.
+  collapseBtn: {
+    width: control.minTouch,
+    minHeight: control.minTouch,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Collapsed: one pill saying how many comments are attached (DR-108).
+  countChip: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: space.xs,
+    gap: space.xs,
+    minHeight: 36,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.violet,
+    backgroundColor: t.violetWash,
   },
   chips: { gap: space.sm, paddingRight: space.md },
   chip: {

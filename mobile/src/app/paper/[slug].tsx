@@ -83,7 +83,7 @@ import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendR
 import { showToast } from '@/ui/Toast';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
-import { AgentTrail, ToolLine } from '@/components/AgentTrail';
+import { AgentTrail, NotesUpdateLink, ToolLine, startedNotesUpdate } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
@@ -2156,6 +2156,7 @@ function DiscussionThread({
           items={msg.streamItems}
           activity={stream.activity}
           finishPhase={stream.proposalTurn ? stream.notesPhase ?? 'drafting' : null}
+          slug={slug}
         />
       );
     }
@@ -3398,7 +3399,7 @@ function AssistantBody({
         </View>
       ) : null}
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
-        <AgentTrail trail={entry.agent_trail} slug={slug} />
+        <AgentTrail trail={entry.agent_trail} />
       ) : null}
       <Markdown
         text={canonical}
@@ -3406,6 +3407,11 @@ function AssistantBody({
         sentenceAnnotations={sentenceAnnotations}
         textScale={discussionTextScale}
       />
+      {/* DR-105 — the way into a notes proposal this turn started belongs where the reader
+          finishes the answer, not above it with the trail. */}
+      {slug && entry.agent_trail && startedNotesUpdate(entry.agent_trail) ? (
+        <NotesUpdateLink slug={slug} />
+      ) : null}
       {modelLabel ? (
         <Text
           variant="caption"
@@ -3560,10 +3566,13 @@ function StreamingTurnBody({
   items,
   activity,
   finishPhase = null,
+  slug,
 }: {
   items: StreamItem[];
   activity: string;
   finishPhase?: string | null;
+  /** Present on the paper screen's own turn; absent where there is nowhere to navigate. */
+  slug?: string;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3596,6 +3605,9 @@ function StreamingTurnBody({
           </View>
         ),
       )}
+      {/* DR-105 — the tool line announcing a notes draft scrolls away with the top of a long
+          answer. Keep the way in pinned under the text the reader is actually watching. */}
+      {slug && startedNotesUpdate(items) ? <NotesUpdateLink slug={slug} live /> : null}
     </View>
   );
 }

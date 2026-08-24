@@ -4,8 +4,17 @@
 // so the tail is readable, then resets to the start and stays — one pass, no loop (R.3/R7.1:
 // the head is the line's identity, so that's where it should rest). Native-driver transforms.
 
-import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import { useEffect, useState } from 'react';
+import { StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
+import Animated, {
+  Easing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 
 /** Pixels per second of glide — brisk but still readable along the way. */
 const DEFAULT_SPEED = 36;
@@ -36,7 +45,7 @@ export function Marquee({
    *  the left. 'center' suits centered chrome like the TopBar title. */
   align?: 'left' | 'center';
 }) {
-  const offset = useRef(new Animated.Value(0)).current;
+  const offset = useSharedValue(0);
   const [containerWidth, setContainerWidth] = useState(0);
   // The measurement is keyed to the text it belongs to: when the text changes (a loading
   // placeholder giving way to the real title, or a track switch), the stale width must not
@@ -55,25 +64,29 @@ export function Marquee({
   const distance = Math.max(0, textWidth - containerWidth);
   const overflows = ready && distance > 1;
 
+  // DR-103 (Kamil, of the top-bar title: "it is currently static and not quite at the right
+  // place. It should show the left most part, not stop somewhere in the middle when stopped").
+  // The glide used RN Animated, whose return-to-head was a JS callback (`finished` → setValue),
+  // so a busy JS thread — a heavy transcript, exactly when he was looking — delayed or dropped
+  // the reset and the line rested wherever it had stopped. The whole sequence now runs on
+  // Reanimated's UI thread (same lesson as DR-101's skeleton pulse): the return home is the
+  // last step of the animation itself, so it cannot be lost.
   useEffect(() => {
-    offset.setValue(0);
+    cancelAnimation(offset);
+    offset.value = 0;
     if (!overflows) return;
     // Scroll once, hold at the tail, then snap back to the start and stay — no loop (R7.1).
-    const glide = Animated.sequence([
-      Animated.delay(HOLD_MS),
-      Animated.timing(offset, {
-        toValue: -distance,
-        duration: (distance / speed) * 1000,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-      Animated.delay(TAIL_HOLD_MS),
-    ]);
-    glide.start(({ finished }) => {
-      if (finished) offset.setValue(0);
-    });
-    return () => glide.stop();
+    offset.value = withDelay(
+      HOLD_MS,
+      withSequence(
+        withTiming(-distance, { duration: (distance / speed) * 1000, easing: Easing.linear }),
+        withDelay(TAIL_HOLD_MS, withTiming(0, { duration: 0 })),
+      ),
+    );
+    return () => cancelAnimation(offset);
   }, [overflows, distance, speed, offset, text]);
+
+  const glideStyle = useAnimatedStyle(() => ({ transform: [{ translateX: offset.value }] }));
 
   return (
     <View
@@ -92,18 +105,20 @@ export function Marquee({
           re-fires even when the new text happens to measure identically. */}
       <Animated.View
         testID="marquee-strip"
-        style={{
-          position: 'absolute',
-          top: 0,
-          width: MEASURE_WIDTH,
-          flexDirection: 'row',
-          justifyContent: 'flex-start',
-          opacity: ready ? 1 : 0,
-          left: align === 'center' && !overflows && ready
-            ? Math.max(0, (containerWidth - textWidth) / 2)
-            : 0,
-          transform: [{ translateX: offset }],
-        }}
+        style={[
+          {
+            position: 'absolute',
+            top: 0,
+            width: MEASURE_WIDTH,
+            flexDirection: 'row',
+            justifyContent: 'flex-start',
+            opacity: ready ? 1 : 0,
+            left: align === 'center' && !overflows && ready
+              ? Math.max(0, (containerWidth - textWidth) / 2)
+              : 0,
+          },
+          glideStyle,
+        ]}
       >
         <Text
           key={text}
