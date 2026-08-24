@@ -54,7 +54,14 @@ export function ExternalRefSheet({
   // store or display the raw `rc-search:<title>` marker verbatim (a reading-list entry
   // literally titled "rc-search:LoongServe", committed to git). Decode the marker itself as
   // the next-best title before ever falling all the way to the bare href.
-  const bestTitle = title ?? titleFromRcSearchLink(refItem.href);
+  //
+  // DR-104 (Kamil: "It is almost impossible to find Tesseract or PAPI just from these titles"):
+  // for a name-only citation the TARGET outranks the label. The label is display text the model
+  // keeps short — "Tesseract" — while the target is the identifying string it was asked to fill
+  // with the work's complete title, and the target is what a search and an add need. When the
+  // model gives only the short name in both, this changes nothing.
+  const searchTarget = titleFromRcSearchLink(refItem.href);
+  const bestTitle = isRealUrl ? title : searchTarget ?? title;
   const added = addedHref === refItem.href;
   const inProject = added || isInProject({ arxivId, title: bestTitle });
 

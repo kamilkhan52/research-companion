@@ -145,6 +145,57 @@ test('adding a name-only reference never carries the rc-search marker as a sourc
   );
 });
 
+// DR-104 (Kamil: "It is almost impossible to find Tesseract or PAPI just from these titles") —
+// the analyst now writes the work's COMPLETE title into the `rc-search:` target and keeps the
+// short name as link text. For a name-only citation the target therefore outranks the label:
+// it is the identifying string, and it is what a search and an add both need.
+test('a name-only reference searches and files under its full target title, not its short label', async () => {
+  const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true as never);
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
+  const full = 'Tesseract: A Scalable Processing-in-Memory Accelerator for Parallel Graph Processing';
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: rcSearchLink(full), label: 'Tesseract' }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  expect(screen.getAllByText(full).length).toBeGreaterThan(0);
+
+  await fireEventAsync.press(screen.getByText('Search Scholar'));
+  expect(openURL).toHaveBeenCalledWith(
+    `https://scholar.google.com/scholar?q=${encodeURIComponent(full)}`,
+  );
+
+  await fireEventAsync.press(screen.getByText('Add to reading list'));
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith('proj', full, undefined, undefined, undefined, undefined),
+  );
+});
+
+// A real URL keeps label-first behaviour: there the label is the human title and the href is a
+// source, so nothing about DR-104 applies.
+test('a real-URL reference still files under its label', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: 'https://arxiv.org/abs/2401.99999', label: 'A Web-Found Paper' }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  await fireEventAsync.press(screen.getByText('Add to reading list'));
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith(
+      'proj', 'A Web-Found Paper', undefined, '2401.99999', undefined, undefined,
+    ),
+  );
+});
+
 // Opus review, PR #377 (F4): `title` derived from `refItem.label` is null whenever the label
 // is missing, URL-shaped, or equal to the href — every `title ?? refItem.href` fallback in the
 // component would then store or display the raw `rc-search:<title>` marker verbatim (a

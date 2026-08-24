@@ -136,7 +136,7 @@ def test_complete_clamps_rather_than_trusting_the_caller(monkeypatch):
     """The bound has to live inside `llm`, or a new call site inherits a budget nobody chose."""
     seen: dict = {}
 
-    def fake_post(body, key, timeout, tries):
+    def fake_post(body, key, timeout, tries, on_discarded=None):
         seen["max_tokens"] = body.get("max_tokens")
         seen["timeout"] = timeout
         return {"choices": [{"message": {"content": "ok"}}], "usage": {}}

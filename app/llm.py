@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from types import MappingProxyType
 
 import httpx
@@ -241,10 +241,54 @@ def _friendly_http_error(status: int, model: str | None, *, data_policy: bool = 
 _TRANSPORT_FRIENDLY = "Could not reach OpenRouter. Check the connection and retry."
 
 
-def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
+def _empty_envelope_message(model: str | None) -> str:
+    """DR-107's user-facing wording. The old message ("unexpected response") described OUR
+    surprise; this one describes what happened — the provider accepted the request and returned
+    nothing to read — because that is what tells a reader whether to retry or switch models."""
+    name = model or "the selected model"
+    return (f"The provider behind {name} accepted the request but returned no response. "
+            "This is usually brief — retry, or switch models in Settings.")
+
+
+def _envelope_shape(data: object) -> str:
+    """A diagnostic for a 200 that carried no completion: the envelope's SHAPE, never its text.
+
+    An upstream body can quote prompts or paper text (see `_friendly_http_error`), so this reports
+    only the top-level key names plus the provider's own error code/type — enough to tell a
+    rate-limited provider from an empty `choices` list, which is exactly what DR-107 lacked.
+    """
+    if not isinstance(data, dict):
+        return f"non-object body ({type(data).__name__})"
+    keys = ",".join(sorted(data)[:8])
+    err = data.get("error")
+    if not isinstance(err, dict):
+        return f"keys={keys}"
+    meta = err.get("metadata")
+    provider = meta.get("provider_name") if isinstance(meta, dict) else None
+    return (f"keys={keys} error.code={err.get('code')!r} error.type={err.get('type')!r} "
+            f"provider={provider!r}")
+
+
+def _has_completion(data: object) -> bool:
+    """Whether a 200 body actually carries a choice to read. OpenRouter can answer 200 with only
+    an `error` envelope (an upstream provider failure) or an empty `choices` list."""
+    if not isinstance(data, dict):
+        return False
+    choices = data.get("choices")
+    return isinstance(choices, list) and len(choices) > 0
+
+
+def _post_with_retry(body: dict, key: str, timeout: float, tries: int,
+                     on_discarded: Callable[[dict], None] | None = None) -> dict:
     """POST the chat-completions body, retrying transient failures with backoff. Returns the
     parsed JSON response; raises LLMError once retries are exhausted or the error is fatal.
-    Logs retain status/attempt/model diagnostics but never the provider response body."""
+    Logs retain status/attempt/model diagnostics but never the provider response body.
+
+    A 200 whose body carries no completion counts as transient and is retried like a 5xx (DR-107:
+    a Finish turn died on one 63s in, and the reader's own retry a minute later succeeded). Each
+    discarded 200 is handed to `on_discarded` first — any 200 may have been billed, and a
+    reservation that never sees the spend is worse than a duplicated request.
+    """
     last = "unknown error"
     friendly = _TRANSPORT_FRIENDLY
     attempts = 0
@@ -266,11 +310,18 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
             continue  # transport-level: always worth a retry
         if r.status_code == 200:
             try:
-                return r.json()
+                data = r.json()
             except ValueError as e:
                 log.error("openrouter returned invalid JSON (model=%s, HTTP 200)",
                           body.get("model"))
                 raise LLMError("OpenRouter returned an invalid response. Retry shortly.") from e
+            if _has_completion(data):
+                return data
+            if isinstance(data, dict) and on_discarded is not None:
+                on_discarded(data)
+            last = f"HTTP 200 without a completion ({_envelope_shape(data)})"
+            friendly = _empty_envelope_message(body.get("model"))
+            continue
         last = f"HTTP {r.status_code}"
         friendly = _friendly_http_error(
             r.status_code, body.get("model"),
@@ -317,8 +368,15 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
     timeout = operation_limits.clamp_timeout(operation, timeout)
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=False)
+
+    def account_discarded(discarded: dict) -> None:
+        # A 200 was accepted upstream, so it may have been billed even though it carried no
+        # completion. Meter it before the retry replaces it — the ceiling must see every 200.
+        usage.record(operation, body.get("model"), discarded.get("usage"),
+                     generation_id=discarded.get("id"))
+
     try:
-        data = _post_with_retry(body, key, timeout, tries)
+        data = _post_with_retry(body, key, timeout, tries, account_discarded)
     except LLMError as e:
         # Disabling reasoning is an optimization, not a requirement. A model whose reasoning is
         # mandatory may refuse the request outright, and that must not be how narration fails —
@@ -328,7 +386,7 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
             raise
         log.info("retrying without the reasoning hint (model=%s)", body.get("model"))
         body.pop("reasoning", None)
-        data = _post_with_retry(body, key, timeout, tries)
+        data = _post_with_retry(body, key, timeout, tries, account_discarded)
     usage.record(
         operation, body.get("model"), data.get("usage"), generation_id=data.get("id"),
     )  # any 200 was billed
@@ -336,9 +394,12 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
     except (KeyError, IndexError, TypeError) as e:
-        log.error("openrouter returned an unexpected response shape (model=%s)",
-                  body.get("model"))
-        raise LLMError("OpenRouter returned an unexpected response. Retry shortly.") from e
+        # A missing/empty `choices` is now retried inside _post_with_retry, so reaching here means
+        # the list exists but its first entry is not a choice object. Log the SHAPE (never the
+        # body) — DR-107 had nothing to go on because this line recorded only the model name.
+        log.error("openrouter returned an unreadable choice (model=%s, %s)",
+                  body.get("model"), _envelope_shape(data))
+        raise LLMError(_empty_envelope_message(body.get("model"))) from e
     content = _flatten_content(message.get("content"))
     if not content.strip() and not allow_empty:
         raise LLMError(_empty_response_message(

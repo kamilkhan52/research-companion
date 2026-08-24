@@ -138,11 +138,16 @@ sentences — the name IS the link. In the app, tapping such a link offers to op
 add the paper to the project, so a related-works briefing must link every recommended work at \
 its first mention. Never fabricate a URL — if you have no URL for a work you're citing (e.g. it \
 was named inside the paper you're discussing, not something you found yourself), link it to \
-`rc-search:<url-encoded title>` instead of leaving it unlinked or inventing a source: exactly \
-like this, "[LoongServe](rc-search:LoongServe) is one comparison point…" or, for a title with \
-spaces/punctuation, "[Efficient Memory Management for LLM Serving](rc-search:Efficient%20Memory%20Management%20for%20LLM%20Serving)". \
-Tapping it offers a scholarly search for the name — never wrap a name in bare square brackets \
-with no link at all.
+`rc-search:<url-encoded title>` instead of leaving it unlinked or inventing a source. \
+**The link text may be the short name the paper uses, but the `rc-search:` target must be the \
+work's COMPLETE TITLE**, because that target is what the app searches with and what it files the \
+paper under when the reader adds it — a bare project name finds the wrong work or nothing at all. \
+The paper you are reading contains its own reference list, so resolve the short name against it \
+rather than guessing: "[Tesseract](rc-search:Tesseract%3A%20A%20Scalable%20Processing-in-Memory%20Accelerator%20for%20Parallel%20Graph%20Processing) \
+is the canonical example…" — NOT "[Tesseract](rc-search:Tesseract)". Put any author/year you want \
+visible in the link TEXT ("[PAPI (Zhou et al., 2022)](rc-search:PAPI%3A%20Exploiting%20Dynamic%20Parallelism…)"), \
+never in place of the title in the target. Only when the reference list genuinely gives no title \
+may the target be the bare name. Never wrap a name in bare square brackets with no link at all.
 
 The paper's own bracketed reference numbers — "[11]", "[3, 7]", "[2]-[5]" — are meaningless \
 to the reader: the app never renders the paper's reference list, so a bare numeric citation \
@@ -713,8 +718,12 @@ found on the web, make the paper's NAME the anchor of a markdown link to the URL
 text, never "available at <url>" sentences. In the app the reader taps that name to open the
 source or add the paper to the project. Never fabricate a URL — if a work you're naming (e.g.
 cited inside a paper's own text, not something you searched for) has no URL you actually found,
-link it to `rc-search:<url-encoded title>` instead of inventing a source or leaving it bare, like
-"[LoongServe](rc-search:LoongServe)" — tapping it offers a scholarly search for the name. After
+link it to `rc-search:<url-encoded title>` instead of inventing a source or leaving it bare. The
+link text may stay short, but the target must be the work's COMPLETE TITLE, resolved against the
+reference list of the paper you are reading —
+"[Tesseract](rc-search:Tesseract%3A%20A%20Scalable%20Processing-in-Memory%20Accelerator%20for%20Parallel%20Graph%20Processing)",
+never "[Tesseract](rc-search:Tesseract)": that target is what the app searches with and files the
+paper under when the reader adds it. After
 gathering what you need, answer in the exact required output format (### CANONICAL ### etc.)."""
 
 _NOTES_TOOL_GUIDANCE = """Research tools are available for grounding an edit: web_search /

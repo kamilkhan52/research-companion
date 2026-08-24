@@ -153,6 +153,64 @@ def test_complete_retries_transient_then_succeeds(key, monkeypatch):
     assert calls["n"] == 3
 
 
+# DR-107 — Kamil's Finish turn died 63 seconds in on "OpenRouter returned an unexpected
+# response", and his own retry a minute later worked. The cause was a 200 carrying no completion
+# (an upstream provider failure wrapped in a success envelope), which was the one transient class
+# this client did NOT retry.
+
+def test_complete_retries_a_200_that_carries_no_completion(key, monkeypatch):
+    calls = {"n": 0}
+
+    def empty_envelope(*a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return FakeResp(200, {"error": {"code": 502, "type": "provider_error",
+                                            "metadata": {"provider_name": "Azure"}}})
+        return FakeResp(200, _one_choice("recovered"))
+
+    monkeypatch.setattr(httpx, "post", empty_envelope)
+    assert llm.complete([{"role": "user", "content": "hi"}]) == "recovered"
+    assert calls["n"] == 3
+
+
+def test_an_exhausted_empty_envelope_says_the_provider_returned_nothing(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, {"choices": []}))
+    with pytest.raises(llm.LLMError) as e:
+        llm.complete([{"role": "user", "content": "hi"}], model="some/model", tries=2)
+    # The wording names what happened and what to do — not our own surprise.
+    assert "returned no response" in str(e.value)
+    assert "some/model" in str(e.value)
+    # And the log carries the envelope's SHAPE, which is what DR-107 had no way to see.
+    assert any("keys=choices" in m for m in _llm_msgs(rc_logs))
+
+
+def test_an_empty_envelope_is_never_logged_with_its_body(key, monkeypatch, rc_logs):
+    secret = "the reader's paper text"
+    monkeypatch.setattr(httpx, "post",
+                        lambda *a, **k: FakeResp(200, {"choices": [], "detail": secret}))
+    with pytest.raises(llm.LLMError):
+        llm.complete([{"role": "user", "content": "hi"}], tries=1)
+    assert not any(secret in m for m in _llm_msgs(rc_logs))
+
+
+def test_a_discarded_200_is_still_metered(key, monkeypatch):
+    """Any 200 may have been billed. The retry must not hide that from the ceiling."""
+    recorded = []
+    monkeypatch.setattr(llm.usage, "record",
+                        lambda op, model, u, **kw: recorded.append((op, u)))
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(200, {"choices": [], "usage": {"cost": 0.004}})
+        return FakeResp(200, _one_choice("recovered", usage={"cost": 0.01}))
+
+    monkeypatch.setattr(httpx, "post", flaky)
+    assert llm.complete([{"role": "user", "content": "hi"}], operation="analysis") == "recovered"
+    assert recorded == [("analysis", {"cost": 0.004}), ("analysis", {"cost": 0.01})]
+
+
 def test_complete_does_not_retry_a_client_error(key, monkeypatch):
     calls = {"n": 0}
 
@@ -576,7 +634,7 @@ def test_a_model_that_refuses_to_disable_reasoning_still_gets_its_completion(mon
     not be able to break narration — which is the very failure it was added to prevent."""
     calls = []
 
-    def fake_post(body, key, timeout, tries):
+    def fake_post(body, key, timeout, tries, on_discarded=None):
         calls.append(dict(body))
         if "reasoning" in body:
             raise llm.LLMError("OpenRouter said 400: reasoning cannot be disabled for this model")
@@ -597,7 +655,7 @@ def test_a_model_that_refuses_to_disable_reasoning_still_gets_its_completion(mon
 def test_an_unrelated_failure_is_not_retried_as_a_reasoning_problem(monkeypatch):
     calls = []
 
-    def fake_post(body, key, timeout, tries):
+    def fake_post(body, key, timeout, tries, on_discarded=None):
         calls.append(dict(body))
         raise llm.LLMError("OpenRouter is unavailable. Retry shortly.")
 
