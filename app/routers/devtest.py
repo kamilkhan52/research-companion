@@ -386,7 +386,11 @@ def status():
     p = _cursor_path()
     if p.exists():
         cursor = p.read_text(encoding="utf-8").strip()
-    pending = [e for e in _read_feedback() if e.get("ts", "") > cursor]
+    # `response` entries are the ANSWERS written back during triage, not input awaiting it.
+    # Counting them made a fully-triaged inbox report one pending item per reply posted, so the
+    # only way to reach zero was to advance the cursor past your own writing.
+    pending = [e for e in _read_feedback()
+               if e.get("ts", "") > cursor and e.get("kind") != "response"]
     return {"pending": len(pending), "processed_through": cursor or None}
 
 
