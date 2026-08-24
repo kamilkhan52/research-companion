@@ -28,6 +28,10 @@ The result should feel quiet, exact, and useful: a research instrument rather th
 - Canvas: 1024 × 1024, opaque square for the generic/iOS launcher asset.
 - Palette: deep ink `#0B0D12` and warm paper `#F3F0E8` only.
 - Geometry: two bold filled planes, no strokes, gradients, shadows, gloss, or embedded corner mask.
+- Optical scale: the mark uses a 1.15× centered scale and spans about 62.5% of the generic canvas
+  width; the adaptive foreground uses about 69.5% of Android's guaranteed-safe diameter. This
+  avoids a timid double-inset after launchers apply their own masks while retaining roughly 8%
+  radial safe-zone clearance at the farthest curved edge.
 - Aperture: a true cut-out in mark-only assets so Android theming and splash contexts remain valid.
 - Compact proof: the aperture must remain open at 32 px.
 - Android: meaningful foreground geometry stays inside the 66/108 adaptive-icon safe zone; the
@@ -58,7 +62,8 @@ alone cannot change the icon installed on the phone.
 
 ## Figma deliverable
 
-The editable Figma board uses the same canonical paths and contains:
+The editable Figma board contains the approved component and platform proofs listed below. The
+master uses the same centered 1.15× geometry as the canonical SVG and generated PNGs.
 
 - vector master;
 - primary launcher proof;
