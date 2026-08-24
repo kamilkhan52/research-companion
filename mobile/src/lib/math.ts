@@ -111,17 +111,57 @@ const ARROW_COMMANDS = new Set([
 const RELATION_COMMANDS = new Set([
   'approx', 'le', 'leq', 'ge', 'geq', 'neq', 'ne', 'sim', 'simeq', 'propto', 'equiv',
 ]);
+/** Tier-2 operators: the terms of a top-level sum/difference are semantic units, so one per
+ *  line is the conventional break for a long expression that has no relation left to break at. */
+const OPERATOR_COMMANDS = new Set(['pm', 'mp', 'cdot', 'times', 'oplus', 'otimes']);
+
+export const SPLIT_TIER = {
+  ARROW: 0,
+  RELATION: 1,
+  OPERATOR: 2,
+  /** Commas of an argument list exactly one delimiter deep — `\min(a, b, c)`. */
+  ARGUMENT: 3,
+} as const;
+const LAST_TIER = SPLIT_TIER.ARGUMENT;
+
+export interface TexSplit {
+  pieces: string[];
+  /** Which tier produced these pieces; a piece that is STILL too wide re-splits at tier+1. */
+  tier: number;
+}
+
+interface Point {
+  /** Character index of the break. */
+  at: number;
+  tier: number;
+  /** Break after the character (argument commas) rather than before it (connectives). */
+  after?: boolean;
+  /** The break sits inside a `\left…\right` group, so the two halves need rebalancing. */
+  insideLeft?: boolean;
+}
+
+/** Is the character before `i` something a `+`/`-` would be the SIGN of rather than a binary
+ *  operator between two terms? A leading or post-operator minus must never start a line. */
+function isUnaryPosition(tex: string, i: number): boolean {
+  const before = tex.slice(0, i).trimEnd();
+  if (!before) return true;
+  return /[=+\-*/^_(,[{<>]$/.test(before) || /\\[a-zA-Z]+$/.test(before);
+}
 
 /**
- * Split display-math TeX at its top-level connectives, or return null when there is no safe
- * split. "Top-level" is brace/environment depth 0: `{…}`, `\left…\right`, and
- * `\begin{…}…\end{…}` all guard their contents, so a `cases` body or a `\text{…}` never
- * splits internally. Escaped braces (`\{`) are commands, not delimiters.
+ * Find every candidate break in display-math TeX, tagged with the tier it belongs to.
+ *
+ * Depth is a STACK of delimiter kinds, not a counter, because the tiers care about *which*
+ * delimiter encloses a position: `{…}`, `\begin{…}…\end{…}` and `\text{…}` bodies are atomic at
+ * every tier, while a `\left(…\right)` or plain `(…)` argument list is breakable at its commas
+ * (tier 3) even though it is not top level. Escaped braces (`\{`) are commands, not delimiters.
  */
-export function splitTexForLines(tex: string): string[] | null {
-  const arrowPoints: number[] = [];
-  const relationPoints: number[] = [];
-  let depth = 0;
+function scanPoints(tex: string): Point[] {
+  const points: Point[] = [];
+  const stack: ('brace' | 'left' | 'env' | 'paren')[] = [];
+  const top = () => (stack.length === 0);
+  const inOneGroup = () =>
+    stack.length === 1 && (stack[0] === 'left' || stack[0] === 'paren');
   let i = 0;
   while (i < tex.length) {
     const c = tex[i];
@@ -129,38 +169,112 @@ export function splitTexForLines(tex: string): string[] | null {
       const cmd = /^\\([a-zA-Z]+)/.exec(tex.slice(i));
       if (cmd) {
         const name = cmd[1];
-        // \begin{env} / \end{env}: the name braces that follow balance themselves, so only
-        // the command itself moves the depth.
-        if (name === 'left' || name === 'begin') depth++;
-        else if (name === 'right' || name === 'end') depth--;
-        else if (depth === 0 && ARROW_COMMANDS.has(name)) arrowPoints.push(i);
-        else if (depth === 0 && RELATION_COMMANDS.has(name)) relationPoints.push(i);
+        if (name === 'left' || name === 'right') {
+          if (name === 'left') stack.push('left');
+          else stack.pop();
+          // The delimiter character itself belongs to the command — skipping it keeps a
+          // `\left(` from also pushing a 'paren' (and `\right)` from popping twice).
+          i += cmd[0].length;
+          if (i < tex.length && tex[i] !== '\\') i += 1;
+          continue;
+        }
+        // \begin{env} / \end{env}: the name braces that follow balance themselves, so only the
+        // command itself moves the stack.
+        if (name === 'begin') stack.push('env');
+        else if (name === 'end') stack.pop();
+        else if (top() && ARROW_COMMANDS.has(name)) points.push({ at: i, tier: SPLIT_TIER.ARROW });
+        else if (top() && RELATION_COMMANDS.has(name)) {
+          points.push({ at: i, tier: SPLIT_TIER.RELATION });
+        } else if (top() && OPERATOR_COMMANDS.has(name)) {
+          points.push({ at: i, tier: SPLIT_TIER.OPERATOR });
+        }
         i += cmd[0].length;
         continue;
       }
       i += 2; // an escaped symbol: \{ \} \, \\ …
       continue;
     }
-    if (c === '{') depth++;
-    else if (c === '}') depth--;
-    else if (depth === 0 && c === '=') relationPoints.push(i);
+    if (c === '{') stack.push('brace');
+    else if (c === '(' || c === '[') stack.push('paren');
+    else if (c === '}' || c === ')' || c === ']') stack.pop();
+    else if (top() && c === '=') points.push({ at: i, tier: SPLIT_TIER.RELATION });
+    else if (top() && (c === '+' || c === '-') && !isUnaryPosition(tex, i)) {
+      points.push({ at: i, tier: SPLIT_TIER.OPERATOR });
+    } else if (c === ',' && inOneGroup()) {
+      points.push({ at: i, tier: SPLIT_TIER.ARGUMENT, after: true, insideLeft: stack[0] === 'left' });
+    }
     i++;
   }
-  const points = arrowPoints.length > 0 ? arrowPoints : relationPoints;
-  if (points.length === 0) return null;
-  const pieces: string[] = [];
-  let start = 0;
-  for (const p of points) {
-    const piece = tex.slice(start, p).trim();
-    if (piece) pieces.push(piece);
-    start = p;
+  return points;
+}
+
+/** Keep at most `target - 1` of `points`, spread evenly by character position, so an argument
+ *  list becomes a few balanced lines rather than one line per argument. */
+function thin(points: Point[], target: number, length: number): Point[] {
+  if (target < 2 || points.length + 1 <= target) return points;
+  const kept: Point[] = [];
+  for (let k = 1; k < target; k++) {
+    const want = (length * k) / target;
+    let best = points[0];
+    for (const p of points) {
+      if (Math.abs(p.at - want) < Math.abs(best.at - want)) best = p;
+    }
+    if (!kept.includes(best)) kept.push(best);
   }
-  const tail = tex.slice(start).trim();
-  if (tail) pieces.push(tail);
-  // No tiny-piece guard: this only runs on equations already too wide to fit, where even an
-  // uneven split ("A" + a long tail) beats the scroll strip. Short equations never get here.
-  if (pieces.length < 2) return null;
-  return pieces;
+  return kept.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Split over-wide display-math TeX into stacked lines, or return null when there is no safe
+ * split left. Tiers are tried in order from `fromTier`: top-level arrows, then top-level
+ * relations, then top-level `+`/`-`, then the commas of an argument list one delimiter deep.
+ * The caller re-splits any line that is STILL too wide at `tier + 1`, which is what makes a
+ * chain like `A = \min(b, c, d, e)` reachable — the first split leaves one enormous line, and
+ * only the tier below it can break that line further.
+ *
+ * `targetPieces` (the caller's overflow ratio) only thins the argument tier: relations and
+ * operator terms are semantic units worth their own line, but a six-argument list reads better
+ * as two balanced lines than as six stubs.
+ */
+export function splitTexForLines(
+  tex: string,
+  fromTier: number = SPLIT_TIER.ARROW,
+  targetPieces = 0,
+): TexSplit | null {
+  if (fromTier > LAST_TIER) return null;
+  const all = scanPoints(tex);
+  for (let tier = fromTier; tier <= LAST_TIER; tier++) {
+    let points = all.filter((p) => p.tier === tier);
+    if (points.length === 0) continue;
+    if (tier === SPLIT_TIER.ARGUMENT) points = thin(points, targetPieces, tex.length);
+    const pieces: string[] = [];
+    let start = 0;
+    let openedInsideLeft = false;
+    for (const p of points) {
+      const cut = p.after ? p.at + 1 : p.at;
+      let piece = tex.slice(start, cut).trim();
+      if (piece) {
+        // MathJax REJECTS an unbalanced `\left` outright (`data-mjx-error`), which would drop
+        // the whole formula to the plain-text fallback — so a line that opens or closes inside
+        // a `\left…\right` group gets the null-delimiter halves that make it balanced alone.
+        if (openedInsideLeft) piece = `\\left.${piece}`;
+        if (p.insideLeft) piece = `${piece}\\right.`;
+        pieces.push(piece);
+      }
+      openedInsideLeft = !!p.insideLeft;
+      start = cut;
+    }
+    let tail = tex.slice(start).trim();
+    if (tail) {
+      if (openedInsideLeft) tail = `\\left.${tail}`;
+      pieces.push(tail);
+    }
+    // No tiny-piece guard: this only runs on equations already too wide to fit, where even an
+    // uneven split ("A" + a long tail) beats the scroll strip. Short equations never get here.
+    if (pieces.length < 2) continue;
+    return { pieces, tier };
+  }
+  return null;
 }
 
 // MathJax document, created lazily so app startup never pays the init cost.
