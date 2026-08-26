@@ -165,6 +165,11 @@ def discard_if_applied(target: str) -> bool:
     latest = latest_for(target)
     if latest is None or latest.status != "done" or not latest.result:
         return False
+    # Relocation proposals carry continuation metadata. Dropping one through an exact-match
+    # compatibility cleanup would strand the rest of the queue; only resolve_and_advance may
+    # consume it after an explicit Apply/Discard carrying the job id.
+    if latest.relocation_total is not None:
+        return False
     try:
         current = read(target).strip()
     except NotesError:
@@ -187,8 +192,15 @@ def _as_persisted_document(target: str, markdown: str) -> str:
     by the previous compatibility check.
     """
     body = markdown.strip()
-    if target != WORKING and not body.lower().startswith("## notes"):
-        body = "## Notes\n\n" + body
+    if target != WORKING:
+        if not body.lower().startswith("## notes"):
+            body = "## Notes\n\n" + body
+        # ``store.read_notes`` canonicalizes the heading line and inserts exactly one blank
+        # line before the body. Mirror that read-back shape so heading whitespace or a proposal
+        # using one newline cannot retain an already-applied diff forever.
+        rest = body[len("## Notes"):]
+        head, _, notes_body = rest.partition("\n")
+        body = ("## Notes" + head).rstrip() + "\n\n" + notes_body.strip()
     return body
 
 

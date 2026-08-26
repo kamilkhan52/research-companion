@@ -470,6 +470,20 @@ def test_body_only_paper_proposal_is_recognized_as_applied(temp_project):
     assert notes_job_latest("paper") == {"job": None}
     assert notes_jobs.latest_for("paper") is None
 
+    # A headed proposal is read back with one canonical blank line even when the model emitted
+    # only a single newline after the heading. That harmless formatting difference must not
+    # resurrect the applied proposal either.
+    third = notes_jobs.start_edit(
+        "paper",
+        "revise with heading",
+        runner=_sync_runner([{"type": "final", "text": "## Notes\nSingle-line heading body."}]),
+    )
+    finished_third = _wait_until_settled(third.id)
+    notes_jobs.save("paper", finished_third.result or "")
+    assert notes_jobs.read("paper") == "## Notes\n\nSingle-line heading body."
+    assert notes_job_latest("paper") == {"job": None}
+    assert notes_jobs.latest_for("paper") is None
+
 
 def test_latest_lookup_preserves_a_genuinely_stale_paper_proposal(temp_project):
     from app.routers.notes import notes_job_latest
@@ -486,6 +500,34 @@ def test_latest_lookup_preserves_a_genuinely_stale_paper_proposal(temp_project):
 
     assert notes_job_latest("paper")["job"]["id"] == finished.id
     assert notes_jobs.latest_for("paper") is finished
+
+
+def test_latest_lookup_never_discards_or_advances_a_relocation_queue(temp_project):
+    from app.routers.notes import notes_job_latest
+
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        yield {"type": "final", "text": "# Project Notes\n\nFirst paper integrated."}
+
+    first = notes_jobs.start_split_destination_queue(
+        [
+            {"slug": "first", "title": "First", "notes": "## Notes\n\nOne."},
+            {"slug": "second", "title": "Second", "notes": "## Notes\n\nTwo."},
+        ],
+        source_name="Source",
+        runner=runner,
+    )
+    first = _wait_until_settled(first.id)
+    notes_jobs.save(notes_jobs.WORKING, first.result or "")
+
+    snapshot = notes_job_latest(notes_jobs.WORKING)["job"]
+    assert snapshot["id"] == first.id
+    assert snapshot["relocation_index"] == 1
+    assert snapshot["relocation_total"] == 2
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is first
+    assert len(prompts_seen) == 1
 
 
 def test_default_notes_editor_includes_math_contract(monkeypatch):
