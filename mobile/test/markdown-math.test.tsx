@@ -112,6 +112,7 @@ test('texToPlain approximates common TeX readably', () => {
   expect(texToPlain('\\{0,1\\}^n')).toBe('{0,1}ⁿ');
   expect(texToPlain('30\\%')).toBe('30%');
   expect(texToPlain('x_{\\max}')).toBe('x_max');
+  expect(texToPlain('CV^2f + x_max')).toBe('CV²f + x_max');
 });
 
 test('texToSvg produces a sized, themable SVG (real MathJax)', () => {

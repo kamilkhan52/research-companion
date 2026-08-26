@@ -436,7 +436,7 @@ export function texToPlain(tex: string): string {
     .replace(/\\(?:arg)\s*\\?(min|max)/gi, 'arg $1')
     .replace(/[\^]\{([^{}]*)\}/g, (_m, body: string) => toScript(body, SUPERSCRIPTS, '^'))
     .replace(/_\{([^{}]*)\}/g, (_m, body: string) => toScript(body, SUBSCRIPTS, '_'))
-    .replace(/\^([0-9+\-niT*])(?![A-Za-z])/g,
+    .replace(/\^([0-9+\-niT*])/g,
       (_m, c: string) => SUPERSCRIPTS[c] ?? `^${c}`)
     .replace(/_([0-9+\-ijnxtkm])(?![A-Za-z])/g,
       (_m, c: string) => SUBSCRIPTS[c] ?? `_${c}`)
