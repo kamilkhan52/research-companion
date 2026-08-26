@@ -1,7 +1,7 @@
-// Equation rendering for Markdown (polish plan G.1): MathJax-generated SVG drawn by
-// react-native-svg — native views, no WebView, no fonts (glyphs are paths). Falls back to a
-// unicode approximation (lib/math.texToPlain) on the pre-rebuild dev client (no SVG native
-// module yet), on MathJax parse failures, and in jest.
+// Equation rendering for Markdown (polish plan G.1): display math is a MathJax-generated SVG
+// drawn by react-native-svg — native views, no WebView, no fonts (glyphs are paths) — with a
+// Unicode fallback. Inline math deliberately stays a native Text glyph run so Android reflow
+// cannot leave an inline View painted over adjacent prose (DR-109).
 
 import { useState } from 'react';
 import { LayoutChangeEvent, ScrollView, Text as RNText, useWindowDimensions, View } from 'react-native';
@@ -10,39 +10,24 @@ import { fitMathBlock, getSvgXml, splitTexForLines, texToPlain, texToSvg } from 
 import { useTheme } from '@/theme/ThemeProvider';
 import { fonts, space } from '@/theme/tokens';
 
-// MathJax sizes its SVG in ex units of its own font (~0.45em); scale against the enclosing
-// font size so inline math sits naturally in serif body text.
+// MathJax sizes its SVG in ex units of its own font (~0.45em); scale display equations against
+// the enclosing font size.
 const EX_TO_PX = 0.45;
 
 export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: number }) {
-  const t = useTheme();
-  const SvgXml = getSvgXml() as React.ComponentType<{
-    xml: string; width: number; height: number; color?: string;
-  }> | null;
-  const rendered = SvgXml ? texToSvg(tex, false) : null;
-  if (!SvgXml || !rendered) {
-    return <RNText testID="inline-math" style={{ fontFamily: fonts.serifItalic }}>{texToPlain(tex)}</RNText>;
-  }
-  const ex = fontSize * EX_TO_PX;
-  // An inline View inside Text flows with the line on both platforms; the translateY drops
-  // the box by the formula's depth so its baseline meets the text baseline.
+  // Android can keep an inline View's old placement after the surrounding Text is remeasured
+  // (for example when a figure above it finishes loading). The View then paints over adjacent
+  // words even though its measured width is correct (DR-109). A nested Text participates in the
+  // paragraph's native glyph layout on every reflow, so inline math uses the existing readable
+  // Unicode conversion. Display equations retain full MathJax SVG rendering below.
   return (
-    <View
+    <RNText
       testID="inline-math"
-      style={{
-        width: rendered.widthEx * ex,
-        height: rendered.heightEx * ex,
-        transform: [{ translateY: rendered.depthEx * ex }],
-      }}
+      style={{ fontFamily: fonts.serifItalic, fontSize }}
       accessible
       accessibilityLabel={tex}>
-      <SvgXml
-        xml={rendered.svg}
-        width={rendered.widthEx * ex}
-        height={rendered.heightEx * ex}
-        color={t.text}
-      />
-    </View>
+      {texToPlain(tex)}
+    </RNText>
   );
 }
 
