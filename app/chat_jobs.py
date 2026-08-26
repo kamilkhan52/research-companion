@@ -679,8 +679,10 @@ def _maybe_edit_synthesis(job: ChatJob, turn, model: str | None = None) -> None:
         project_name=meta.get("name") or (pid or "this project"),
         goals=(meta.get("goals") or "").strip(),
         current_synthesis=store.read_synthesis(),
+        paper_slug=job.slug,
         paper_title=store.title_for(job.slug),
         notes_block=proposed["notes_block"],
+        full_text=store.read_full_text(job.slug),
         # The turn's one-shot model override applies to the whole Finish, this pass included —
         # a cross-model retry must not silently edit the notes on the account default.
         model=model,

@@ -343,14 +343,16 @@ _FINISH_INSTRUCTION = (
 )
 
 #: DR-058 — Kamil's design for bounding one paper's influence on the Project Notes: a
-#: SEPARATE editor that must reason about the exact changes before making any. The model that
-#: just spent a full context window on the paper systematically over-weights it; this pass sees
-#: the paper only as its committed-size notes, and its plan is surfaced in review so the reader
-#: can judge the diff against the editor's own stated intent.
+#: SEPARATE editor that must reason about the exact changes before making any. Its plan is
+#: surfaced in review so the reader can judge the diff against the editor's own stated intent.
+#: The full paper now accompanies the committed-size notes as evidence after the 2026-08-24 HBF
+#: production test: it improved qualification of modeled results, while the preservation rule
+#: below guards against the extra context causing unrelated copy drift.
 _SYNTHESIS_EDITOR = """You are the Project Notes editor for a research reading project. You \
 receive the project's description, the CURRENT Project Notes (the synthesis across everything \
-read so far), and the Paper Notes block just drafted for a newly finished paper. Your job is to fold \
-the paper into the Project Notes with deliberate restraint.
+read so far), the Paper Notes block just drafted for a newly finished paper, and that paper's \
+complete text as source evidence. Your job is to fold the paper into the Project Notes with \
+deliberate restraint.
 
 First, under a ###PLAN### marker line, state your change plan in a few short paragraphs or \
 bullets: what from this paper genuinely enriches the Project Notes (new findings, corrections, \
@@ -363,8 +365,16 @@ Then, under a ###SYNTHESIS### marker line, output the COMPLETE Project Notes doc
 the planned changes applied — and only those changes. Preserve the existing structure, \
 claims, links, and voice unless the plan says otherwise; integrate rather than reframe; one \
 paper must never reorganize the whole document. If the current Project Notes are empty, draft \
-a concise first synthesis grounded only in the supplied Paper Notes block. Never invent material \
-beyond the supplied notes and current document. End with ###END###."""
+a concise first synthesis grounded in the supplied Paper Notes block and source evidence. Never \
+invent material beyond the supplied notes, full paper, and current document.
+
+UNCHANGED TEXT IS IMMUTABLE. Except for the exact passages your PLAN identifies for change, \
+reproduce the existing Project Notes byte-for-byte: preserve every word and negation, number, \
+link target, heading, list item and ordering, punctuation mark, and formatting choice. Do not \
+paraphrase, copyedit, reflow, reorder, or "improve" unrelated text. Full-paper access is evidence \
+for bounded additions or explicit corrections, not permission to rewrite existing material. \
+Before answering, compare the proposed document with CURRENT Project Notes and restore any \
+unplanned difference. End with ###END###."""
 
 
 _REQUEST_CHANGES = (
@@ -894,7 +904,7 @@ REGISTRY = (
         label="Project Notes editor (synthesis pass)",
         relative_path="Analysis/Synthesis Editor.md",
         bundled_default=_SYNTHESIS_EDITOR,
-        required_literals=("###PLAN###", "###SYNTHESIS###"),
+        required_literals=("###PLAN###", "###SYNTHESIS###", "UNCHANGED TEXT IS IMMUTABLE"),
         description="Plans, then applies, one paper's changes to the Project Notes (DR-058).",
     ),
     PromptSpec(
