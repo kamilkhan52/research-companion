@@ -397,6 +397,15 @@ const SUBSCRIPTS: Record<string, string> = {
   '9': '₉', '+': '₊', '-': '₋', i: 'ᵢ', j: 'ⱼ', n: 'ₙ', x: 'ₓ', t: 'ₜ', k: 'ₖ', m: 'ₘ',
 };
 
+const ACCENTS: Record<string, string> = {
+  hat: '\u0302', bar: '\u0304', tilde: '\u0303', vec: '\u20d7', dot: '\u0307',
+  ddot: '\u0308', overline: '\u0305', underline: '\u0332',
+};
+
+const DOUBLE_STRUCK: Record<string, string> = {
+  C: 'ℂ', E: '𝔼', H: 'ℍ', N: 'ℕ', P: 'ℙ', Q: 'ℚ', R: 'ℝ', Z: 'ℤ',
+};
+
 /** A modest, readable unicode approximation of TeX — NOT a renderer. Good enough that a
  * formula on the pre-rebuild client reads as math rather than markup. */
 export function texToPlain(tex: string): string {
@@ -406,6 +415,11 @@ export function texToPlain(tex: string): string {
     const before = s;
     s = s
       .replace(/\\(?:operatorname|text|mathrm|mathbf|mathit|mathcal|boldsymbol)\s*\{([^{}]*)\}/g, '$1')
+      .replace(/\\mathbb\s*\{([^{}]*)\}/g, (_m, body: string) =>
+        [...body].map((c) => DOUBLE_STRUCK[c] ?? c).join(''))
+      .replace(/\\(hat|bar|tilde|vec|dot|ddot|overline|underline)\s*\{([^{}]*)\}/g,
+        (_m, name: string, body: string) => decorate(body, ACCENTS[name]))
+      .replace(/\\binom\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, 'C($1, $2)')
       .replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1)/($2)')
       .replace(/\\sqrt\s*\{([^{}]*)\}/g, '√($1)');
     if (s === before) break;
@@ -415,21 +429,35 @@ export function texToPlain(tex: string): string {
     .replace(/\\[,;:!]|\\quad|\\qquad/g, ' ')
     .replace(/\\\|/g, '‖')
     .replace(/\\\\/g, '; ')
+    // Protect escaped set braces while structural TeX grouping braces are stripped below.
+    .replace(/\\\{/g, '\uE000')
+    .replace(/\\\}/g, '\uE001')
+    .replace(/\\([%#$&_])/g, '$1')
     .replace(/\\(?:arg)\s*\\?(min|max)/gi, 'arg $1')
     .replace(/[\^]\{([^{}]*)\}/g, (_m, body: string) => toScript(body, SUPERSCRIPTS, '^'))
     .replace(/_\{([^{}]*)\}/g, (_m, body: string) => toScript(body, SUBSCRIPTS, '_'))
-    .replace(/\^(\S)/g, (_m, c: string) => SUPERSCRIPTS[c] ?? `^${c}`)
-    .replace(/_(\S)/g, (_m, c: string) => SUBSCRIPTS[c] ?? `_${c}`)
+    .replace(/\^([0-9+\-niT*])/g,
+      (_m, c: string) => SUPERSCRIPTS[c] ?? `^${c}`)
+    .replace(/_([0-9+\-ijnxtkm])(?![A-Za-z])/g,
+      (_m, c: string) => SUBSCRIPTS[c] ?? `_${c}`)
     .replace(/\\([a-zA-Z]+)/g, (_m, name: string) => GREEK[name] ?? SYMBOLS[name] ?? name)
     .replace(/[{}]/g, '')
+    .replace(/\uE000/g, '{')
+    .replace(/\uE001/g, '}')
     .replace(/\s{2,}/g, ' ');
   return s.trim();
 }
 
+function decorate(body: string, mark: string): string {
+  return [...body].map((c) => /\s/.test(c) ? c : `${c}${mark}`).join('');
+}
+
 function toScript(body: string, map: Record<string, string>, prefix: string): string {
-  const chars = [...body];
+  const normalized = body.replace(/^\\(min|max|sup|inf|lim)$/, '$1');
+  const chars = [...normalized];
   if (chars.length && chars.every((c) => map[c] !== undefined)) {
     return chars.map((c) => map[c]).join('');
   }
-  return `${prefix}(${body})`;
+  if (prefix === '_' && /^[A-Za-z]+$/.test(normalized)) return `_${normalized}`;
+  return `${prefix}(${normalized})`;
 }

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
+import { Text } from 'react-native';
 
-import { MathBlock } from '@/components/MathView';
+import { InlineMath, MathBlock } from '@/components/MathView';
 
 jest.mock('@/lib/math', () => {
   const actual = jest.requireActual('@/lib/math');
@@ -43,6 +44,18 @@ test('a streamed equation can move from fallback text to SVG without changing ho
 
   expect(() => view.rerender(<MathBlock tex="complete" />)).not.toThrow();
   expect(screen.getByTestId('math-svg')).toBeTruthy();
+});
+
+test('inline math remains a text glyph run even when native SVG is available', () => {
+  render(
+    <Text>
+      Endurance is <InlineMath tex={'0.56\\times'} /> as long as the baseline.
+    </Text>,
+  );
+
+  expect(screen.getByText('0.56×')).toBeTruthy();
+  expect(screen.queryByTestId('math-svg')).toBeNull();
+  expect(screen.getByTestId('inline-math').type).toBe('Text');
 });
 
 // DR-098 — a wide equation with top-level connectives stacks as fitted lines instead of

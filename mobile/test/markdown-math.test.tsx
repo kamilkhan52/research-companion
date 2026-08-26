@@ -106,6 +106,13 @@ test('texToPlain approximates common TeX readably', () => {
   expect(texToPlain('\\frac{a}{b}')).toBe('(a)/(b)');
   expect(texToPlain('\\| W X \\|')).toBe('‖ W X ‖');
   expect(texToPlain('\\operatorname{diag}(s)')).toBe('diag(s)');
+  expect(texToPlain('\\hat{y} + \\bar{x} + \\vec{v}')).toBe('ŷ + x̄ + v⃗');
+  expect(texToPlain('\\mathbb{E}[X] \\in \\mathbb{R}')).toBe('𝔼[X] ∈ ℝ');
+  expect(texToPlain('\\binom{n}{k}')).toBe('C(n, k)');
+  expect(texToPlain('\\{0,1\\}^n')).toBe('{0,1}ⁿ');
+  expect(texToPlain('30\\%')).toBe('30%');
+  expect(texToPlain('x_{\\max}')).toBe('x_max');
+  expect(texToPlain('CV^2f + x_max')).toBe('CV²f + x_max');
 });
 
 test('texToSvg produces a sized, themable SVG (real MathJax)', () => {
