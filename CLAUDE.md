@@ -284,6 +284,14 @@ open); completed milestones and dated handoffs are in `90-history.md`.
 
 ## Conventions
 
+- **Every PR gets an independent Opus review before merge, including small and docs-only PRs.**
+  Start the reviewer after the PR exists, use the `opus` model in an isolated worktree, and give it
+  the exact base/head diff plus `CLAUDE.md`, `AGENTS.md`, and the relevant roadmap/audit context.
+  Fix every verified P0/P1 finding and send the updated diff back through Opus until it explicitly
+  approves. Tests, CI, self-review, or another model's review do not substitute for this gate, and
+  never describe an unreviewed PR as reviewed. If infrastructure prevents opening a PR, an Opus
+  review of the intended logical diff is useful pre-PR evidence but is **not** the required PR
+  review; the actual PR still needs review once it exists.
 - **Check a PR's base branch before merging it.** Sessions here stack PRs, and a stacked PR does
   NOT retarget when merging its parent deletes the base — it silently merges into the resurrected
   base branch instead of `main`, and still shows a green MERGED badge. That happened on
