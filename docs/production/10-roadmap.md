@@ -62,7 +62,8 @@ picture is unchanged, M4 still blocked only on H8's merchant account):
   above).
 - **Still never measured**: a real production Discover run against the DR-052 + DR-096 lanes.
   Needs Kamil's go-ahead — it spends real money on the production account.
-- **76 ledger rows at `implemented — verify`** (21 closed, 3 open, 5 partial, 3 planned) — device
+- **76 ledger rows at `implemented — verify`** (21 closed, 3 open, 5 partial, 3 planned,
+  2 deferred) — device
   acceptance remains the bottleneck.
 
 ## Position at 2026-08-22 (superseded by the block above)
