@@ -129,9 +129,10 @@ _MAX_NANOUSD: dict[str, int] = {
     # $0.15 — the ledger actual for a turn is $0.06023 (§2b), not the recommended stack's $0.0262,
     # and §8 lists provider pinning as an unmet precondition. 2.5x that, not 3x the aspiration.
     # Since DR-058 this hold also covers the finish turn's synthesis-editor continuation
-    # (metered as `synthesis_edit`, notes-sized inputs, single call): a second admission would
-    # let one Finish consume two concurrency slots and refuse mid-flight. Headroom holds — the
-    # measured turn plus a notes-sized editing call stays well under $0.15.
+    # (metered as `synthesis_edit`, one call over the full paper plus project/paper notes): a
+    # second admission would let one Finish consume two concurrency slots and refuse mid-flight.
+    # Measured turn-and-editor costs, including the largest current corpus paper, remain under
+    # this deliberately pessimistic $0.15 bound; revisit the bound as corpus sizes or models move.
     "analysis": 150_000_000,
     "narration": 40_000_000,        # $0.04
     # $0.60 — the FALLBACK bound only, covering the largest measured narration (36,987 chars,

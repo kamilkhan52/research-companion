@@ -365,8 +365,8 @@ Then, under a ###SYNTHESIS### marker line, output the COMPLETE Project Notes doc
 the planned changes applied — and only those changes. Preserve the existing structure, \
 claims, links, and voice unless the plan says otherwise; integrate rather than reframe; one \
 paper must never reorganize the whole document. If the current Project Notes are empty, draft \
-a concise first synthesis grounded only in the supplied Paper Notes block. Never invent material \
-beyond the supplied notes, full paper, and current document.
+a concise first synthesis grounded in the supplied Paper Notes block and source evidence. Never \
+invent material beyond the supplied notes, full paper, and current document.
 
 UNCHANGED TEXT IS IMMUTABLE. Except for the exact passages your PLAN identifies for change, \
 reproduce the existing Project Notes byte-for-byte: preserve every word and negation, number, \
