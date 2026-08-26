@@ -434,6 +434,60 @@ def test_legacy_apply_without_job_id_discards_an_exact_matching_proposal(temp_pr
     assert _wait_until_settled(second.id).status == "done"
 
 
+def test_body_only_paper_proposal_is_recognized_as_applied(temp_project):
+    """DR-111: persistence adds ``## Notes`` to a body-only proposal. Cleanup must compare
+    that persisted shape or the approved proposal reappears on every notes-screen open."""
+    from app.routers.notes import NotesSaveReq, notes_job_latest, save_notes
+
+    add_paper(temp_project, "paper", "Paper")
+    notes_jobs.save("paper", "Original note.")
+    first = notes_jobs.start_edit(
+        "paper",
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "# Summary\n\nApplied insight."}]),
+    )
+    finished = _wait_until_settled(first.id)
+
+    # The compatibility client omits job_id. The saved document gains a Notes heading, while
+    # the job result intentionally has none.
+    save_notes(
+        "paper",
+        NotesSaveReq(markdown=finished.result or "", summary="Apply body-only proposal"),
+    )
+    assert notes_jobs.read("paper") == "## Notes\n\n# Summary\n\nApplied insight."
+    assert notes_jobs.latest_for("paper") is None
+
+    # Repair the already-stuck production shape too: an exact applied result retained from an
+    # earlier request disappears the next time the latest-proposal endpoint is read.
+    second = notes_jobs.start_edit(
+        "paper",
+        "revise again",
+        runner=_sync_runner([{"type": "final", "text": "Another applied insight."}]),
+    )
+    finished_again = _wait_until_settled(second.id)
+    notes_jobs.save("paper", finished_again.result or "")
+    assert notes_jobs.latest_for("paper") is finished_again
+    assert notes_job_latest("paper") == {"job": None}
+    assert notes_jobs.latest_for("paper") is None
+
+
+def test_latest_lookup_preserves_a_genuinely_stale_paper_proposal(temp_project):
+    from app.routers.notes import notes_job_latest
+
+    add_paper(temp_project, "paper", "Paper")
+    notes_jobs.save("paper", "Original note.")
+    job = notes_jobs.start_edit(
+        "paper",
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "Proposed note."}]),
+    )
+    finished = _wait_until_settled(job.id)
+    notes_jobs.save("paper", "Different human edit.")
+
+    assert notes_job_latest("paper")["job"]["id"] == finished.id
+    assert notes_jobs.latest_for("paper") is finished
+
+
 def test_default_notes_editor_includes_math_contract(monkeypatch):
     captured = {}
     monkeypatch.setattr(notes_jobs.agent_harness, "AGENTIC_ENABLED", False)
