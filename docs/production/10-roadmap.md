@@ -28,7 +28,16 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-24)
+## Current position (updated 2026-08-26)
+
+**Delta at 2026-08-26** (device-feedback cleanup; milestone position unchanged):
+- **The open bubble backlog is clear.** DR-090 had already shipped in #433 but its ledger state
+  was stale. DR-106/DR-111 landed in #460: the proposal card labels its request summary honestly,
+  and applied Paper Notes proposals self-heal without consuming relocation queues. DR-109 landed
+  in #461: inline formulas use reflow-safe native text with readable TeX conversion, while display
+  equations retain MathJax SVG rendering.
+- **80 ledger rows are at `implemented — verify`** (21 closed, 0 open, 5 partial, 3 planned,
+  2 deferred) — physical-device acceptance remains the bottleneck.
 
 **Delta at 2026-08-24** (a device-feedback day — four PRs #454–#457, all merged; the milestone
 picture is unchanged, M4 still blocked only on H8's merchant account):
