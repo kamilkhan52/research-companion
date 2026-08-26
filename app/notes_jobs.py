@@ -163,14 +163,45 @@ def discard_if_applied(target: str) -> bool:
     discard a proposal.
     """
     latest = latest_for(target)
-    if (
-        latest is None
-        or latest.status != "done"
-        or not latest.result
-        or read(target).strip() != latest.result.strip()
-    ):
+    if latest is None or latest.status != "done" or not latest.result:
+        return False
+    # Relocation proposals carry continuation metadata. Dropping one through an exact-match
+    # compatibility cleanup would strand the rest of the queue; only resolve_and_advance may
+    # consume it after an explicit Apply/Discard carrying the job id.
+    if latest.relocation_total is not None:
+        return False
+    try:
+        current = read(target).strip()
+    except NotesError:
+        # A removed paper can outlive its settled in-memory proposal. Cleanup is best-effort;
+        # do not turn the latest-job compatibility endpoint into a 500 for that stale route.
+        return False
+    if current != _as_persisted_document(target, latest.result):
         return False
     return discard(latest.id, target=target)
+
+
+def _as_persisted_document(target: str, markdown: str) -> str:
+    """Normalize a proposal to the document shape ``save`` puts on disk.
+
+    Paper-note proposals may return either a complete ``## Notes`` block or just its body.
+    ``store.append_notes_block`` deliberately supplies the heading for the latter. Comparing the
+    raw proposal with ``read_notes`` therefore made an already-applied body-only proposal look
+    different forever, so the notes screen resumed the stale diff on every open (DR-111).
+    Project Notes have no wrapper and compare as-is after the same insignificant edge trim used
+    by the previous compatibility check.
+    """
+    body = markdown.strip()
+    if target != WORKING:
+        if not body.lower().startswith("## notes"):
+            body = "## Notes\n\n" + body
+        # ``store.read_notes`` canonicalizes the heading line and inserts exactly one blank
+        # line before the body. Mirror that read-back shape so heading whitespace or a proposal
+        # using one newline cannot retain an already-applied diff forever.
+        rest = body[len("## Notes"):]
+        head, _, notes_body = rest.partition("\n")
+        body = ("## Notes" + head).rstrip() + "\n\n" + notes_body.strip()
+    return body
 
 
 def revision(target: str) -> str:

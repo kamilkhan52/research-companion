@@ -93,9 +93,21 @@ def notes_job_active(target: str):
 
 @project_router.get("/notes/jobs/latest/{target}")
 def notes_job_latest(target: str):
-    """Most recent retained proposal, whether it is still running or ready to apply."""
-    job = notes_jobs.latest_for(target)
-    return {"job": notes_jobs.snapshot(job.id) if job else None}
+    """Most recent retained proposal, whether it is still running or ready to apply.
+
+    The exact-match cleanup also repairs a proposal retained by an older client or interrupted
+    response after its result reached the git record. A genuinely stale proposal whose content
+    differs remains reviewable and is still refused on apply.
+    """
+    with notes_jobs.mutation_lock(target):
+        job = notes_jobs.latest_for(target)
+        # A relocation queue must advance through resolve_and_advance after each approval; a
+        # read-only GET must not discard its queue metadata or launch its next paid pass. Ordinary
+        # proposals have no continuation and are safe to self-heal here.
+        if job is None or job.relocation_total is None:
+            notes_jobs.discard_if_applied(target)
+            job = notes_jobs.latest_for(target)
+        return {"job": notes_jobs.snapshot(job.id) if job else None}
 
 
 @project_router.get("/notes/jobs/{job_id}")
@@ -147,6 +159,11 @@ def save_notes(target: str, req: NotesSaveReq):
             result = notes_jobs.save(target, req.markdown, req.summary or "")
             if req.job_id:
                 advance = notes_jobs.resolve_and_advance(req.job_id, target=target)
+                # A proposal id can disappear during a client/backend rollout. The exact
+                # approved document still reached the record, so do not leave another matching
+                # snapshot to resurrect as a stale diff. Never discards a non-matching proposal.
+                if not advance["ok"]:
+                    notes_jobs.discard_if_applied(target)
             else:
                 # Compatibility with pre-R8.3 clients, whose apply request has no job id.
                 # Exact stored-result matching prevents their applied proposal from remaining

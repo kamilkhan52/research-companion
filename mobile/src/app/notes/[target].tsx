@@ -340,16 +340,19 @@ export default function NotesScreen() {
                 <View style={styles.proposalHead}>
                   <Icon name="zap" size={14} color={t.mint} />
                   <Text variant="label" color={t.mint}>
-                    AI revision
+                    AI proposal
                   </Text>
                 </View>
-                <Text variant="serifItalic" style={{ marginTop: space.xs }}>
-                  “{agent.job?.instruction}”
+                <Text variant="overline" color={t.muted} style={{ marginTop: space.sm }}>
+                  REQUEST SUMMARY
+                </Text>
+                <Text variant="serifItalic" style={{ marginTop: 2 }}>
+                  {agent.job?.instruction}
                 </Text>
                 <Text variant="caption" color={t.violet} style={{ marginTop: space.xs }}>
                   {relocationProgress
                     ? `${relocationProgress}${agent.job?.relocation_title ? ` · ${agent.job.relocation_title}` : ''}. Apply or discard to continue to the next paper.`
-                    : 'Review below — nothing is committed until you apply.'}
+                    : 'Review below — the editor also used the current notes and relevant source material. Nothing is committed until you apply.'}
                 </Text>
               </Card>
             ) : null}

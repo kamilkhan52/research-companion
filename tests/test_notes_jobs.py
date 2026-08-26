@@ -434,6 +434,102 @@ def test_legacy_apply_without_job_id_discards_an_exact_matching_proposal(temp_pr
     assert _wait_until_settled(second.id).status == "done"
 
 
+def test_body_only_paper_proposal_is_recognized_as_applied(temp_project):
+    """DR-111: persistence adds ``## Notes`` to a body-only proposal. Cleanup must compare
+    that persisted shape or the approved proposal reappears on every notes-screen open."""
+    from app.routers.notes import NotesSaveReq, notes_job_latest, save_notes
+
+    add_paper(temp_project, "paper", "Paper")
+    notes_jobs.save("paper", "Original note.")
+    first = notes_jobs.start_edit(
+        "paper",
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "# Summary\n\nApplied insight."}]),
+    )
+    finished = _wait_until_settled(first.id)
+
+    # The compatibility client omits job_id. The saved document gains a Notes heading, while
+    # the job result intentionally has none.
+    save_notes(
+        "paper",
+        NotesSaveReq(markdown=finished.result or "", summary="Apply body-only proposal"),
+    )
+    assert notes_jobs.read("paper") == "## Notes\n\n# Summary\n\nApplied insight."
+    assert notes_jobs.latest_for("paper") is None
+
+    # Repair the already-stuck production shape too: an exact applied result retained from an
+    # earlier request disappears the next time the latest-proposal endpoint is read.
+    second = notes_jobs.start_edit(
+        "paper",
+        "revise again",
+        runner=_sync_runner([{"type": "final", "text": "Another applied insight."}]),
+    )
+    finished_again = _wait_until_settled(second.id)
+    notes_jobs.save("paper", finished_again.result or "")
+    assert notes_jobs.latest_for("paper") is finished_again
+    assert notes_job_latest("paper") == {"job": None}
+    assert notes_jobs.latest_for("paper") is None
+
+    # A headed proposal is read back with one canonical blank line even when the model emitted
+    # only a single newline after the heading. That harmless formatting difference must not
+    # resurrect the applied proposal either.
+    third = notes_jobs.start_edit(
+        "paper",
+        "revise with heading",
+        runner=_sync_runner([{"type": "final", "text": "## Notes\nSingle-line heading body."}]),
+    )
+    finished_third = _wait_until_settled(third.id)
+    notes_jobs.save("paper", finished_third.result or "")
+    assert notes_jobs.read("paper") == "## Notes\n\nSingle-line heading body."
+    assert notes_job_latest("paper") == {"job": None}
+    assert notes_jobs.latest_for("paper") is None
+
+
+def test_latest_lookup_preserves_a_genuinely_stale_paper_proposal(temp_project):
+    from app.routers.notes import notes_job_latest
+
+    add_paper(temp_project, "paper", "Paper")
+    notes_jobs.save("paper", "Original note.")
+    job = notes_jobs.start_edit(
+        "paper",
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "Proposed note."}]),
+    )
+    finished = _wait_until_settled(job.id)
+    notes_jobs.save("paper", "Different human edit.")
+
+    assert notes_job_latest("paper")["job"]["id"] == finished.id
+    assert notes_jobs.latest_for("paper") is finished
+
+
+def test_latest_lookup_never_discards_or_advances_a_relocation_queue(temp_project):
+    from app.routers.notes import notes_job_latest
+
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        yield {"type": "final", "text": "# Project Notes\n\nFirst paper integrated."}
+
+    first = notes_jobs.start_split_destination_queue(
+        [
+            {"slug": "first", "title": "First", "notes": "## Notes\n\nOne."},
+            {"slug": "second", "title": "Second", "notes": "## Notes\n\nTwo."},
+        ],
+        source_name="Source",
+        runner=runner,
+    )
+    first = _wait_until_settled(first.id)
+    notes_jobs.save(notes_jobs.WORKING, first.result or "")
+
+    snapshot = notes_job_latest(notes_jobs.WORKING)["job"]
+    assert snapshot["id"] == first.id
+    assert snapshot["relocation_index"] == 1
+    assert snapshot["relocation_total"] == 2
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is first
+    assert len(prompts_seen) == 1
+
+
 def test_default_notes_editor_includes_math_contract(monkeypatch):
     captured = {}
     monkeypatch.setattr(notes_jobs.agent_harness, "AGENTIC_ENABLED", False)
