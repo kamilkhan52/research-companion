@@ -784,7 +784,19 @@ def _identity_with_openalex(candidate: dict, identity_keys) -> list[str]:
 def _arxiv_doi_id(doi: str) -> str:
     """The arXiv id inside a DataCite arXiv DOI (`10.48550/arXiv.2012.09852`), else ""."""
     m = re.fullmatch(r"10\.48550/arxiv\.(.+)", doi.strip().lower())
-    return m.group(1) if m else ""
+    return _bare_arxiv_id(m.group(1)) if m else ""
+
+
+def _bare_arxiv_id(value) -> str:
+    """An arXiv id without its version suffix — `2012.09852v2` → `2012.09852`.
+
+    This MUST match how `discovery._identity_keys` builds `arxiv:` keys, which strips `vN` the
+    same way. When the two disagree, two rows for one paper are FOUND as the same row (the keys
+    match) and then declared different papers (the conflict test sees `…v2` ≠ `…`) — which is the
+    exact shape of DR-113, and it puts the paper on screen twice. The helper is duplicated rather
+    than imported because `discovery` imports this module, not the other way round.
+    """
+    return re.sub(r"v\d+$", "", str(value or "").strip(), flags=re.IGNORECASE).lower()
 
 
 def _strong_ids_conflict(a: dict, b: dict) -> bool:
@@ -799,22 +811,24 @@ def _strong_ids_conflict(a: dict, b: dict) -> bool:
     twice. When the arXiv DOI's own id matches the arXiv id both rows agree on, the DOIs describe
     the same work and only the other identifiers are allowed to disagree.
     """
-    arxiv_left = str(a.get("arxiv_id") or "").strip().lower()
-    arxiv_right = str(b.get("arxiv_id") or "").strip().lower()
+    arxiv_left = _bare_arxiv_id(a.get("arxiv_id"))
+    arxiv_right = _bare_arxiv_id(b.get("arxiv_id"))
     doi_left = str(a.get("doi") or "").strip().lower()
     doi_right = str(b.get("doi") or "").strip().lower()
     same_arxiv = bool(arxiv_left) and arxiv_left == arxiv_right
     arxiv_doi_pair = same_arxiv and (
         _arxiv_doi_id(doi_left) == arxiv_left or _arxiv_doi_id(doi_right) == arxiv_right
     )
-    for field in ("doi", "arxiv_id", "openalex_id"):
+    for field in ("doi", "openalex_id"):
         if field == "doi" and arxiv_doi_pair:
             continue
         left = str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         right = str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         if left and right and left != right:
             return True
-    return False
+    # arXiv ids are compared on their BARE form, for the reason in `_bare_arxiv_id`: the identity
+    # keys already ignore the version, so comparing the raw values here would split v2 from v1.
+    return bool(arxiv_left) and bool(arxiv_right) and arxiv_left != arxiv_right
 
 
 def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> list[dict]:

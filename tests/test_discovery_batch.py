@@ -252,6 +252,25 @@ def test_an_arxiv_doi_and_a_publisher_doi_for_one_arxiv_id_are_the_same_paper():
     assert discovery_recall._strong_ids_conflict(from_openalex, other)
 
 
+def test_an_arxiv_version_suffix_is_not_a_different_paper():
+    """The second half of the same hazard, found while probing the first: `_identity_keys` strips
+    `vN` when it builds `arxiv:` keys, so `2012.09852v2` and `2012.09852` are FOUND as one row —
+    and a conflict test comparing the raw values would then declare them different papers, which
+    is exactly how DR-113 put one paper on screen twice. The two normalisations must agree."""
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    versioned = {"title": "P", "arxiv_id": "2012.09852v2", "doi": "10.48550/arxiv.2012.09852"}
+    plain = {"title": "P", "arxiv_id": "2012.09852", "doi": "10.1109/hpca"}
+    assert _identity_keys(versioned)[0] == _identity_keys(plain)[0]
+    assert not discovery_recall._strong_ids_conflict(versioned, plain)
+    assert len(discovery_recall.merge_candidates(
+        [[versioned, plain]], identity_keys=_identity_keys, merge_fn=_merge_candidate)) == 1
+    # Different papers still conflict, version suffixes or not.
+    assert discovery_recall._strong_ids_conflict(
+        {"arxiv_id": "2012.09852v1"}, {"arxiv_id": "2401.00001v1"})
+
+
 def test_a_row_kept_apart_by_a_conflict_never_replaces_the_row_it_lost_to():
     """The duplicate Kamil saw was not two similar rows — it was ONE row emitted twice while the
     other was dropped: the conflicting row re-registered the winner's identity keys, so both
