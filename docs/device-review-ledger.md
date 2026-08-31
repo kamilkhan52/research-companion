@@ -35,12 +35,20 @@ me?", now has one answer: every row in this file that is not `closed`.
    must survive local cleanup belong on the PR/issue or, when genuinely useful as long-term visual
    evidence, under `docs/device-review-assets/<DR-id>/` rather than a temporary attachment path.
 6. **Counting the states: read the STATE column, never the first backticked literal on the row.**
-   Rows quote status words in prose — DR-077's evidence quotes `implemented — verify` before its
-   own `closed` cell, DR-088 quotes `closed` before its own — so a line-oriented regex mis-files
-   rows in both directions. The total still comes to the right number of rows, which is exactly
-   what makes the error look verified. A count that goes into the roadmap should come from the
-   fourth pipe-separated cell:
-   `re.findall(r'^\| (DR-\d+) \|[^|]*\|.*?\| `([^`]+)` \|', text, re.M)`.
+   17 of the 114 rows quote something else in backticks first — 16 of them a path, id or file name
+   (`/usage`, `NEW-1787499590`, `discover.tsx`), which is loud, and **one that is not**: DR-077's
+   FEEDBACK cell quotes `implemented — verify` while the row's state is `closed`, so a naive scan
+   reports a plausible wrong answer rather than an obvious one. A count that reaches the roadmap
+   should read the fourth pipe-separated cell:
+
+   ```python
+   rows = re.findall(r'^\| (DR-\d+) \|[^|]*\|.*?\| `([^`]+)` \|', text, re.M)
+   ```
+
+   Two silent failure modes are worth asserting against rather than trusting: a state cell that is
+   not backticked lets `.*?` scan on into the evidence, and a row wrapped across lines is dropped
+   entirely. Check that the match count equals the `^\| *DR-\d+` row count and that every state is
+   one of the seven vocabulary values in item 3.
 
 ## Current actionable feedback
 
