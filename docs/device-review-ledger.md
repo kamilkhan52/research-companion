@@ -34,6 +34,13 @@ me?", now has one answer: every row in this file that is not `closed`.
 5. Put detailed reproduction steps in the acceptance checklist and link them here. Screenshots that
    must survive local cleanup belong on the PR/issue or, when genuinely useful as long-term visual
    evidence, under `docs/device-review-assets/<DR-id>/` rather than a temporary attachment path.
+6. **Counting the states: read the STATE column, never the first backticked literal on the row.**
+   Rows quote status words in prose — DR-077's evidence quotes `implemented — verify` before its
+   own `closed` cell, DR-088 quotes `closed` before its own — so a line-oriented regex mis-files
+   rows in both directions. The total still comes to the right number of rows, which is exactly
+   what makes the error look verified. A count that goes into the roadmap should come from the
+   fourth pipe-separated cell:
+   `re.findall(r'^\| (DR-\d+) \|[^|]*\|.*?\| `([^`]+)` \|', text, re.M)`.
 
 ## Current actionable feedback
 
