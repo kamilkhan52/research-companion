@@ -28,7 +28,46 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-26)
+## Current position (updated 2026-08-31)
+
+**Delta at 2026-08-31** (one bubble item, two PRs #463/#464; milestone position unchanged, M4
+still blocked only on H8's merchant account):
+- **DR-112 — affiliations now show on Discover cards.** The data was already produced and already
+  on the wire; only the card never drew it. Kamil's assumption that it also feeds RANKING is
+  false and deliberately so: `score_abstracts` excludes it because the OpenAlex authorship call is
+  deferred until after screening (~60 papers instead of thousands), and `score_candidates`, the
+  one function that ever put affiliations in a prompt, is dead code called only by tests. Half the
+  rows legitimately carry none — OpenAlex returns their authorships with empty affiliation
+  strings — so the card has an explicit absent state. "Rank by affiliation" is a costed design
+  change, not a wiring-up.
+- **DR-113 — one paper was being listed twice, and the other copy discarded.** Three independent
+  identifier mismatches each made `merge_candidates` call one paper two: an arXiv DOI vs a
+  publisher DOI, `v2` vs the bare id, and — the one that produced Kamil's actual duplicate — DOIs
+  arriving from OpenAlex as `https://doi.org/…` URLs while the comparison used the bare form. The
+  row kept apart then re-registered the incumbent's keys and took an `order` slot resolving to it,
+  so the list materialised one object twice. Measured against the pre-fix helper, **110 of 120**
+  orderings of a five-row set produced that. A row kept apart now also gets its own
+  `candidate_id`, or the client's duplicate guard would have deleted the very paper the split
+  preserved. The client collapses repeats at render too, because results already on disk still
+  hold them and a fresh Discover run costs real money.
+- **DR-114 opened** (found by property-testing, not reported): a title-only match can absorb
+  another paper's arXiv id, producing a card whose title and abstract are one paper's and whose id
+  is another's — **Add-to-library from that card fetches the wrong PDF**. ~1 in 6 orderings,
+  pre-existing, pinned as a strict xfail rather than a comment. The fix changes what an alias
+  match may contribute to a cluster's identity, so it earns its own change and device pass.
+- **Process note**: three Opus review rounds on #464 each found something real (the URL-form DOI
+  case, a shared `candidate_id`, a DOI comparison that discarded the registrant prefix and would
+  have merged two different papers). The review gate is earning its cost.
+- **Local full-suite red is not always a signal**: `test_affiliation_jobs.py::test_retrieval_
+  affiliation_job_caches_and_ranks_the_top_two` fails in a full local run on clean `main`, and
+  passes in CI and in isolation. Its `_wait` helper already polls every 10 ms; what it cannot
+  survive is its 3-second DEADLINE, which a machine running the rest of the suite can exceed
+  before the job thread is scheduled. Worth raising (or making env-tunable) in its own PR — not a
+  rewrite of the wait, which is already the right shape.
+- **82 ledger rows at `implemented — verify`** (21 closed, 1 open, 5 partial, 3 planned, 2
+  deferred; 114 total) — device acceptance remains the bottleneck.
+
+## Position at 2026-08-26 (superseded by the block above)
 
 **Delta at 2026-08-26** (device-feedback cleanup; milestone position unchanged):
 - **The open bubble backlog is clear.** DR-090 had already shipped in #433 but its ledger state
