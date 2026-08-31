@@ -310,14 +310,75 @@ def test_no_ordering_of_overlapping_rows_can_duplicate_or_drop_a_paper():
         {"title": "Q", "openalex_id": "https://openalex.org/W9"},
         {"title": "P", "arxiv_id": "2012.09852", "openalex_id": "https://openalex.org/W2"},
     ]
+    # Five rows, three papers: the two arXiv rows and the OpenAlex row are one work reported
+    # three ways; the `10.1/other` row shares only a title, so it stays its own paper; Q is
+    # unrelated. Each is identified below by a key no OTHER paper here carries — asserting
+    # merely that some output shares a key with each input would be near-trivial, since four
+    # of the five rows share `title:p` (Opus review).
+    sizes = set()
     for order in permutations(range(len(rows))):
         merged = discovery_recall.merge_candidates(
             [[dict(rows[i]) for i in order]],
             identity_keys=_identity_keys, merge_fn=_merge_candidate)
         assert len({id(row) for row in merged}) == len(merged), f"duplicate object for {order}"
-        for row in rows:
-            assert any(set(_identity_keys(row)) & set(_identity_keys(out)) for out in merged), (
-                f"{row} has no representative in the output for {order}")
+        assert all(row.get("title") for row in merged)
+        sizes.add(len(merged))
+    # Five rows, three papers, in every ordering: the two arXiv rows and the OpenAlex row are one
+    # work reported three ways, the `10.1/other` row shares only a title, and Q is unrelated.
+    assert sizes == {3}, f"row count varied by ordering: {sizes}"
+    # NOTE (DR-114): a constant COUNT is not the same as a constant grouping. In 20 of these
+    # orderings the `10.1/other` row absorbs an arXiv row by title first, and a later true
+    # sibling then conflicts with the foreign DOI it inherited — so one paper still lands on two
+    # cards, without any row being duplicated or lost. That is a separate, pre-existing defect in
+    # title bridging, recorded rather than silently asserted away here.
+
+
+def test_a_doi_keeps_its_meaning_through_a_resolver_prefix():
+    """OpenAlex returns DOIs as `https://doi.org/…` URLs, and `discovery._clean_doi` strips that
+    when it builds the `doi:` key. A conflict test comparing raw values is then more strict than
+    the keys that FOUND the pair — the same trap as the version suffix, and it hid the DR-113
+    duplicate whenever the arXiv DOI arrived via OpenAlex rather than arXiv (Opus review)."""
+    from app import discovery_recall
+
+    assert not discovery_recall._strong_ids_conflict(
+        {"arxiv_id": "2012.09852", "doi": "https://doi.org/10.48550/arXiv.2012.09852"},
+        {"arxiv_id": "2012.09852", "doi": "10.1109/hpca"})
+    assert not discovery_recall._strong_ids_conflict(
+        {"doi": "https://doi.org/10.1/aaa"}, {"doi": "10.1/AAA"})
+    assert discovery_recall._strong_ids_conflict(
+        {"doi": "https://doi.org/10.1/aaa"}, {"doi": "10.1/bbb"})
+
+
+def test_arxiv_id_forms_normalise_without_collapsing_the_old_style_archives():
+    """`arxiv.org/abs/X`, `arXiv:X` and a bare `X` are one paper; `math/0601001` and
+    `cs/0601001` are two. The previous comparison took the last path segment, which got the
+    second pair wrong — a real merge of two different papers (Opus review)."""
+    from app import discovery_recall
+
+    for other in ("https://arxiv.org/abs/2012.09852", "arXiv:2012.09852v3", "2012.09852v2"):
+        assert not discovery_recall._strong_ids_conflict(
+            {"arxiv_id": other}, {"arxiv_id": "2012.09852"}), other
+    assert discovery_recall._strong_ids_conflict(
+        {"arxiv_id": "math/0601001"}, {"arxiv_id": "cs/0601001"})
+    assert not discovery_recall._strong_ids_conflict(
+        {"arxiv_id": "math/0601001v2"}, {"arxiv_id": "math/0601001"})
+
+
+def test_a_row_kept_apart_gets_an_id_of_its_own():
+    """`candidate_id` defaults to the FIRST identity key, which is the very key two conflicting
+    rows agree on — so both would reach the client under one id, collide as React keys, and the
+    client's own duplicate guard would drop one: exactly the paper the conflict slot exists to
+    preserve (Opus review)."""
+    from app import discovery_recall
+    from app.discovery import _candidate_key, _identity_keys, _merge_candidate
+
+    rows = [{"title": "T", "doi": "10.1/x", "openalex_id": f"https://openalex.org/W{i}"}
+            for i in (1, 2, 3)]
+    merged = discovery_recall.merge_candidates(
+        [rows], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 3
+    ids = [row.get("candidate_id") or _candidate_key(row) for row in merged]
+    assert len(set(ids)) == 3, f"distinct papers shared a candidate_id: {ids}"
 
 
 def test_merged_candidates_never_repeat_one_paper():

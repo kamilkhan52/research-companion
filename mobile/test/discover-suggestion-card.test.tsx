@@ -140,3 +140,16 @@ test('a suggestion with no known affiliation draws no empty row', async () => {
   await renderCard({ ...BASE, affiliations: [] });
   expect(screen.queryByTestId('suggestion-affiliations')).toBeNull();
 });
+
+test('institutions OpenAlex knows only as blanks draw no row, not a lone separator', async () => {
+  // OpenAlex returns an authorship with an empty affiliation string when it knows the author but
+  // not the institution, so a row of blanks reaches the client and used to render as "·".
+  await renderCard({ ...BASE, affiliations: ['', '  '] });
+  expect(screen.queryByTestId('suggestion-affiliations')).toBeNull();
+});
+
+test('a blank among real institutions is dropped, not counted', async () => {
+  await renderCard({ ...BASE, affiliations: ['Cornell University', '', 'MIT'] });
+  expect(screen.getByTestId('suggestion-affiliations').props.children)
+    .toBe('Cornell University · MIT');
+});

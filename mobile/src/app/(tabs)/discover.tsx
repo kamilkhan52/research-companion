@@ -520,7 +520,10 @@ export function SuggestionCard({
   // and the scoring prompt reads it) and simply never drawn. It gets its own line rather than a
   // tail on the meta string, which already wraps to three lines on his phone; two institutions
   // is where a card stops informing and starts listing.
-  const affiliationList = s.affiliations ?? [];
+  // Blank entries are filtered, not just falsy-checked: OpenAlex returns an authorship with an
+  // empty affiliation string when it knows the author but not the institution, and a list of
+  // those rendered as a lone "·" (Opus review).
+  const affiliationList = (s.affiliations ?? []).map((a) => (a ?? '').trim()).filter(Boolean);
   const affiliations = affiliationList.slice(0, 2).join(' · ')
     + (affiliationList.length > 2 ? ` +${affiliationList.length - 2}` : '');
   const meta = [

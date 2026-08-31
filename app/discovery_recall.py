@@ -781,9 +781,18 @@ def _identity_with_openalex(candidate: dict, identity_keys) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
-def _arxiv_doi_id(doi: str) -> str:
+def _bare_doi(value) -> str:
+    """A DOI without its resolver prefix — mirrors `discovery._clean_doi`, which builds the
+    `doi:` identity key. OpenAlex returns DOIs as full `https://doi.org/…` URLs, so comparing
+    the raw values here while the keys compare cleaned ones is the same "found by key, then
+    declared different" trap this module already had twice."""
+    return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", str(value or "").strip().lower(),
+                  flags=re.IGNORECASE)
+
+
+def _arxiv_doi_id(doi) -> str:
     """The arXiv id inside a DataCite arXiv DOI (`10.48550/arXiv.2012.09852`), else ""."""
-    m = re.fullmatch(r"10\.48550/arxiv\.(.+)", doi.strip().lower())
+    m = re.fullmatch(r"10\.48550/arxiv\.(.+)", _bare_doi(doi))
     return _bare_arxiv_id(m.group(1)) if m else ""
 
 
@@ -796,7 +805,13 @@ def _bare_arxiv_id(value) -> str:
     exact shape of DR-113, and it puts the paper on screen twice. The helper is duplicated rather
     than imported because `discovery` imports this module, not the other way round.
     """
-    return re.sub(r"v\d+$", "", str(value or "").strip(), flags=re.IGNORECASE).lower()
+    # Known prefixes only — NOT the last path segment, which the old comparison used and which
+    # silently equated the old-style ids `math/0601001` and `cs/0601001`, two different papers.
+    bare = str(value or "").strip()
+    bare = re.sub(r"^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/", "", bare,
+                  flags=re.IGNORECASE)
+    bare = re.sub(r"^arxiv:", "", bare, flags=re.IGNORECASE)
+    return re.sub(r"v\d+$", "", bare, flags=re.IGNORECASE).lower()
 
 
 def _strong_ids_conflict(a: dict, b: dict) -> bool:
@@ -813,8 +828,8 @@ def _strong_ids_conflict(a: dict, b: dict) -> bool:
     """
     arxiv_left = _bare_arxiv_id(a.get("arxiv_id"))
     arxiv_right = _bare_arxiv_id(b.get("arxiv_id"))
-    doi_left = str(a.get("doi") or "").strip().lower()
-    doi_right = str(b.get("doi") or "").strip().lower()
+    doi_left = _bare_doi(a.get("doi"))
+    doi_right = _bare_doi(b.get("doi"))
     same_arxiv = bool(arxiv_left) and arxiv_left == arxiv_right
     arxiv_doi_pair = same_arxiv and (
         _arxiv_doi_id(doi_left) == arxiv_left or _arxiv_doi_id(doi_right) == arxiv_right
@@ -822,8 +837,10 @@ def _strong_ids_conflict(a: dict, b: dict) -> bool:
     for field in ("doi", "openalex_id"):
         if field == "doi" and arxiv_doi_pair:
             continue
-        left = str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
-        right = str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+        left = _bare_doi(a.get(field)).rsplit("/", 1)[-1] if field == "doi" \
+            else str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+        right = _bare_doi(b.get(field)).rsplit("/", 1)[-1] if field == "doi" \
+            else str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         if left and right and left != right:
             return True
     # arXiv ids are compared on their BARE form, for the reason in `_bare_arxiv_id`: the identity
@@ -844,11 +861,12 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
         for candidate in group:
             keys = _identity_with_openalex(candidate, identity_keys)
             hit = next((merged[k] for k in keys if k in merged), None)
+            conflicted = hit is not None and _strong_ids_conflict(hit, candidate)
             # A title alias is enough to FIND a possible match but not to trust one: distinct
             # papers share exact titles, and merging them would blend two works into a hybrid
             # whose screening verdict, citations and provenance describe neither. When both rows
             # carry a strong identifier and they disagree, treat them as different papers.
-            if hit is not None and _strong_ids_conflict(hit, candidate):
+            if conflicted:
                 hit = None
             if hit is None:
                 stored = dict(candidate)
@@ -869,6 +887,14 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
                 if not free:
                     merged[slot] = stored
                 order.append(slot)
+                if conflicted:
+                    # A row we deliberately kept APART needs an id of its own too. Downstream,
+                    # `candidate_id` defaults to `_identity_keys[0]`, which is the very key these
+                    # two rows agree on — so both would reach the client under one id, collide as
+                    # React keys, and the client's own duplicate guard would drop one of them:
+                    # exactly the paper this branch exists to preserve. The slot is a key this
+                    # row owns alone, so it is both distinct and stable across runs.
+                    stored["candidate_id"] = slot
                 continue
             merge_fn(hit, candidate)
             hit["channels"] = list(dict.fromkeys(
