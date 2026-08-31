@@ -837,9 +837,13 @@ def _strong_ids_conflict(a: dict, b: dict) -> bool:
     for field in ("doi", "openalex_id"):
         if field == "doi" and arxiv_doi_pair:
             continue
-        left = _bare_doi(a.get(field)).rsplit("/", 1)[-1] if field == "doi" \
+        # DOIs compare WHOLE, registrant prefix included. The old `.rsplit("/", 1)[-1]` existed
+        # to tolerate a resolver prefix, which `_bare_doi` now strips properly; what it also did
+        # was discard the registrant, so `10.1109/hpca` and `10.5555/hpca` — two different papers
+        # — read as equal and merged into a hybrid (Opus review).
+        left = _bare_doi(a.get(field)) if field == "doi" \
             else str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
-        right = _bare_doi(b.get(field)).rsplit("/", 1)[-1] if field == "doi" \
+        right = _bare_doi(b.get(field)) if field == "doi" \
             else str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         if left and right and left != right:
             return True
@@ -893,7 +897,9 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
                     # two rows agree on — so both would reach the client under one id, collide as
                     # React keys, and the client's own duplicate guard would drop one of them:
                     # exactly the paper this branch exists to preserve. The slot is a key this
-                    # row owns alone, so it is both distinct and stable across runs.
+                    # row owns alone. WHICH of two split rows keeps the shared primary key
+                    # depends on arrival order, so this is distinct within a result, not stable
+                    # across runs — ids are per-result, so that is enough.
                     stored["candidate_id"] = slot
                 continue
             merge_fn(hit, candidate)

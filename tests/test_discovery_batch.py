@@ -6,6 +6,8 @@ looks identical whether or not 41 is the paper the model actually judged.
 """
 from __future__ import annotations
 
+import pytest
+
 from app import discovery_batch
 
 
@@ -326,11 +328,44 @@ def test_no_ordering_of_overlapping_rows_can_duplicate_or_drop_a_paper():
     # Five rows, three papers, in every ordering: the two arXiv rows and the OpenAlex row are one
     # work reported three ways, the `10.1/other` row shares only a title, and Q is unrelated.
     assert sizes == {3}, f"row count varied by ordering: {sizes}"
-    # NOTE (DR-114): a constant COUNT is not the same as a constant grouping. In 20 of these
-    # orderings the `10.1/other` row absorbs an arXiv row by title first, and a later true
-    # sibling then conflicts with the foreign DOI it inherited — so one paper still lands on two
-    # cards, without any row being duplicated or lost. That is a separate, pre-existing defect in
-    # title bridging, recorded rather than silently asserted away here.
+    # NOTE (DR-114): a constant COUNT is not the same as a correct GROUPING — see the xfail
+    # below, which pins the shape this one cannot see.
+
+
+@pytest.mark.xfail(reason="DR-114: a title-only bridge donates its DOI to the cluster it joins",
+                   strict=True)
+def test_a_title_bridge_does_not_blend_two_papers_or_split_one():
+    """DR-114, pinned as a failing assertion rather than a comment, so it goes red if someone
+    re-breaks it and green the day it is fixed (Opus review).
+
+    In 20 of these 120 orderings the same-title row with an unrelated DOI absorbs an arXiv row
+    (allowed: a title bridge is how providers that disclose different ids coalesce), and in doing
+    so it INHERITS that paper's arXiv id — a hybrid of two works — while a later true sibling
+    conflicts with the foreign DOI and takes a row of its own. So one paper occupies two rows and
+    another row describes neither paper cleanly. Nothing is duplicated as an object and nothing
+    is unreachable, which is exactly why the count-based assertion above cannot see it.
+    """
+    from itertools import permutations
+
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    rows = [
+        {"title": "P", "arxiv_id": "2012.09852", "doi": "10.48550/arxiv.2012.09852"},
+        {"title": "P", "arxiv_id": "2012.09852v2", "doi": "10.1109/hpca"},
+        {"title": "P", "doi": "10.1/other"},
+        {"title": "Q", "openalex_id": "https://openalex.org/W9"},
+        {"title": "P", "arxiv_id": "2012.09852", "openalex_id": "https://openalex.org/W2"},
+    ]
+    for order in permutations(range(len(rows))):
+        merged = discovery_recall.merge_candidates(
+            [[dict(rows[i]) for i in order]],
+            identity_keys=_identity_keys, merge_fn=_merge_candidate)
+        holders = [out for out in merged if "arxiv:2012.09852" in _identity_keys(out)]
+        assert len(holders) == 1, f"one paper on {len(holders)} rows for ordering {order}"
+        # …and the unrelated paper must not have acquired that arXiv id.
+        other = next(out for out in merged if "doi:10.1/other" in _identity_keys(out))
+        assert not other.get("arxiv_id"), f"a title bridge blended two papers for {order}"
 
 
 def test_a_doi_keeps_its_meaning_through_a_resolver_prefix():
