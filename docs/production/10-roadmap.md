@@ -59,9 +59,11 @@ still blocked only on H8's merchant account):
   case, a shared `candidate_id`, a DOI comparison that discarded the registrant prefix and would
   have merged two different papers). The review gate is earning its cost.
 - **Local full-suite red is not always a signal**: `test_affiliation_jobs.py::test_retrieval_
-  affiliation_job_caches_and_ranks_the_top_two` fails in a full local run on clean `main` — a
-  fixed 3s wait for a background job that a loaded machine misses — and passes in CI and in
-  isolation. Worth a poll-with-deadline fix in its own PR.
+  affiliation_job_caches_and_ranks_the_top_two` fails in a full local run on clean `main`, and
+  passes in CI and in isolation. Its `_wait` helper already polls every 10 ms; what it cannot
+  survive is its 3-second DEADLINE, which a machine running the rest of the suite can exceed
+  before the job thread is scheduled. Worth raising (or making env-tunable) in its own PR — not a
+  rewrite of the wait, which is already the right shape.
 - **82 ledger rows at `implemented — verify`** (21 closed, 1 open, 5 partial, 3 planned, 2
   deferred; 114 total) — device acceptance remains the bottleneck.
 
