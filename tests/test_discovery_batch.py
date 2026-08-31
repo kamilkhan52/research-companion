@@ -293,6 +293,33 @@ def test_a_row_kept_apart_by_a_conflict_never_replaces_the_row_it_lost_to():
     assert [c["abstract"] for c in merged] == ["first", "second"], "a candidate was lost"
 
 
+def test_no_ordering_of_overlapping_rows_can_duplicate_or_drop_a_paper():
+    """The property, rather than another hand-picked pair. Recall feeds `merge_candidates` four
+    groups whose internal order depends on what each provider returned, so a bug that only bites
+    in some orderings is a bug that appears at random for the reader. Measured against the
+    pre-fix helper, 110 of these 120 orderings returned one object twice."""
+    from itertools import permutations
+
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    rows = [
+        {"title": "P", "arxiv_id": "2012.09852", "doi": "10.48550/arxiv.2012.09852"},
+        {"title": "P", "arxiv_id": "2012.09852v2", "doi": "10.1109/hpca"},
+        {"title": "P", "doi": "10.1/other"},
+        {"title": "Q", "openalex_id": "https://openalex.org/W9"},
+        {"title": "P", "arxiv_id": "2012.09852", "openalex_id": "https://openalex.org/W2"},
+    ]
+    for order in permutations(range(len(rows))):
+        merged = discovery_recall.merge_candidates(
+            [[dict(rows[i]) for i in order]],
+            identity_keys=_identity_keys, merge_fn=_merge_candidate)
+        assert len({id(row) for row in merged}) == len(merged), f"duplicate object for {order}"
+        for row in rows:
+            assert any(set(_identity_keys(row)) & set(_identity_keys(out)) for out in merged), (
+                f"{row} has no representative in the output for {order}")
+
+
 def test_merged_candidates_never_repeat_one_paper():
     """The property the client depends on: whatever identity disagreements arrive, the list it
     renders has no repeated identity (its React keys are candidate ids)."""
