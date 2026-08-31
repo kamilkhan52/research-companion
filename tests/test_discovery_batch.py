@@ -224,6 +224,77 @@ def test_the_same_paper_from_two_channels_merges_and_unions_its_provenance():
     assert len(merged[0]["provenance"]) == 2
 
 
+# DR-113 — Kamil's Discover results showed the same paper at two adjacent ranks, under a React
+# "two children with the same key" error toast. Both halves of that are asserted here: the merge
+# that should have happened, and the invariant that must hold even when it must not.
+
+def test_an_arxiv_doi_and_a_publisher_doi_for_one_arxiv_id_are_the_same_paper():
+    """arXiv mints its own DOI for every preprint, so a published work has TWO real DOIs and
+    which one a row carries is a property of the PROVIDER. SpAtten reached the pipeline as
+    10.48550/arXiv.2012.09852 from one source and 10.1109/hpca… from another, and the pipeline
+    split it into two rows that then collided."""
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    from_openalex = {"title": "SpAtten", "arxiv_id": "2012.09852",
+                     "doi": "10.1109/hpca51647.2021.00018", "channels": ["cites"],
+                     "sources": ["openalex"]}
+    from_arxiv = {"title": "SpAtten", "arxiv_id": "2012.09852",
+                  "doi": "10.48550/arxiv.2012.09852", "channels": ["lexical"],
+                  "sources": ["arxiv"]}
+
+    merged = discovery_recall.merge_candidates(
+        [[from_openalex], [from_arxiv]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 1, "one paper, reported under both of its real DOIs, became two rows"
+    assert set(merged[0]["channels"]) == {"cites", "lexical"}
+    # A DOI that merely LOOKS arXiv-ish must not excuse a real disagreement.
+    other = {"title": "SpAtten", "arxiv_id": "2012.09852", "doi": "10.48550/arxiv.9999.99999"}
+    assert discovery_recall._strong_ids_conflict(from_openalex, other)
+
+
+def test_a_row_kept_apart_by_a_conflict_never_replaces_the_row_it_lost_to():
+    """The duplicate Kamil saw was not two similar rows — it was ONE row emitted twice while the
+    other was dropped: the conflicting row re-registered the winner's identity keys, so both
+    `order` slots resolved to the same object."""
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    # The rows must share their FIRST identity key for this to bite: that is the key the
+    # incumbent's `order` slot resolves through, and the one the conflicting row used to
+    # overwrite. Two rows that merely share a title each keep a private primary key and never
+    # showed the bug — which is why the suite stayed green while Kamil's results held duplicates.
+    a = {"title": "Same Words", "arxiv_id": "2401.00001", "doi": "10.1/aaa", "abstract": "first"}
+    b = {"title": "Same Words", "arxiv_id": "2401.00001", "doi": "10.1/bbb", "abstract": "second"}
+    assert _identity_keys(a)[0] == _identity_keys(b)[0]
+
+    merged = discovery_recall.merge_candidates(
+        [[a, b]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 2
+    assert merged[0] is not merged[1], "the same object was returned twice"
+    assert [c["abstract"] for c in merged] == ["first", "second"], "a candidate was lost"
+
+
+def test_merged_candidates_never_repeat_one_paper():
+    """The property the client depends on: whatever identity disagreements arrive, the list it
+    renders has no repeated identity (its React keys are candidate ids)."""
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    rows = [
+        {"title": "P", "arxiv_id": "2012.09852", "doi": "10.1109/x"},
+        {"title": "P", "arxiv_id": "2012.09852", "doi": "10.48550/arxiv.2012.09852"},
+        {"title": "P", "arxiv_id": "2012.09852"},
+        {"title": "Q", "doi": "10.1/q"},
+        {"title": "Q", "doi": "10.1/q"},
+    ]
+    merged = discovery_recall.merge_candidates(
+        [rows], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    ids = [id(c) for c in merged]
+    assert len(ids) == len(set(ids))
+    keys = [tuple(_identity_keys(c)) for c in merged]
+    assert len(keys) == len(set(keys))
+
+
 def test_an_openalex_only_row_matches_on_its_work_id_rather_than_its_title():
     from app import discovery_recall
     from app.discovery import _identity_keys, _merge_candidate

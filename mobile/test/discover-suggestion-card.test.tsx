@@ -109,3 +109,34 @@ test('the Undo control on a hidden suggestion keeps its own padded geometry, not
   expect(flat.paddingHorizontal).toBeTruthy();
   await unmountAsync();
 });
+
+// DR-112 — Kamil: "Do we have affiliation info to show during Discover results? … Affiliation is
+// a key paper information (to me even more important than author names)." The field was already
+// produced (OpenAlex authorship enrichment) and already read by the scoring prompt; only the card
+// never drew it.
+
+test('a suggestion shows the institutions behind it', async () => {
+  await renderCard({
+    ...BASE,
+    affiliations: ['Cornell University', 'Google (United States)'],
+  });
+  expect(screen.getByTestId('suggestion-affiliations').props.children)
+    .toBe('Cornell University · Google (United States)');
+});
+
+test('a long institution list is summarised rather than listed', async () => {
+  await renderCard({
+    ...BASE,
+    affiliations: ['A University', 'B Institute', 'C Lab', 'D Centre'],
+  });
+  expect(screen.getByTestId('suggestion-affiliations').props.children)
+    .toBe('A University · B Institute +2');
+  // The full list still reaches a screen reader, which has no width limit.
+  expect(screen.getByTestId('suggestion-affiliations').props.accessibilityLabel)
+    .toBe('Affiliations: A University, B Institute, C Lab, D Centre');
+});
+
+test('a suggestion with no known affiliation draws no empty row', async () => {
+  await renderCard({ ...BASE, affiliations: [] });
+  expect(screen.queryByTestId('suggestion-affiliations')).toBeNull();
+});

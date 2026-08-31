@@ -48,6 +48,20 @@ import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens
 
 export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
+/** First occurrence wins: the ranked order is the server's, and the later copy of a duplicate is
+ *  the lower-ranked one. Rows with no candidate id at all are kept as-is — a missing id is not
+ *  evidence of sameness. */
+export function dedupeSuggestions<T extends { candidate_id?: string | null }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const id = row.candidate_id;
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 export default function DiscoverScreen() {
   const router = useRouter();
   const { specific } = useLocalSearchParams<{ specific?: string }>();
@@ -87,8 +101,14 @@ export default function DiscoverScreen() {
   }, [discovery.data?.job, resume]);
 
   const result = discovery.data?.result ?? null;
-  const suggestions = result?.suggestions ?? [];
-  const inLibrary = result?.in_library ?? [];
+  // DR-113 — a result can carry the SAME paper twice. The server no longer produces that (an
+  // arXiv DOI and a publisher DOI for one arXiv id used to count as two different papers, and
+  // the loser then overwrote the winner's slot), but results already saved on disk still hold
+  // the duplicate, and re-running Discover costs a paid multi-minute run. Collapsing here means
+  // an existing result stops showing one paper twice — and the list's React keys, which are
+  // candidate ids, stay unique instead of raising an error over the results.
+  const suggestions = dedupeSuggestions(result?.suggestions ?? []);
+  const inLibrary = dedupeSuggestions(result?.in_library ?? []);
   const topN = result?.top_n ?? 5;
   const visible = showAll ? suggestions : suggestions.slice(0, topN);
   const hiddenCount = suggestions.length - Math.min(topN, suggestions.length);
@@ -495,6 +515,14 @@ export function SuggestionCard({
   // guard is what stops a future gap like it from crashing the whole screen again).
   const authorList = s.authors ?? [];
   const authors = authorList.length > 2 ? `${authorList[0]} et al.` : authorList.join(', ');
+  // DR-112 — Kamil: "Affiliation is a key paper information (to me even more important than
+  // author names)." The field was already on the wire (OpenAlex authorship enrichment fills it,
+  // and the scoring prompt reads it) and simply never drawn. It gets its own line rather than a
+  // tail on the meta string, which already wraps to three lines on his phone; two institutions
+  // is where a card stops informing and starts listing.
+  const affiliationList = s.affiliations ?? [];
+  const affiliations = affiliationList.slice(0, 2).join(' · ')
+    + (affiliationList.length > 2 ? ` +${affiliationList.length - 2}` : '');
   const meta = [
     authors || null,
     s.year,
@@ -532,6 +560,22 @@ export function SuggestionCard({
           <Text variant="caption" style={{ marginTop: 2 }}>
             {meta}
           </Text>
+          {affiliationList.length ? (
+            <View style={styles.affiliationRow}>
+              {/* No icon: the paper screen already states affiliations as plain text among the
+                  paper's facts, and Feather has no institution glyph worth inventing a meaning
+                  for. Its own line plus fuller-strength text is what gives it the weight. */}
+              <Text
+                testID="suggestion-affiliations"
+                variant="caption"
+                color={t.text}
+                numberOfLines={2}
+                style={{ flex: 1, opacity: 0.85 }}
+                accessibilityLabel={`Affiliations: ${affiliationList.join(', ')}`}>
+                {affiliations}
+              </Text>
+            </View>
+          ) : null}
         </View>
       </View>
       {(s.reasons ?? [])[0] ? (
@@ -692,6 +736,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     color: t.violet,
   },
   reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: space.sm },
+  // DR-112: sits directly under the meta line, closer to it than the reason row is,
+  // because it is part of what the paper IS rather than why it was suggested.
+  affiliationRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4 },
   // DR-070 — "Make the Add button larger than the rest with a large plus." Taller than the
   // 48px icon row it sits beside, so it reads as the primary action rather than a fourth peer.
   addBtn: { height: 56, paddingHorizontal: space.lg },

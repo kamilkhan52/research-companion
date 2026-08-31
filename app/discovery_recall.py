@@ -781,9 +781,35 @@ def _identity_with_openalex(candidate: dict, identity_keys) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+def _arxiv_doi_id(doi: str) -> str:
+    """The arXiv id inside a DataCite arXiv DOI (`10.48550/arXiv.2012.09852`), else ""."""
+    m = re.fullmatch(r"10\.48550/arxiv\.(.+)", doi.strip().lower())
+    return m.group(1) if m else ""
+
+
 def _strong_ids_conflict(a: dict, b: dict) -> bool:
-    """Whether two rows carry the SAME kind of strong identifier with different values."""
+    """Whether two rows carry the SAME kind of strong identifier with different values.
+
+    DR-113: "different DOIs" is not the same as "different papers". arXiv mints a DOI of its own
+    for every preprint (`10.48550/arXiv.<id>`), so a work that is also published carries TWO real
+    DOIs, and which one a row shows is a property of the PROVIDER, not of the paper — SpAtten
+    reached the pipeline as `10.48550/arxiv.2012.09852` from one source and
+    `10.1109/hpca51647.2021.00018` from another. Treating that as a conflict split one paper into
+    two rows, which then collided in `merge_candidates` and put the same suggestion on screen
+    twice. When the arXiv DOI's own id matches the arXiv id both rows agree on, the DOIs describe
+    the same work and only the other identifiers are allowed to disagree.
+    """
+    arxiv_left = str(a.get("arxiv_id") or "").strip().lower()
+    arxiv_right = str(b.get("arxiv_id") or "").strip().lower()
+    doi_left = str(a.get("doi") or "").strip().lower()
+    doi_right = str(b.get("doi") or "").strip().lower()
+    same_arxiv = bool(arxiv_left) and arxiv_left == arxiv_right
+    arxiv_doi_pair = same_arxiv and (
+        _arxiv_doi_id(doi_left) == arxiv_left or _arxiv_doi_id(doi_right) == arxiv_right
+    )
     for field in ("doi", "arxiv_id", "openalex_id"):
+        if field == "doi" and arxiv_doi_pair:
+            continue
         left = str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         right = str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         if left and right and left != right:
@@ -813,9 +839,22 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
             if hit is None:
                 stored = dict(candidate)
                 merged_keys = keys or [f"title:{candidate.get('title', '')}"]
-                for key in merged_keys:
+                # DR-113: only claim identities nobody owns. A row kept apart by the conflict
+                # test above shares at least one key with the row it lost to (that is how it was
+                # found), and blindly re-registering those keys did two bad things at once: it
+                # repointed them at this row, so the earlier row became unreachable, and it
+                # appended an `order` entry resolving to the SAME object — so the returned list
+                # held one paper twice and dropped the other. Kamil saw both halves of that: a
+                # duplicated card, and React's duplicate-key error over the results.
+                free = [key for key in merged_keys if key not in merged]
+                for key in free:
                     merged[key] = stored
-                order.append(merged_keys[0])
+                # Every identity was already spoken for: keep the row under a slot of its own
+                # rather than overwriting, so a genuine near-duplicate is still surfaced once.
+                slot = free[0] if free else f"conflict:{len(order)}:{merged_keys[0]}"
+                if not free:
+                    merged[slot] = stored
+                order.append(slot)
                 continue
             merge_fn(hit, candidate)
             hit["channels"] = list(dict.fromkeys(
