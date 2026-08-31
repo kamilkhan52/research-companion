@@ -34,6 +34,22 @@ me?", now has one answer: every row in this file that is not `closed`.
 5. Put detailed reproduction steps in the acceptance checklist and link them here. Screenshots that
    must survive local cleanup belong on the PR/issue or, when genuinely useful as long-term visual
    evidence, under `docs/device-review-assets/<DR-id>/` rather than a temporary attachment path.
+6. **Counting the states: read the STATE column, never the first backticked literal on the row.**
+   Some rows quote something else in backticks first (as of 2026-08-31, 17 of 114) — nearly all a
+   path, id or scrap of prose (`/usage`, `NEW-1787499590`, `discover.tsx`, `**bold**`), which is
+   loud, and **one that is not**: DR-077's
+   FEEDBACK cell quotes `implemented — verify` while the row's state is `closed`, so a naive scan
+   reports a plausible wrong answer rather than an obvious one. A count that reaches the roadmap
+   should read the fourth pipe-separated cell:
+
+   ```python
+   rows = re.findall(r'^\| (DR-\d+) \|[^|]*\|.*?\| `([^`]+)` \|', text, re.M)
+   ```
+
+   Two silent failure modes are worth asserting against rather than trusting: a state cell that is
+   not backticked lets `.*?` scan on into the evidence, and a row wrapped across lines is dropped
+   entirely. Check that the match count equals the `^\| *DR-\d+` row count and that every state is
+   one of the seven vocabulary values in item 3.
 
 ## Current actionable feedback
 
