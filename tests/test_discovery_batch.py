@@ -7,7 +7,6 @@ looks identical whether or not 41 is the paper the model actually judged.
 from __future__ import annotations
 
 import pytest
-
 from app import discovery_batch
 
 
