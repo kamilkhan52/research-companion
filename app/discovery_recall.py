@@ -781,14 +781,75 @@ def _identity_with_openalex(candidate: dict, identity_keys) -> list[str]:
     return list(dict.fromkeys(keys))
 
 
+def _bare_doi(value) -> str:
+    """A DOI without its resolver prefix — mirrors `discovery._clean_doi`, which builds the
+    `doi:` identity key. OpenAlex returns DOIs as full `https://doi.org/…` URLs, so comparing
+    the raw values here while the keys compare cleaned ones is the same "found by key, then
+    declared different" trap this module already had twice."""
+    return re.sub(r"^https?://(?:dx\.)?doi\.org/", "", str(value or "").strip().lower(),
+                  flags=re.IGNORECASE)
+
+
+def _arxiv_doi_id(doi) -> str:
+    """The arXiv id inside a DataCite arXiv DOI (`10.48550/arXiv.2012.09852`), else ""."""
+    m = re.fullmatch(r"10\.48550/arxiv\.(.+)", _bare_doi(doi))
+    return _bare_arxiv_id(m.group(1)) if m else ""
+
+
+def _bare_arxiv_id(value) -> str:
+    """An arXiv id without its version suffix — `2012.09852v2` → `2012.09852`.
+
+    This MUST match how `discovery._identity_keys` builds `arxiv:` keys, which strips `vN` the
+    same way. When the two disagree, two rows for one paper are FOUND as the same row (the keys
+    match) and then declared different papers (the conflict test sees `…v2` ≠ `…`) — which is the
+    exact shape of DR-113, and it puts the paper on screen twice. The helper is duplicated rather
+    than imported because `discovery` imports this module, not the other way round.
+    """
+    # Known prefixes only — NOT the last path segment, which the old comparison used and which
+    # silently equated the old-style ids `math/0601001` and `cs/0601001`, two different papers.
+    bare = str(value or "").strip()
+    bare = re.sub(r"^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/", "", bare,
+                  flags=re.IGNORECASE)
+    bare = re.sub(r"^arxiv:", "", bare, flags=re.IGNORECASE)
+    return re.sub(r"v\d+$", "", bare, flags=re.IGNORECASE).lower()
+
+
 def _strong_ids_conflict(a: dict, b: dict) -> bool:
-    """Whether two rows carry the SAME kind of strong identifier with different values."""
-    for field in ("doi", "arxiv_id", "openalex_id"):
-        left = str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
-        right = str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+    """Whether two rows carry the SAME kind of strong identifier with different values.
+
+    DR-113: "different DOIs" is not the same as "different papers". arXiv mints a DOI of its own
+    for every preprint (`10.48550/arXiv.<id>`), so a work that is also published carries TWO real
+    DOIs, and which one a row shows is a property of the PROVIDER, not of the paper — SpAtten
+    reached the pipeline as `10.48550/arxiv.2012.09852` from one source and
+    `10.1109/hpca51647.2021.00018` from another. Treating that as a conflict split one paper into
+    two rows, which then collided in `merge_candidates` and put the same suggestion on screen
+    twice. When the arXiv DOI's own id matches the arXiv id both rows agree on, the DOIs describe
+    the same work and only the other identifiers are allowed to disagree.
+    """
+    arxiv_left = _bare_arxiv_id(a.get("arxiv_id"))
+    arxiv_right = _bare_arxiv_id(b.get("arxiv_id"))
+    doi_left = _bare_doi(a.get("doi"))
+    doi_right = _bare_doi(b.get("doi"))
+    same_arxiv = bool(arxiv_left) and arxiv_left == arxiv_right
+    arxiv_doi_pair = same_arxiv and (
+        _arxiv_doi_id(doi_left) == arxiv_left or _arxiv_doi_id(doi_right) == arxiv_right
+    )
+    for field in ("doi", "openalex_id"):
+        if field == "doi" and arxiv_doi_pair:
+            continue
+        # DOIs compare WHOLE, registrant prefix included. The old `.rsplit("/", 1)[-1]` existed
+        # to tolerate a resolver prefix, which `_bare_doi` now strips properly; what it also did
+        # was discard the registrant, so `10.1109/hpca` and `10.5555/hpca` — two different papers
+        # — read as equal and merged into a hybrid (Opus review).
+        left = _bare_doi(a.get(field)) if field == "doi" \
+            else str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+        right = _bare_doi(b.get(field)) if field == "doi" \
+            else str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
         if left and right and left != right:
             return True
-    return False
+    # arXiv ids are compared on their BARE form, for the reason in `_bare_arxiv_id`: the identity
+    # keys already ignore the version, so comparing the raw values here would split v2 from v1.
+    return bool(arxiv_left) and bool(arxiv_right) and arxiv_left != arxiv_right
 
 
 def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> list[dict]:
@@ -804,18 +865,42 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
         for candidate in group:
             keys = _identity_with_openalex(candidate, identity_keys)
             hit = next((merged[k] for k in keys if k in merged), None)
+            conflicted = hit is not None and _strong_ids_conflict(hit, candidate)
             # A title alias is enough to FIND a possible match but not to trust one: distinct
             # papers share exact titles, and merging them would blend two works into a hybrid
             # whose screening verdict, citations and provenance describe neither. When both rows
             # carry a strong identifier and they disagree, treat them as different papers.
-            if hit is not None and _strong_ids_conflict(hit, candidate):
+            if conflicted:
                 hit = None
             if hit is None:
                 stored = dict(candidate)
                 merged_keys = keys or [f"title:{candidate.get('title', '')}"]
-                for key in merged_keys:
+                # DR-113: only claim identities nobody owns. A row kept apart by the conflict
+                # test above shares at least one key with the row it lost to (that is how it was
+                # found), and blindly re-registering those keys did two bad things at once: it
+                # repointed them at this row, so the earlier row became unreachable, and it
+                # appended an `order` entry resolving to the SAME object — so the returned list
+                # held one paper twice and dropped the other. Kamil saw both halves of that: a
+                # duplicated card, and React's duplicate-key error over the results.
+                free = [key for key in merged_keys if key not in merged]
+                for key in free:
                     merged[key] = stored
-                order.append(merged_keys[0])
+                # Every identity was already spoken for: keep the row under a slot of its own
+                # rather than overwriting, so a genuine near-duplicate is still surfaced once.
+                slot = free[0] if free else f"conflict:{len(order)}:{merged_keys[0]}"
+                if not free:
+                    merged[slot] = stored
+                order.append(slot)
+                if conflicted:
+                    # A row we deliberately kept APART needs an id of its own too. Downstream,
+                    # `candidate_id` defaults to `_identity_keys[0]`, which is the very key these
+                    # two rows agree on — so both would reach the client under one id, collide as
+                    # React keys, and the client's own duplicate guard would drop one of them:
+                    # exactly the paper this branch exists to preserve. The slot is a key this
+                    # row owns alone. WHICH of two split rows keeps the shared primary key
+                    # depends on arrival order, so this is distinct within a result, not stable
+                    # across runs — ids are per-result, so that is enough.
+                    stored["candidate_id"] = slot
                 continue
             merge_fn(hit, candidate)
             hit["channels"] = list(dict.fromkeys(
