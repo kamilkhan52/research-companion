@@ -68,6 +68,7 @@ import { setBaseUrl } from '@/api/config';
 import { keys } from '@/api/queries';
 import type { ProjectState, Session } from '@/api/types';
 import { ThemeProvider } from '@/theme/ThemeProvider';
+import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { createTestQueryClient } from './queryClient';
 
 const projectState = (sessionState: Session['state']): ProjectState => ({
@@ -136,7 +137,13 @@ async function renderPendingSession(options?: {
         insets: { top: 24, right: 0, bottom: 20, left: 0 },
       }}>
         <ThemeProvider>
-          <DiscussionScreen />
+          {/* DR-115: DiscussionThread calls useReadingSettings, which throws outside its
+              provider. Every case here happens to stop in a loading state before the
+              transcript mounts, so the omission was invisible — and would have surfaced as
+              a baffling failure in whichever future test first got that far. */}
+          <ReadingSettingsProvider>
+            <DiscussionScreen />
+          </ReadingSettingsProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </QueryClientProvider>,

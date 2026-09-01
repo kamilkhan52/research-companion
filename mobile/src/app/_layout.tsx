@@ -49,6 +49,7 @@ import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { PurchasesIdentity } from '@/purchases/PurchasesIdentity';
 import { GraphSettingsProvider } from '@/store/graphSettings';
+import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { ThemeProvider, useThemeMode } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
 
@@ -156,6 +157,7 @@ function AccountScopedApp() {
       <ProjectProvider key={userId ?? 'no-account'}>
         <ListeningProvider>
           <GraphSettingsProvider>
+          <ReadingSettingsProvider>
           <AudioProvider>
           <View style={{ flex: 1 }}>
             <BottomSheetModalProvider>
@@ -170,6 +172,7 @@ function AccountScopedApp() {
             <DevTestOverlay />
           </View>
           </AudioProvider>
+          </ReadingSettingsProvider>
           </GraphSettingsProvider>
         </ListeningProvider>
       </ProjectProvider>

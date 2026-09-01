@@ -38,6 +38,7 @@ import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useGraphSettings } from '@/store/graphSettings';
+import { useReadingSettings } from '@/store/readingSettings';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import {
   DENSITY_MODES,
@@ -117,6 +118,7 @@ export default function SettingsScreen() {
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
+  const { chatNavRail, setChatNavRail } = useReadingSettings();
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -490,6 +492,22 @@ export default function SettingsScreen() {
                   {density === 'tight'
                     ? 'Smaller common type and closer reading-list rhythm. Tap targets, math, code, and audio controls stay full size.'
                     : 'The original, more spacious reading rhythm.'}
+                </Text>
+                {/* DR-115 */}
+                <Label
+                  text="Chat navigation controls"
+                  hint="applies immediately, stored on this device"
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Toggle label="Off" local active={!chatNavRail} onPress={() => setChatNavRail(false)} />
+                  <Toggle label="On" local active={chatNavRail} onPress={() => setChatNavRail(true)} />
+                </View>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+                  Adds a floating rail to a discussion for jumping between messages instead of
+                  scrolling: to the start of the thread, one message back, one message forward,
+                  and to the latest. Each step lands on the top of a message, so a long response
+                  takes one tap rather than a page of swiping. It fades back after a moment and
+                  stays see-through over the text.
                 </Text>
               </Section>
 
