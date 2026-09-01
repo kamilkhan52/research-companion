@@ -78,8 +78,9 @@ export const ChatNavRail = forwardRef<ChatNavRailHandle, {
       // Already awake with a countdown pending. The scroll handler calls this on EVERY frame
       // (`scrollEventThrottle` is 1 and the library runOnJS-es each event), so re-arming the
       // timer here churns a clearTimeout+setTimeout ~60×/s on the JS thread that DR-100/DR-101
-      // established is the bottleneck on this surface. Deferring the re-arm costs at most
-      // WAKE_COALESCE_MS of extra visible time and does no work in the common frame.
+      // established is the bottleneck on this surface. A skipped re-arm means the countdown
+      // started up to WAKE_COALESCE_MS before the last frame, so the rail can dim that much
+      // EARLY — never late — which at 250 ms against a 2.4 s idle is imperceptible.
       const now = Date.now();
       if (timer.current && now - lastWake.current < WAKE_COALESCE_MS) return;
       lastWake.current = now;
@@ -216,7 +217,11 @@ const makeStyles = (t: ThemePalette) =>
     },
     button: {
       width: 40,
-      height: 38,
+      // 46, not 38: the buttons stack flush, so the hitSlop that used to pad them vertically
+      // made each overlap its neighbour and the later sibling won the touch. Removing that slop
+      // fixed the overlap but left a 38 dp target, under Material's 48 dp minimum — the height
+      // itself has to carry it now. Four at 46 plus the divider is still a compact pill.
+      height: 46,
       alignItems: 'center',
       justifyContent: 'center',
     },

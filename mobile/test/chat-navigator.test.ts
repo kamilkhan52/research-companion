@@ -321,3 +321,40 @@ test('stepping keeps working when viewability lags the animated scroll', () => {
   expect(list.scrollToIndex).toHaveBeenLastCalledWith(
     expect.objectContaining({ index: 4 }));    // kept stepping; did not stall back on 2 or 3
 });
+
+test('taking over the scroll cancels the start-of-thread correction', () => {
+  // Introduced by the correction itself: tap ⌃⌃, change your mind inside RETRY_DELAY_MS, and
+  // the timer yanked you back to the start of the thread out of your own drag.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40 }),
+  );
+  act(() => result.current.goOldest());
+  act(() => result.current.onScrollBeginDrag());
+  act(() => jest.advanceTimersByTime(500));
+  expect(list.scrollToEnd).toHaveBeenCalledTimes(1);     // no unasked-for second jump
+});
+
+test('a target that exhausts its corrections stops claiming the reader is on it', () => {
+  // Out of corrections the reader is at an APPROXIMATION, but the landmark said otherwise and
+  // pendingTopRef was still suppressing the retirement that would have caught it — so the next
+  // step counted from a message the reader was never on, skipping several.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40 }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([26])));
+  act(() => result.current.goUp());                       // aims at 27
+  for (let i = 0; i < 3; i += 1) {
+    act(() => result.current.onScrollToIndexFailed({ index: 27, averageItemLength: 100 }));
+    act(() => jest.advanceTimersByTime(200));
+  }
+  // It gave up around 26-ish; the viewport says so and is now believed.
+  act(() => result.current.onViewableItemsChanged(viewable([26])));
+  list.scrollToIndex.mockClear();
+  act(() => result.current.goUp());
+  // 26 — the head of the message the reader is actually inside, which is what stepUp does with
+  // no landmark. The lie would have given 28, skipping two messages they never saw.
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 26 }));
+});

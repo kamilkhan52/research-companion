@@ -187,6 +187,10 @@ export function useChatNavigator({
     if (landmarkRef.current !== null && landmarkRef.current !== LIVE_EDGE
         && top !== landmarkRef.current) {
       landmarkRef.current = null;
+      if (oldestTimer.current) {   // as with a drag: they are no longer where we put them
+        clearTimeout(oldestTimer.current);
+        oldestTimer.current = null;
+      }
     }
   }).current;
 
@@ -194,6 +198,13 @@ export function useChatNavigator({
    *  where the reader is. */
   const onScrollBeginDrag = useCallback(() => {
     landmarkRef.current = null;
+    // The reader has taken over, so any correction still queued is no longer wanted. Without
+    // this, tapping "start of thread" and changing your mind within RETRY_DELAY_MS yanks you
+    // back out of your own drag — a movement nobody asked for at the moment it happens.
+    if (oldestTimer.current) {
+      clearTimeout(oldestTimer.current);
+      oldestTimer.current = null;
+    }
   }, []);
 
   /** `scrollToIndex` can only land exactly on a row the list has already measured, and this
@@ -208,7 +219,15 @@ export function useChatNavigator({
         ? retryRef.current
         : { index: info.index, attempts: 0 };
       retryRef.current = state;
-      if (state.attempts >= MAX_RETRIES) return;
+      if (state.attempts >= MAX_RETRIES) {
+        // Out of corrections: the reader is at an APPROXIMATION of the target, not the target.
+        // The landmark says otherwise and `pendingTopRef` is still suppressing the retirement
+        // that would catch it — so both would go on lying, and the next step would skip
+        // messages. Drop them and let the step aim from `topIndex` instead.
+        landmarkRef.current = null;
+        pendingTopRef.current = null;
+        return;
+      }
       state.attempts += 1;
       if (retryTimer.current) clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(() => {
