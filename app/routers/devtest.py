@@ -65,7 +65,10 @@ def _main_root() -> Path:
         )
         if out.returncode == 0 and out.stdout.strip():
             return Path(out.stdout.strip()).parent
-    except (OSError, subprocess.SubprocessError):
+    except Exception:
+        # Any failure at all falls back to the checkout root. Deliberately broad: this is a
+        # path lookup with a sound default, and it is called from request paths whose tests
+        # stub `subprocess` wholesale — a TypeError from a stubbed Popen should not 500 a route.
         pass
     return _REPO_ROOT
 
@@ -441,10 +444,17 @@ class DispatchReq(BaseModel):
 #: One process (invariant 6), so an in-process lock is sufficient.
 _dispatch_lock = threading.Lock()
 
-#: A `current.json` older than this is treated as stale regardless of its pid: after a reboot or
-#: pid-counter wrap the recorded pid can be reused by an unrelated process, and `os.kill(pid, 0)`
-#: would then wedge every dispatch behind a permanent 409 with no recovery path.
-DISPATCH_MAX_AGE_S = 3 * 3600.0
+#: Last-resort staleness cap for a `current.json` whose process still looks like ours.
+#:
+#: Raised from 3h and demoted to a TIEBREAKER on 2026-09-01. It used to override the liveness
+#: check outright, which was harmless when its only effect was releasing the 409 — but a
+#: dispatch now RESETS its worktree on the way in, so declaring a live session dead makes the
+#: next one `git reset --hard` the tree that session is still editing, destroying its
+#: uncommitted work silently. And the full loop (build, suites, PR, an Opus review round-trip,
+#: CI, merge) makes a >3h session unremarkable. Pid reuse is now caught by checking the
+#: process's identity instead (`_dispatch_pid_alive`), so age only decides the case where a
+#: `claude` process has held the recorded pid for longer than any real session could run.
+DISPATCH_MAX_AGE_S = 12 * 3600.0
 
 
 #: What the headless session may run without a human at the prompt. The first real dispatch
@@ -500,7 +510,7 @@ DISPATCH_BASE_BRANCH = "rc-dispatch-base"
 
 #: Git calls made while holding `_dispatch_lock` and blocking the HTTP request. `fetch` touches
 #: the network, so it needs a bound; a slow remote must not hang the dispatch route.
-DISPATCH_GIT_TIMEOUT_S = 60.0
+DISPATCH_GIT_TIMEOUT_S = 20.0
 
 
 def _dispatch_dir() -> Path:
@@ -517,6 +527,49 @@ def _dispatch_running() -> dict | None:
     return info if alive else None
 
 
+def _dispatch_liveness(pid: object) -> str:
+    """`"alive"` | `"dead"` | `"unknown"` for a recorded dispatch pid.
+
+    Existence alone is not enough. After a reboot or a pid-counter wrap the number can belong
+    to something unrelated, and believing it would wedge dispatch behind a permanent 409. That
+    used to be handled by an age cap that OVERRODE liveness — far too blunt now that being
+    declared dead gets your worktree reset — so identity is checked directly instead: a
+    dispatched session's command line always contains `claude`. Cheap, and it defeats the
+    realistic reuse case without parsing process start times.
+
+    The third value is the point of the tri-state. If `ps` cannot be run we must not guess in
+    either direction: claiming dead is destructive, and claiming alive forever would wedge
+    dispatch. `"unknown"` means "treat as alive, but let the age cap have the final word" —
+    which is the ONLY case age now decides.
+    """
+    import os
+    import subprocess
+
+    try:
+        os.kill(int(pid), 0)          # signal 0: existence check, never delivers
+    except (OSError, ValueError, TypeError):
+        return "dead"
+    try:
+        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                             capture_output=True, text=True, timeout=5.0)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return "unknown"
+    if out.returncode != 0:
+        return "dead"
+    return "alive" if "claude" in out.stdout.lower() else "dead"
+
+
+def _dispatch_peek() -> tuple[dict | None, bool]:
+    """`(record, alive)` without archiving anything — the read-only half of the reap, for a
+    status poll that could not take the lock. Never writes, so it is safe to run beside a
+    spawn that is mid-preparation."""
+    try:
+        info = json.loads((_dispatch_dir() / "current.json").read_text())
+    except (OSError, ValueError):
+        return None, False
+    return info, _dispatch_liveness(info.get("pid")) != "dead"
+
+
 def _dispatch_reap() -> tuple[dict | None, bool]:
     """`(record, alive)` for the current dispatch, archiving the record once its process is gone.
 
@@ -528,24 +581,25 @@ def _dispatch_reap() -> tuple[dict | None, bool]:
 
     Returns `(None, False)` when there is no current record at all.
     """
-    import os
-
     current = _dispatch_dir() / "current.json"
     try:
         info = json.loads(current.read_text())
     except (OSError, ValueError):
         return None, False
-    # Age cap first: a record older than a session could plausibly run is stale whatever its
-    # pid claims (pid reuse across a reboot is the failure this defends against).
+    # Liveness FIRST, age only as a tiebreaker. The other order declares a long-running session
+    # dead, which releases single-flight and lets the next dispatch `git reset --hard` the
+    # worktree that session is still editing. See DISPATCH_MAX_AGE_S.
     started = float(info.get("started_ts") or 0)
-    if started and time.time() - started > DISPATCH_MAX_AGE_S:
+    liveness = _dispatch_liveness(info.get("pid"))
+    if liveness == "dead":
+        ended_reason = "process gone"
+    elif liveness == "unknown" and started and time.time() - started > DISPATCH_MAX_AGE_S:
+        # Age decides ONLY when identity could not be established. A confirmed `claude` process
+        # is running however long it has been at it — the full loop takes hours — and declaring
+        # it dead would let the next dispatch reset the worktree it is still editing.
         ended_reason = "aged out"
     else:
-        try:
-            os.kill(int(info["pid"]), 0)   # signal 0: existence check, never delivers
-            return info, True
-        except (OSError, ValueError, KeyError, TypeError):
-            ended_reason = "process gone"
+        return info, True
     # Dead: recover rather than leave a 409 wedged, but keep the record for the status route.
     info["ended_reason"] = ended_reason
     info["ended_ts"] = time.time()          # when we NOTICED, not when it exited (see below)
@@ -559,6 +613,10 @@ def _dispatch_reap() -> tuple[dict | None, bool]:
 #: is ~10 KB (it enumerates every tool and MCP server) and a long session's log runs to
 #: megabytes, so the status poll reads a bounded tail rather than the whole file.
 DISPATCH_LOG_TAIL_BYTES = 256 * 1024
+
+#: Enough of the first line to tell a JSON record from a prose recap without reading a whole
+#: `system/init` record (~10 KB) into memory on every poll.
+DISPATCH_LOG_HEAD_BYTES = 64
 
 #: Counted over the WHOLE log (cheaply, as bytes) rather than the parsed tail: the step count is
 #: the "still moving" signal, and a count that reset every time the tail window slid would read
@@ -585,19 +643,45 @@ def _describe_tool_use(block: dict) -> str:
     return name
 
 
+#: `path -> (bytes counted, count, trailing carry)`. Dispatch is single-flight, so this holds
+#: one live log plus whatever the last one left; it is not worth evicting.
+_TOOL_USE_COUNTS: dict[str, tuple[int, int, bytes]] = {}
+
+
 def _count_tool_uses(path: Path) -> int:
-    """Occurrences of a `tool_use` record across the whole log, streamed. Chunks overlap by the
-    needle length so a record split across a chunk boundary is still counted once."""
+    """Occurrences of a `tool_use` record across the whole log, streamed and MEMOIZED.
+
+    Chunks overlap by the needle length so a record split across a chunk boundary is counted
+    exactly once — and, because the needle is 10 bytes while the carry is 9, one can never lie
+    wholly inside the carry and be counted twice.
+
+    The memo matters at these sizes: a multi-hour session's log (tool RESULTS are records too)
+    reaches hundreds of megabytes, and the bubble polls this every 5 seconds. Logs are strictly
+    append-only, so a previous count plus the delta is exact, and the retained carry keeps a
+    needle straddling the resume point correct. A file that SHRANK is not the log we counted —
+    rotated, replaced, a fresh dispatch reusing the name — so it is recounted from zero.
+    """
     overlap = len(_TOOL_USE_NEEDLE) - 1
-    total, carry = 0, b""
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    seen, total, carry = _TOOL_USE_COUNTS.get(key, (0, 0, b""))
+    if size < seen:                       # not an append: start over
+        seen, total, carry = 0, 0, b""
+    elif size == seen:
+        return total
     try:
         with path.open("rb") as fh:
+            fh.seek(seen)
             while chunk := fh.read(1 << 20):
                 buf = carry + chunk
                 total += buf.count(_TOOL_USE_NEEDLE)
                 carry = buf[-overlap:] if overlap else b""
     except OSError:
-        return 0
+        return total
+    _TOOL_USE_COUNTS[key] = (size, total, carry)
     return total
 
 
@@ -611,16 +695,25 @@ def _dispatch_progress(log_path: str | None) -> dict:
     logs hold a prose recap and no records at all — they report zero steps, not an error).
     """
     out: dict = {"steps": 0, "last_step": None, "last_summary": None,
-                 "result": None, "log_bytes": 0}
+                 "result": None, "log_bytes": 0, "structured": False}
     if not log_path:
         return out
     path = Path(log_path)
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:
+            # Is this a stream-json log or a pre-2026-09 prose recap? The first line decides,
+            # and it matters: a stream-json run in print mode ALWAYS terminates with a `result`
+            # record, so its absence means the session was killed rather than finished. Without
+            # this distinction a session killed at minute 90 has megabytes of log, no result,
+            # and would be reported "finished — check the item for its reply" that never came.
+            head = fh.readline(DISPATCH_LOG_HEAD_BYTES).strip()
+            out["structured"] = head.startswith(b"{")
             if size > DISPATCH_LOG_TAIL_BYTES:
                 fh.seek(size - DISPATCH_LOG_TAIL_BYTES)
                 fh.readline()          # drop the partial line the seek landed inside
+            else:
+                fh.seek(0)             # the head read already consumed the first line
             tail = fh.read()
     except OSError:
         return out
@@ -680,31 +773,45 @@ def _dispatch_git(cwd: Path, *args: str) -> None:
                    timeout=DISPATCH_GIT_TIMEOUT_S)
 
 
+class DispatchPrepError(RuntimeError):
+    """The dispatch worktree could not be made safe to run in, so the dispatch is refused."""
+
+
 def _dispatch_cwd() -> str:
     """Prepare and return the working directory for a spawned session — see DISPATCH_WORKTREE
     for why it is neither the live checkout nor Metro's.
 
     Created on first use and reset to `origin/main` on every dispatch, so a session never starts
     on top of a previous one's leftovers. `git clean -fd` (no `-x`) deliberately spares IGNORED
-    files, which is what keeps `mobile/node_modules` alive across dispatches; only untracked,
-    non-ignored junk goes.
+    files, which is what keeps `mobile/node_modules` AND the linked `.venv` alive across
+    dispatches; only untracked, non-ignored junk goes.
 
-    Falls back to the main checkout if any of this fails — a dispatch that runs in a slightly
-    wrong place is far better than one that cannot run at all, and the prompt still tells the
-    session what it must not touch. The fallback is logged loudly because it re-enables exactly
-    the DR-083 restart hazard the worktree exists to prevent.
+    **Raises rather than falling back to the live checkout.** The first cut returned
+    `_REPO_ROOT` on any failure, reasoning that running in a slightly wrong place beat not
+    running. That was true when the fallback was a spare worktree and the session only proposed
+    a branch. It is false now: the session edits `app/` (restarting the live server and killing
+    in-flight jobs — DR-083), runs `npm ci`, and merges its own PR — in the checkout serving
+    Kamil's phone, while `_dispatch_prompt` assures it "you are already IN a dedicated
+    worktree". A refused dispatch is visible and retryable; that one is neither.
     """
     import os
 
-    root = _REPO_ROOT
+    root = _main_root()
     # Test seam, the same role RC_DEVTEST_DIR plays for the inbox: preparing the worktree
     # FETCHES, and the suite makes no external network calls. tests/conftest.py sets this off.
     if os.environ.get("RC_DISPATCH_WORKTREE", "1").strip().lower() in ("0", "false", "off", "no"):
         return str(root)
     worktree = root / DISPATCH_WORKTREE
+    # Best effort, NOT fatal: an offline Mac or a slow remote must not push the dispatch into
+    # the live checkout. Resetting to an already-fetched origin/main is a fine outcome.
     try:
         _dispatch_git(root, "fetch", "origin", "main")
+    except Exception as exc:
+        log.warning("dispatch worktree: fetch failed (%s); resetting to the origin/main "
+                    "already on disk", exc)
+    try:
         if (worktree / ".git").exists():
+            _assert_dispatch_worktree_is_scratch(worktree)
             _dispatch_git(worktree, "reset", "--hard")
             _dispatch_git(worktree, "clean", "-fd")
             _dispatch_git(worktree, "checkout", "-B", DISPATCH_BASE_BRANCH, "origin/main")
@@ -712,11 +819,68 @@ def _dispatch_cwd() -> str:
             worktree.parent.mkdir(parents=True, exist_ok=True)
             _dispatch_git(root, "worktree", "add", "-f", "-B", DISPATCH_BASE_BRANCH,
                           str(worktree), "origin/main")
-    except Exception as exc:                      # subprocess, timeout, permissions — all fatal
-        log.warning("dispatch worktree unavailable (%s); falling back to the live checkout, "
-                    "where an app/ edit can restart the server (DR-083)", exc)
-        return str(root)
+    except DispatchPrepError:
+        raise
+    except Exception as exc:
+        raise DispatchPrepError(str(exc)) from exc
+    _link_dispatch_venv(root, worktree)
     return str(worktree)
+
+
+def _assert_dispatch_worktree_is_scratch(worktree: Path) -> None:
+    """Refuse to reset a worktree that looks like it holds someone's work.
+
+    The belt to the liveness braces: if the single-flight check is ever wrong — a session we
+    failed to recognise, a human who opened this directory — `git reset --hard` plus
+    `git clean -fd` would destroy uncommitted work with no warning and no undo. A scratch tree
+    is clean and parked on the branch we park it on; anything else is refused rather than
+    cleaned.
+    """
+    import subprocess
+
+    try:
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(worktree),
+                                capture_output=True, text=True, check=True,
+                                timeout=DISPATCH_GIT_TIMEOUT_S).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(worktree),
+                               capture_output=True, text=True, check=True,
+                               timeout=DISPATCH_GIT_TIMEOUT_S).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DispatchPrepError(f"could not inspect the dispatch worktree: {exc}") from exc
+    # A previous session's own feature branch is expected and fine — it is committed and
+    # pushed, and its branch ref survives the reset. Uncommitted changes are not.
+    if dirty:
+        raise DispatchPrepError(
+            f"the dispatch worktree has uncommitted changes on '{branch}'. Something is still "
+            "working there, or work was left behind; resolve it by hand rather than losing it.")
+
+
+def _link_dispatch_venv(root: Path, worktree: Path) -> None:
+    """Point the worktree's `.venv` at the main checkout's.
+
+    `git worktree add` materialises TRACKED files only, and `.venv` is gitignored — so it lives
+    in the main checkout alone. The session's one permitted interpreter is the RELATIVE path
+    `.venv/bin/python` (`DISPATCH_ALLOWED_TOOLS`), which in a bare worktree does not exist and
+    which the session cannot bootstrap, because a headless denial is final. Without this the
+    session can run neither pytest nor — far worse — `append_response`, which is deliberately
+    filesystem-side rather than an HTTP route (DR-080) and so is reachable ONLY through a Python
+    interpreter. The reply to Kamil is the whole deliverable, so an unlinked venv makes the
+    feature inert.
+
+    A symlink rather than a copy: it is the same interpreter and the same installed deps, and
+    being gitignored it survives every subsequent `git clean -fd`.
+    """
+    import os
+
+    source, link = root / ".venv", worktree / ".venv"
+    if link.exists() or not source.is_dir():
+        return
+    try:
+        os.symlink(source, link, target_is_directory=True)
+    except OSError as exc:                # a stale broken symlink, a permissions problem
+        raise DispatchPrepError(
+            f"could not link {source} into the dispatch worktree ({exc}); without it the "
+            "session cannot run pytest or reply to the bubble") from exc
 
 
 def _dispatch_prompt(item_id: str | None) -> str:
@@ -798,9 +962,13 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     Since 2026-09-01 the session runs the WHOLE loop — build, review, merge (see
     `_dispatch_prompt`) — so be honest about where the safety now lives. It is NOT the tool
     list: that list has to include `npx` and a Python interpreter, which together are general
-    execution. It is the gating above (dev-only, no public tunnel, single-flight), the
-    throwaway worktree it runs in, and the requirement that an independent Opus review approve
-    the PR before it may merge.
+    execution. It is the gating above (dev-only, no public tunnel, single-flight) and the
+    throwaway worktree it runs in.
+
+    And be equally honest about the review gate: "it may merge only once an Opus review
+    approves" is a PROMPT-LEVEL guarantee, not a mechanical one. The session holds
+    `Bash(gh:*)` and could `gh pr merge` at any point. That is inherent to giving it the loop;
+    do not read the allowlist as enforcing it.
     """
     import shutil
     import subprocess
@@ -830,6 +998,14 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
                        "wait for its bubble reply, or it clears itself when it exits.")
         dispatch_id = f"dispatch-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         log_path = _dispatch_dir() / f"{dispatch_id}.log"
+        # Refuse rather than run an unattended, merge-authorized session in the live server's
+        # own checkout — see `_dispatch_cwd`.
+        try:
+            cwd = _dispatch_cwd()
+        except DispatchPrepError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not prepare the dispatch worktree: {exc}") from exc
         with log_path.open("wb") as log_file:
             process = subprocess.Popen(
                 [binary, "-p", _dispatch_prompt(item_id),
@@ -842,11 +1018,11 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
                  # without it. `_dispatch_progress` parses the tail.
                  "--output-format", "stream-json", "--verbose",
                  # The inbox lives in the MAIN checkout while the session runs in the
-                 # device-main worktree; without this the headless session's reads of
+                 # dedicated dispatch worktree; without this the headless session's reads of
                  # feedback.jsonl / screenshots are refused as outside its working directory.
                  "--add-dir", str(_dir()),
                  "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
-                cwd=_dispatch_cwd(), stdout=log_file, stderr=subprocess.STDOUT,
+                cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
         info = {"id": dispatch_id, "pid": process.pid, "model": req.model,
@@ -861,7 +1037,7 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
 
 
 @router.get("/api/devtest/dispatch")
-def dispatch_status():
+def dispatch_status(request: Request):
     """Whether a dispatched session is alive, what it is doing, and how the last one ended.
 
     **Why this exists.** As DR-092 originally shipped, the spawn toast was the ONLY feedback a
@@ -877,29 +1053,51 @@ def dispatch_status():
       - `running`  — the process is alive.
       - `finished` — it ended and its log carries a successful `result` record.
       - `failed`   — it ended and its `result` record is flagged `is_error`.
-      - `gone`     — it ended having written NOTHING. Killed, or it died before its first
-                     record; either way there is no reply coming and a re-dispatch is the move.
+      - `gone`     — it ended without the `result` record print mode always writes: killed, or
+                     dead before its first record. Either way no reply is coming and a
+                     re-dispatch is the move.
+
+    Over the PUBLIC tunnel this answers, but without detail: `last_step` carries file paths,
+    shell command lines and Task prompts, and `result.text` up to 2000 characters of the
+    session's closing message. The dev server is open-auth and sometimes tunnelled, so those go
+    only to the tailnet. State, step count and elapsed still cross, which keeps the banner
+    useful on a device that is not on the tailnet — the reason this is redaction and not the
+    outright refusal POST uses.
     """
     _require_dev()
-    with _dispatch_lock:                   # the reap writes; keep it off a concurrent spawn
-        info, alive = _dispatch_reap()
-        if info is None:
-            try:
-                info = json.loads((_dispatch_dir() / "last.json").read_text())
-            except (OSError, ValueError):
-                return {"dispatch": None}   # nothing has ever been dispatched
+    # A spawn holds this lock across the worktree preparation's git calls. The bubble polls
+    # every 5s, and each blocked poll would occupy one of the shared AnyIO threadpool slots
+    # that every sync route in the app draws from — a slow `git fetch` must not be able to
+    # stall the reader's own app. Skip the reap instead; the next poll does it.
+    if _dispatch_lock.acquire(timeout=1.0):
+        try:
+            info, alive = _dispatch_reap()
+        finally:
+            _dispatch_lock.release()
+    else:
+        info, alive = _dispatch_peek()
+    if info is None:
+        try:
+            info = json.loads((_dispatch_dir() / "last.json").read_text())
+        except (OSError, ValueError):
+            return {"dispatch": None}       # nothing has ever been dispatched
     progress = _dispatch_progress(info.get("log"))
     result = progress["result"]
     if alive:
         state = "running"
     elif result:
         state = "failed" if result["is_error"] else "finished"
-    elif progress["log_bytes"]:
-        # No `result` record but the log has content: either a pre-stream-json dispatch (whose
-        # whole log is the closing prose recap) or one killed after writing. It reached a reply,
-        # so reporting it as `gone` would be wrong.
+    elif progress["log_bytes"] and not progress["structured"]:
+        # A pre-stream-json dispatch: its whole log IS the closing prose recap, so it reached a
+        # reply and reporting it `gone` would be wrong.
         state = "finished"
     else:
+        # Either nothing was ever written, or — the case that matters now — a stream-json
+        # session ended without its terminating `result` record. Print mode always emits one,
+        # so its absence means killed (Ctrl-C, machine sleep, OOM), however many megabytes of
+        # log came first. Calling that "finished, check for its reply" would send Kamil looking
+        # for something that does not exist, which is this whole feature's failure mode wearing
+        # the opposite hat.
         state = "gone"
     started = float(info.get("started_ts") or 0)
     if alive:
@@ -910,11 +1108,16 @@ def dispatch_status():
         # Falls back to when the reap NOTICED the exit, which can overshoot by up to one poll
         # interval. Good enough for a banner; never presented as exact.
         elapsed = (float(info.get("ended_ts") or 0) - started) or None
+    public = _via_public_tunnel(request)
+    if public and result:
+        result = {**result, "text": None}
     return {"dispatch": {
         "id": info.get("id"), "model": info.get("model"), "item_id": info.get("item_id"),
         "state": state, "started_at": info.get("started_at"),
         "elapsed_s": round(elapsed) if elapsed and elapsed > 0 else None,
         "ended_reason": info.get("ended_reason"),
-        "steps": progress["steps"], "last_step": progress["last_step"],
-        "last_summary": progress["last_summary"], "result": result,
+        "steps": progress["steps"],
+        "last_step": None if public else progress["last_step"],
+        "last_summary": None if public else progress["last_summary"],
+        "result": result,
     }}

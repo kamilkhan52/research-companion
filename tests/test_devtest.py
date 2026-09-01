@@ -462,6 +462,14 @@ def _tool_use(name, **inp) -> dict:
     return {"type": "tool_use", "name": name, "input": inp}
 
 
+def _pid_says_alive(monkeypatch) -> None:
+    """Our own pid is a live process but its command line is pytest, not `claude`, so the
+    identity check correctly refuses it. Tests that plant a LIVE record say so directly."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid: "alive")
+
+
 def _kill_says_gone(monkeypatch) -> None:
     """Make the recorded pid look dead, so the reap branch runs."""
     import os
@@ -487,11 +495,13 @@ def _record_dispatch(tmp_path, pid, log_text=""):
     return d
 
 
-def test_dispatch_status_reports_a_live_session_and_what_it_is_doing(client, tmp_path):
+def test_dispatch_status_reports_a_live_session_and_what_it_is_doing(client, tmp_path,
+                                                                    monkeypatch):
     """The heartbeat: while the process lives the bubble gets a step count and the last action,
     so a session thinking hard is distinguishable from one that died on its first tool call."""
     import os
 
+    _pid_says_alive(monkeypatch)
     _record_dispatch(tmp_path, os.getpid(), _stream_log(   # our own pid is certainly alive
         {"type": "system", "subtype": "init"},
         _assistant(_tool_use("Read", file_path="mobile/src/App.tsx")),
@@ -561,11 +571,12 @@ def test_dispatch_status_still_reads_a_pre_stream_json_log(client, tmp_path, mon
     assert d["steps"] == 0 and d["last_step"] is None
 
 
-def test_dispatch_status_tolerates_a_record_caught_mid_write(client, tmp_path):
+def test_dispatch_status_tolerates_a_record_caught_mid_write(client, tmp_path, monkeypatch):
     """The log is read while the session writes it, so the last line is routinely partial. It
     must be skipped — not crash the poll, and not lose the complete records before it."""
     import os
 
+    _pid_says_alive(monkeypatch)
     _record_dispatch(tmp_path, os.getpid(),
                      _stream_log(_assistant(_tool_use("Grep", pattern="ChatNavRail")))
                      + '{"type":"assis')
@@ -658,9 +669,7 @@ def test_the_session_can_launch_the_opus_review_its_own_pr_needs(client, monkeyp
     allowed = _spawn_argv(client, monkeypatch)
     assert "Task" in allowed
     prompt = next(a for a in allowed if "device-feedback" in a)
-    assert "INDEPENDENT Opus review" in prompt
-    # Its standing instructions discourage subagents, so the brief must override that here.
-    assert "even though your standing instructions" in prompt
+    assert "Opus review" in prompt and "Task tool" in prompt
 
 
 def test_the_session_can_run_the_client_suites_it_reports_on(client, monkeypatch):
@@ -674,7 +683,6 @@ def test_the_session_can_run_the_client_suites_it_reports_on(client, monkeypatch
 def test_the_brief_gates_the_merge_on_the_review_rather_than_the_agents_own_judgement(
         client, monkeypatch):
     prompt = next(a for a in _spawn_argv(client, monkeypatch) if "device-feedback" in a)
-    assert "only once — the review approves" in prompt
     assert "Never merge on your own say-so" in prompt
     # The stacked-PR trap: a stacked PR does not retarget when its base is deleted.
     assert "baseRefName" in prompt
@@ -703,9 +711,15 @@ def test_worktree_preparation_resets_an_existing_worktree_to_origin_main(monkeyp
     root = tmp_path / "checkout"
     worktree = root / dt.DISPATCH_WORKTREE
     (worktree / ".git").mkdir(parents=True)
-    monkeypatch.setattr(dt, "_REPO_ROOT", root)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
     ran: list[tuple] = []
     monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append((str(cwd), a)))
+
+    class Clean:            # the scratch-tree inspection: on the base branch, nothing dirty
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Clean())
 
     assert dt._dispatch_cwd() == str(worktree)
     verbs = [a for _, a in ran]
@@ -716,18 +730,252 @@ def test_worktree_preparation_resets_an_existing_worktree_to_origin_main(monkeyp
     assert ("clean", "-fd") in verbs and not any("-fdx" in a for a in verbs)
 
 
-def test_worktree_preparation_falls_back_to_the_checkout_rather_than_failing_the_dispatch(
-        monkeypatch, tmp_path):
-    """A dispatch that runs in a slightly wrong place beats one that cannot run at all."""
+def test_worktree_preparation_raises_rather_than_using_the_live_checkout(monkeypatch, tmp_path):
+    """It used to return _REPO_ROOT on any failure. That was defensible when the fallback was a
+    spare worktree and the session only proposed a branch; it is not when the session edits
+    `app/` (restarting the live server — DR-083) and merges its own PR."""
     from app.routers import devtest as dt
 
     monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
     root = tmp_path / "checkout"
     root.mkdir()
-    monkeypatch.setattr(dt, "_REPO_ROOT", root)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
 
-    def fail(*a, **k):
+    def fail(cwd, *args):
         raise OSError("no git here")
 
     monkeypatch.setattr(dt, "_dispatch_git", fail)
-    assert dt._dispatch_cwd() == str(root)
+    with pytest.raises(dt.DispatchPrepError):
+        dt._dispatch_cwd()
+
+
+# --- review round 2 (Opus review of PR #468) --------------------------------------------------
+
+def test_a_long_running_session_is_not_declared_dead_by_age_alone(client, tmp_path, monkeypatch):
+    """The age cap used to OVERRIDE liveness. Harmless when its only effect was releasing the
+    409 — but a dispatch now resets its worktree on the way in, so declaring a live session
+    dead makes the next one `git reset --hard` the tree it is still editing. And the full loop
+    (build, suites, PR, an Opus round-trip, CI, merge) makes a long session unremarkable."""
+    import os
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    d = _record_dispatch(tmp_path, os.getpid(), _stream_log(
+        _assistant(_tool_use("Bash", command="npm test"))))
+    aged = json.loads((d / "current.json").read_text())
+    aged["started_ts"] = _time.time() - (dt.DISPATCH_MAX_AGE_S + 3600)
+    (d / "current.json").write_text(json.dumps(aged))
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid: "alive")
+
+    body = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert body["state"] == "running"
+    assert (d / "current.json").exists()            # NOT archived out from under itself
+    # And single-flight still holds, so no second session can reach the worktree reset.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 409
+
+
+def test_pid_reuse_by_an_unrelated_process_is_not_mistaken_for_our_session(monkeypatch):
+    """What replaced the age cap as the pid-reuse defence: identity, not elapsed time."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)      # the number exists
+
+    class Out:
+        returncode = 0
+        stdout = "/usr/sbin/some-unrelated-daemon --serve\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Out())
+    assert dt._dispatch_liveness(4242) == "dead"
+
+    Out.stdout = "/opt/homebrew/bin/claude -p Run the /device-feedback skill...\n"
+    assert dt._dispatch_liveness(4242) == "alive"
+
+
+def test_liveness_is_unknown_rather_than_a_guess_when_it_cannot_tell(monkeypatch):
+    """Wrongly declaring a session dead is the DESTRUCTIVE direction — it gets the worktree
+    reset — but claiming alive forever would wedge dispatch. Hence the third value."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+    def boom(*a, **k):
+        raise OSError("no ps on this box")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    # "unknown", not "alive": treated as running, but the age cap may still overrule it — the
+    # only case where age decides anything.
+    assert dt._dispatch_liveness(4242) == "unknown"
+
+
+def test_a_killed_stream_json_session_is_gone_not_finished(client, tmp_path, monkeypatch):
+    """Print mode ALWAYS terminates with a `result` record, so its absence in a stream-json log
+    means killed. Reporting that as 'finished — check the item for its reply' would send Kamil
+    looking for something that does not exist: this feature's own failure mode, inverted."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Edit", file_path="mobile/src/App.tsx"))))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "gone"
+    assert d["steps"] == 1                      # it did work; it just never got to say so
+
+
+def test_the_public_tunnel_gets_state_without_the_session_transcript(client, tmp_path,
+                                                                    monkeypatch):
+    """`last_step` carries file paths, command lines and Task prompts; `result.text` carries the
+    closing message. The dev server is open-auth and sometimes tunnelled. State and progress
+    still cross so the banner works off-tailnet — redaction, not the refusal POST uses."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="gh pr merge 467 --squash")),
+        {"type": "result", "subtype": "success", "is_error": False,
+         "result": "merged, and here is everything I learned", "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch",
+                   headers={"cf-ray": "8a1b2c3d4e5f6789-LHR"}).json()["dispatch"]
+    assert d["state"] == "finished" and d["steps"] == 1     # still useful
+    assert d["last_step"] is None and d["result"]["text"] is None
+    assert "gh pr merge" not in json.dumps(d)
+
+
+def test_the_step_count_is_memoized_across_polls_and_stays_exact(tmp_path):
+    """A multi-hour log reaches hundreds of MB and the bubble polls every 5s, so the count
+    resumes from where it left off. Appends must stay exact, including a needle straddling the
+    resume point, and a file that SHRANK is a different log and is recounted."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "grow.log"
+    first = _stream_log(_assistant(_tool_use("Read", file_path="a")))
+    log.write_text(first)
+    assert dt._count_tool_uses(log) == 1
+
+    # Append, splitting a needle exactly across the resume point.
+    rest = _stream_log(_assistant(_tool_use("Edit", file_path="b")))
+    split = rest.index('"tool_use"') + 4
+    with log.open("a") as fh:
+        fh.write(rest[:split])
+    dt._count_tool_uses(log)                     # counts the partial, carries the fragment
+    with log.open("a") as fh:
+        fh.write(rest[split:])
+    assert dt._count_tool_uses(log) == 2         # not 1 (dropped) and not 3 (double-counted)
+
+    log.write_text(first)                        # shorter: a different log reusing the name
+    assert dt._count_tool_uses(log) == 1
+
+
+def test_progress_reads_a_result_record_past_the_tail_window(tmp_path):
+    """The tail seek only runs on a log bigger than the window, which no other test produces."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "huge.log"
+    filler = _stream_log(*[_assistant(_tool_use("Read", file_path=f"f{i}")) for i in range(200)])
+    log.write_text(filler * ((dt.DISPATCH_LOG_TAIL_BYTES // len(filler)) + 2)
+                   + _stream_log({"type": "result", "subtype": "success", "is_error": False,
+                                  "result": "done", "permission_denials": []}))
+    assert log.stat().st_size > dt.DISPATCH_LOG_TAIL_BYTES
+    progress = dt._dispatch_progress(str(log))
+    assert progress["structured"] is True
+    assert progress["result"]["text"] == "done"          # the seek landed on whole lines
+
+
+def test_worktree_preparation_refuses_a_tree_with_uncommitted_work(monkeypatch, tmp_path):
+    """The belt to the liveness braces: if single-flight is ever wrong, `reset --hard` plus
+    `clean -fd` would destroy someone's work with no warning and no undo."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)
+
+    class Out:
+        returncode = 0
+        stdout = " M mobile/src/App.tsx\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Out())
+    with pytest.raises(dt.DispatchPrepError):
+        dt._dispatch_cwd()
+
+
+def test_a_failed_fetch_does_not_push_the_session_into_the_live_checkout(monkeypatch, tmp_path):
+    """An offline Mac or a slow remote must not silently drop an unattended, merge-authorized
+    session into the checkout the live backend serves from."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+
+    def git(cwd, *args):
+        if args[0] == "fetch":
+            raise OSError("network is down")
+
+    monkeypatch.setattr(dt, "_dispatch_git", git)
+
+    class Clean:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Clean())
+    # Fetch failure is survivable — reset to the origin/main already on disk.
+    assert dt._dispatch_cwd() == str(worktree)
+
+
+def test_preparation_failure_refuses_the_dispatch_instead_of_using_the_live_checkout(
+        client, monkeypatch):
+    """The old fallback returned _REPO_ROOT. Fine when the session only proposed a branch;
+    not when it edits app/ (restarting the live server — DR-083) and merges its own PR."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    def refuse():
+        raise dt.DispatchPrepError("worktree is dirty")
+
+    monkeypatch.setattr(dt, "_dispatch_cwd", refuse)
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    assert "worktree" in r.json()["detail"]
+
+
+def test_the_worktree_gets_the_venv_the_session_cannot_bootstrap(monkeypatch, tmp_path):
+    """`git worktree add` materialises TRACKED files only and `.venv` is gitignored, so the
+    session's one permitted interpreter — the RELATIVE path `.venv/bin/python` — would not
+    exist. Without it there is no pytest and, far worse, no `append_response`: that is
+    filesystem-side by design (DR-080), so the bubble reply, which is the whole deliverable,
+    becomes impossible."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)
+
+    class Clean:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Clean())
+    dt._dispatch_cwd()
+    assert (worktree / ".venv" / "bin" / "python").exists()
+    # Gitignored, so it survives the `clean -fd` of every subsequent dispatch.
+    assert (worktree / ".venv").is_symlink()

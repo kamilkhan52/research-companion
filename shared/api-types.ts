@@ -615,8 +615,16 @@ export interface paths {
          *       - `running`  — the process is alive.
          *       - `finished` — it ended and its log carries a successful `result` record.
          *       - `failed`   — it ended and its `result` record is flagged `is_error`.
-         *       - `gone`     — it ended having written NOTHING. Killed, or it died before its first
-         *                      record; either way there is no reply coming and a re-dispatch is the move.
+         *       - `gone`     — it ended without the `result` record print mode always writes: killed, or
+         *                      dead before its first record. Either way no reply is coming and a
+         *                      re-dispatch is the move.
+         *
+         *     Over the PUBLIC tunnel this answers, but without detail: `last_step` carries file paths,
+         *     shell command lines and Task prompts, and `result.text` up to 2000 characters of the
+         *     session's closing message. The dev server is open-auth and sometimes tunnelled, so those go
+         *     only to the tailnet. State, step count and elapsed still cross, which keeps the banner
+         *     useful on a device that is not on the tailnet — the reason this is redaction and not the
+         *     outright refusal POST uses.
          */
         get: operations["dispatch_status_api_devtest_dispatch_get"];
         put?: never;
@@ -640,9 +648,20 @@ export interface paths {
          *       request bearing Cloudflare edge headers — it works from the tailnet (the phone's baked
          *       stable path) and loopback only. The feedback/screenshot routes are unaffected.
          *     - **`--permission-mode acceptEdits` plus an explicit `--allowedTools` list, never
-         *       skip-permissions.** Even from the tailnet the session runs only the skill's own toolset
-         *       (`DISPATCH_ALLOWED_TOOLS`) rather than unrestricted; `--add-dir` admits the inbox, which
-         *       lives in the main checkout rather than the worktree the session runs in.
+         *       skip-permissions.** The session runs `DISPATCH_ALLOWED_TOOLS` rather than unrestricted;
+         *       `--add-dir` admits the inbox, which lives in the main checkout rather than the worktree
+         *       the session runs in.
+         *
+         *     Since 2026-09-01 the session runs the WHOLE loop — build, review, merge (see
+         *     `_dispatch_prompt`) — so be honest about where the safety now lives. It is NOT the tool
+         *     list: that list has to include `npx` and a Python interpreter, which together are general
+         *     execution. It is the gating above (dev-only, no public tunnel, single-flight) and the
+         *     throwaway worktree it runs in.
+         *
+         *     And be equally honest about the review gate: "it may merge only once an Opus review
+         *     approves" is a PROMPT-LEVEL guarantee, not a mechanical one. The session holds
+         *     `Bash(gh:*)` and could `gh pr merge` at any point. That is inherent to giving it the loop;
+         *     do not read the allowlist as enforcing it.
          */
         post: operations["dispatch_to_claude_api_devtest_dispatch_post"];
         delete?: never;

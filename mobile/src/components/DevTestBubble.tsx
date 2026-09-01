@@ -614,12 +614,17 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
       timer.current = setTimeout(() => void tick(), next?.state === 'running' ? 5000 : 30000);
     };
     void tick();
-    refreshDispatchStatus = () => void tick();
+    const refresh = () => void tick();
+    refreshDispatchStatus = refresh;
     return () => {
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
       timer.current = null;
-      refreshDispatchStatus = null;
+      // Only de-register if we are still the registered one. Clearing unconditionally is
+      // last-writer-wins, and a transient second mount's cleanup would then de-register the
+      // survivor, leaving the banner without its post-dispatch refresh — the same shape the
+      // `sheetOpener` guard and the `adjustBubbleMounts` counter above already exist to avoid.
+      if (refreshDispatchStatus === refresh) refreshDispatchStatus = null;
     };
   }, [visible]);
 
