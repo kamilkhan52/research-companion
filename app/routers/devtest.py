@@ -456,9 +456,14 @@ _dispatch_lock = threading.Lock()
 #: next one `git reset --hard` the tree that session is still editing, destroying its
 #: uncommitted work silently. And the full loop (build, suites, PR, an Opus review round-trip,
 #: CI, merge) makes a >3h session unremarkable. Pid reuse is now caught by checking the
-#: process's identity instead (`_dispatch_pid_alive`), so age only decides the case where a
-#: `claude` process has held the recorded pid for longer than any real session could run.
+#: process's identity instead (`_dispatch_liveness`), which is exact — so age now decides ONLY
+#: the case where identity could not be established at all (`ps` unavailable). A confirmed
+#: session is running however long it has been at it.
 DISPATCH_MAX_AGE_S = 12 * 3600.0
+
+#: How long a rate-limited session stays resumable. The CLI expires stored sessions, so beyond
+#: this a `--resume` would spawn and die immediately, presenting as a fresh failure.
+DISPATCH_RESUME_MAX_AGE_S = 24 * 3600.0
 
 
 #: What the headless session may run without a human at the prompt. The first real dispatch
@@ -531,36 +536,85 @@ def _dispatch_running() -> dict | None:
     return info if alive else None
 
 
-def _dispatch_liveness(pid: object) -> str:
+#: Slack when comparing a process's own elapsed time against our record's age. `ps` reports
+#: whole seconds and the record is written just after the spawn, so they differ by a hair even
+#: for the same process.
+_PID_AGE_SLACK_S = 90.0
+
+
+def _parse_etime(raw: str) -> float | None:
+    """`ps -o etime=` → seconds. Formats: `MM:SS`, `HH:MM:SS`, `D-HH:MM:SS`."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    days, _, rest = raw.rpartition("-")
+    try:
+        parts = [float(p) for p in rest.split(":")]
+    except ValueError:
+        return None
+    if not 1 <= len(parts) <= 3:
+        return None
+    seconds = 0.0
+    for part in parts:                      # left-to-right, each place worth 60x the next
+        seconds = seconds * 60 + part
+    if days:
+        try:
+            seconds += float(days) * 86400
+        except ValueError:
+            return None
+    return seconds
+
+
+def _dispatch_liveness(pid: object, started_ts: float = 0.0) -> str:
     """`"alive"` | `"dead"` | `"unknown"` for a recorded dispatch pid.
 
-    Existence alone is not enough. After a reboot or a pid-counter wrap the number can belong
-    to something unrelated, and believing it would wedge dispatch behind a permanent 409. That
-    used to be handled by an age cap that OVERRODE liveness — far too blunt now that being
-    declared dead gets your worktree reset — so identity is checked directly instead: a
-    dispatched session's command line always contains `claude`. Cheap, and it defeats the
-    realistic reuse case without parsing process start times.
+    Existence alone is not enough: after a reboot or a pid-counter wrap the number can belong to
+    something unrelated, and believing it wedges dispatch behind a permanent 409 that can only
+    be cleared by deleting a file by hand — impossible from the phone, which is the only place
+    dispatches are fired from.
 
-    The third value is the point of the tri-state. If `ps` cannot be run we must not guess in
-    either direction: claiming dead is destructive, and claiming alive forever would wedge
-    dispatch. `"unknown"` means "treat as alive, but let the age cap have the final word" —
-    which is the ONLY case age now decides.
+    Identity is therefore checked two ways, because either alone is too weak:
+
+    - **The command line must look like a dispatch.** A bare `claude` substring is far too
+      loose — on this machine it matches the desktop app, its helpers, and every `zsh -c source
+      ~/.claude/shell-snapshots/…` any Claude Code session spawns (27 of 674 processes at the
+      time of writing). Requiring `--output-format stream-json`, which every dispatch passes and
+      almost nothing else does, narrows it to something a coincidence will not satisfy.
+    - **The process must not be YOUNGER than our record.** This is the exact test, and the one
+      that actually retires pid reuse: a process that has been running for less time than the
+      record has existed cannot be the process the record describes. `ps -o etime=` gives that
+      directly, with no need to parse start timestamps or reason about time zones.
+
+    The third value matters because we must not guess in either direction: claiming dead is
+    destructive (the next dispatch resets the worktree), and claiming alive forever wedges
+    dispatch. `"unknown"` means "treat as alive, but let the age cap overrule" — the only case
+    age decides.
     """
     import os
     import subprocess
 
     try:
-        os.kill(int(pid), 0)          # signal 0: existence check, never delivers
+        pid_int = int(pid)
+        os.kill(pid_int, 0)           # signal 0: existence check, never delivers
     except (OSError, ValueError, TypeError):
         return "dead"
     try:
-        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+        out = subprocess.run(["ps", "-p", str(pid_int), "-o", "etime=,command="],
                              capture_output=True, text=True, timeout=5.0)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError):
         return "unknown"
-    if out.returncode != 0:
+    if out.returncode != 0 or not out.stdout.strip():
         return "dead"
-    return "alive" if "claude" in out.stdout.lower() else "dead"
+    etime_raw, _, command = out.stdout.strip().partition(" ")
+    if "stream-json" not in command:
+        return "dead"                 # some other process inherited the number
+    elapsed = _parse_etime(etime_raw)
+    if elapsed is None:
+        return "unknown"              # could not corroborate; the age cap decides
+    record_age = time.time() - started_ts if started_ts else 0.0
+    if record_age and elapsed + _PID_AGE_SLACK_S < record_age:
+        return "dead"                 # younger than the record: cannot be the same process
+    return "alive"
 
 
 def _dispatch_peek() -> tuple[dict | None, bool]:
@@ -571,7 +625,8 @@ def _dispatch_peek() -> tuple[dict | None, bool]:
         info = json.loads((_dispatch_dir() / "current.json").read_text())
     except (OSError, ValueError):
         return None, False
-    return info, _dispatch_liveness(info.get("pid")) != "dead"
+    return info, _dispatch_liveness(
+        info.get("pid"), float(info.get("started_ts") or 0)) != "dead"
 
 
 def _dispatch_reap() -> tuple[dict | None, bool]:
@@ -594,7 +649,7 @@ def _dispatch_reap() -> tuple[dict | None, bool]:
     # dead, which releases single-flight and lets the next dispatch `git reset --hard` the
     # worktree that session is still editing. See DISPATCH_MAX_AGE_S.
     started = float(info.get("started_ts") or 0)
-    liveness = _dispatch_liveness(info.get("pid"))
+    liveness = _dispatch_liveness(info.get("pid"), started)
     if liveness == "dead":
         ended_reason = "process gone"
     elif liveness == "unknown" and started and time.time() - started > DISPATCH_MAX_AGE_S:
@@ -651,8 +706,9 @@ def _describe_tool_use(block: dict) -> str:
     return name
 
 
-#: `path -> (bytes counted, count, trailing carry)`. Dispatch is single-flight, so this holds
-#: one live log plus whatever the last one left; it is not worth evicting.
+#: `path -> (bytes counted, count, trailing carry)`. One entry per dispatch, never evicted:
+#: dispatch is single-flight and each entry is a path plus two ints, so even a year of them is
+#: nothing. Bounded growth, not a fixed size.
 _TOOL_USE_COUNTS: dict[str, tuple[int, int, bytes]] = {}
 
 
@@ -683,7 +739,14 @@ def _count_tool_uses(path: Path) -> int:
     try:
         with path.open("rb") as fh:
             fh.seek(seen)
-            while chunk := fh.read(1 << 20):
+            # Bounded to the size we STAT'd, never to EOF. A live session appends while we
+            # read, so reading to EOF counts bytes past `size` — and then records `seen = size`,
+            # so the next poll counts them again and the inflation is baked in permanently.
+            # Stopping at `size` also keeps `steps` consistent with `log_bytes`, which comes
+            # from the same stat.
+            remaining = size - seen
+            while remaining > 0 and (chunk := fh.read(min(1 << 20, remaining))):
+                remaining -= len(chunk)
                 buf = carry + chunk
                 total += buf.count(_TOOL_USE_NEEDLE)
                 carry = buf[-overlap:] if overlap else b""
@@ -778,19 +841,30 @@ def _dispatch_progress(log_path: str | None) -> dict:
     return out
 
 
+#: `rate_limit_event` statuses that mean the window is CLOSED. An allow-list, not "anything
+#: that is not `allowed`": the CLI also emits advisory statuses while still happily serving
+#: requests (`allowed_warning` as you approach the ceiling), and treating those as a stop
+#: turned a session that had finished its work into "hit the usage limit — Resume?".
+_BLOCKING_RATE_LIMIT_STATUSES = frozenset({"rejected", "blocked", "exhausted"})
+
+
 def _hit_the_ceiling(result: dict | None, rate_limit: dict | None) -> bool:
     """Whether a dispatch ended because the ACCOUNT ran out of window rather than because
     anything about the work went wrong.
 
-    Two independent signatures, because the two ways it ends look different. A session that
-    gets a 429 mid-turn terminates with a `result` record carrying that status. A session
-    killed by the limit before it can write one leaves only its last `rate_limit_event` — and
-    those records report the window continuously, so the last one is the one that stopped it.
+    Two signatures, and the ORDER between them is load-bearing. A session that lived long
+    enough to write a terminating `result` record has said how it ended, so that record wins
+    outright — only a 429 on it is the ceiling. Consulting the rate-limit events as well let a
+    session that merely BRUSHED the warning threshold on its last turn be reported as
+    rate-limited despite having finished, which offered a Resume button on completed work: a
+    tap would re-run a merged loop in the un-reset worktree.
+
+    Only a session killed before it could write that record falls through to its last
+    `rate_limit_event`, which is the case those events exist to explain.
     """
-    if result and result.get("api_error_status") == 429:
-        return True
-    status = (rate_limit or {}).get("status")
-    return bool(status) and status != "allowed"
+    if result:
+        return result.get("api_error_status") == 429
+    return (rate_limit or {}).get("status") in _BLOCKING_RATE_LIMIT_STATUSES
 
 
 def _resumable_dispatch() -> dict | None:
@@ -803,6 +877,12 @@ def _resumable_dispatch() -> dict | None:
     try:
         info = json.loads((_dispatch_dir() / "last.json").read_text())
     except (OSError, ValueError):
+        return None
+    # The CLI expires its stored sessions, so `--resume` on a days-old id spawns a process that
+    # dies immediately — which would present as a fresh `gone` and look like a new bug. Past
+    # this window, a fresh dispatch is the honest offer.
+    started = float(info.get("started_ts") or 0)
+    if started and time.time() - started > DISPATCH_RESUME_MAX_AGE_S:
         return None
     progress = _dispatch_progress(info.get("log"))
     if not _hit_the_ceiling(progress["result"], progress["rate_limit"]):
@@ -847,7 +927,7 @@ class DispatchPrepError(RuntimeError):
     """The dispatch worktree could not be made safe to run in, so the dispatch is refused."""
 
 
-def _dispatch_cwd(reset: bool = True) -> str:
+def _dispatch_cwd(reset: bool = True, dispatch_id: str = "dispatch") -> str:
     """Prepare and return the working directory for a spawned session — see DISPATCH_WORKTREE
     for why it is neither the live checkout nor Metro's.
 
@@ -890,7 +970,7 @@ def _dispatch_cwd(reset: bool = True) -> str:
                     "already on disk", exc)
     try:
         if (worktree / ".git").exists():
-            _assert_dispatch_worktree_is_scratch(worktree)
+            _preserve_dispatch_worktree(worktree, dispatch_id)
             _dispatch_git(worktree, "reset", "--hard")
             _dispatch_git(worktree, "clean", "-fd")
             _dispatch_git(worktree, "checkout", "-B", DISPATCH_BASE_BRANCH, "origin/main")
@@ -906,32 +986,41 @@ def _dispatch_cwd(reset: bool = True) -> str:
     return str(worktree)
 
 
-def _assert_dispatch_worktree_is_scratch(worktree: Path) -> None:
-    """Refuse to reset a worktree that looks like it holds someone's work.
+def _preserve_dispatch_worktree(worktree: Path, dispatch_id: str) -> None:
+    """Stash anything uncommitted before the reset destroys it.
 
-    The belt to the liveness braces: if the single-flight check is ever wrong — a session we
-    failed to recognise, a human who opened this directory — `git reset --hard` plus
-    `git clean -fd` would destroy uncommitted work with no warning and no undo. A scratch tree
-    is clean and parked on the branch we park it on; anything else is refused rather than
-    cleaned.
+    The belt to the liveness braces: if single-flight is ever wrong — a session we failed to
+    recognise, a human who opened this directory — `git reset --hard` plus `git clean -fd`
+    would take uncommitted work with no warning and no undo.
+
+    This REFUSED to reset a dirty tree at first, which was the wrong trade. `git status
+    --porcelain` is non-empty for untracked files too, so a single leftover scratch file would
+    503 every future dispatch with "resolve it by hand" — from a phone that cannot. And this
+    feature's own flow reaches that state routinely: a session hits the account ceiling
+    mid-edit, the resume is declined or is itself killed, and the tree stays dirty forever.
+
+    Stashing is strictly safer than refusing AND strictly more available: nothing is lost,
+    nothing wedges, and `git stash list` holds the evidence under this dispatch's id. `-u`
+    includes untracked files, which is most of what accumulates here.
     """
     import subprocess
 
     try:
-        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(worktree),
-                                capture_output=True, text=True, check=True,
-                                timeout=DISPATCH_GIT_TIMEOUT_S).stdout.strip()
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(worktree),
                                capture_output=True, text=True, check=True,
                                timeout=DISPATCH_GIT_TIMEOUT_S).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise DispatchPrepError(f"could not inspect the dispatch worktree: {exc}") from exc
-    # A previous session's own feature branch is expected and fine — it is committed and
-    # pushed, and its branch ref survives the reset. Uncommitted changes are not.
-    if dirty:
+    if not dirty:
+        return
+    try:
+        _dispatch_git(worktree, "stash", "push", "-u", "-m", f"pre-{dispatch_id}")
+    except Exception as exc:
         raise DispatchPrepError(
-            f"the dispatch worktree has uncommitted changes on '{branch}'. Something is still "
-            "working there, or work was left behind; resolve it by hand rather than losing it.")
+            f"the dispatch worktree has uncommitted changes and they could not be stashed "
+            f"({exc}); resolve it by hand rather than losing it") from exc
+    log.warning("dispatch worktree had uncommitted changes; stashed as pre-%s "
+                "(recover with `git stash list` in %s)", dispatch_id, worktree)
 
 
 def _link_dispatch_venv(root: Path, worktree: Path) -> None:
@@ -947,12 +1036,21 @@ def _link_dispatch_venv(root: Path, worktree: Path) -> None:
     feature inert.
 
     A symlink rather than a copy: it is the same interpreter and the same installed deps, and
-    being gitignored it survives every subsequent `git clean -fd`.
+    being gitignored it survives every subsequent `git clean -fd` and never shows up in
+    `git status`. That depends on the BARE `.venv` line in `.gitignore`, not the `.venv/` one
+    above it — a trailing slash matches directories only, and a symlink-to-a-directory is not
+    a directory. Removing that line would silently break this.
     """
     import os
 
     source, link = root / ".venv", worktree / ".venv"
-    if link.exists() or not source.is_dir():
+    if link.is_symlink() and not link.exists():
+        link.unlink(missing_ok=True)      # a dangling link would make os.symlink raise forever
+    if link.exists():
+        return
+    if not source.is_dir():
+        log.warning("no %s to link into the dispatch worktree; the session will not be able to "
+                    "run pytest or reply to the bubble", source)
         return
     try:
         os.symlink(source, link, target_is_directory=True)
@@ -1076,8 +1174,9 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     item_id = (req.item_id or "").strip()[:40] or None
     if item_id and not re.fullmatch(r"[A-Za-z0-9-]+", item_id):
         raise HTTPException(status_code=400, detail="item_id has an unexpected shape")
+    resuming = bool(req.resume)
     model, resume_of, session_id = req.model, None, None
-    if req.resume:
+    if resuming:
         # Resume the last session rather than starting a new one, so its context — everything
         # it had already worked out before the window closed — is not thrown away. The item and
         # model come from the record being resumed; taking them from the request would let a
@@ -1109,13 +1208,13 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
         # Refuse rather than run an unattended, merge-authorized session in the live server's
         # own checkout — see `_dispatch_cwd`.
         try:
-            cwd = _dispatch_cwd(reset=not req.resume)
+            cwd = _dispatch_cwd(reset=not resuming, dispatch_id=dispatch_id)
         except DispatchPrepError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=f"Could not prepare the dispatch worktree: {exc}") from exc
         with log_path.open("wb") as log_file:
-            argv = [binary, "-p", _dispatch_prompt(item_id, resuming=bool(session_id))]
+            argv = [binary, "-p", _dispatch_prompt(item_id, resuming=resuming)]
             if session_id:
                 argv += ["--resume", session_id]
             process = subprocess.Popen(

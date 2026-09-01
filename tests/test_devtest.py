@@ -467,7 +467,7 @@ def _pid_says_alive(monkeypatch) -> None:
     identity check correctly refuses it. Tests that plant a LIVE record say so directly."""
     from app.routers import devtest as dt
 
-    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid: "alive")
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid, started=0.0: "alive")
 
 
 def _kill_says_gone(monkeypatch) -> None:
@@ -699,7 +699,10 @@ def test_worktree_preparation_is_skipped_when_the_seam_is_off(client, monkeypatc
         raise AssertionError("dispatch prepared a worktree with the seam off")
 
     monkeypatch.setattr(dt, "_dispatch_git", explode)
-    assert dt._dispatch_cwd() == str(dt._REPO_ROOT)
+    # `_main_root()`, not `_REPO_ROOT`: they are the same in the main checkout and in CI, and
+    # DIFFER inside a git worktree — which is exactly where CLAUDE.md says to do backend work,
+    # so asserting the wrong one made the suite red for every agent and green only here.
+    assert dt._dispatch_cwd() == str(dt._main_root())
 
 
 def test_worktree_preparation_resets_an_existing_worktree_to_origin_main(monkeypatch, tmp_path):
@@ -766,7 +769,7 @@ def test_a_long_running_session_is_not_declared_dead_by_age_alone(client, tmp_pa
     aged = json.loads((d / "current.json").read_text())
     aged["started_ts"] = _time.time() - (dt.DISPATCH_MAX_AGE_S + 3600)
     (d / "current.json").write_text(json.dumps(aged))
-    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid: "alive")
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid, started=0.0: "alive")
 
     body = client.get("/api/devtest/dispatch").json()["dispatch"]
     assert body["state"] == "running"
@@ -776,9 +779,14 @@ def test_a_long_running_session_is_not_declared_dead_by_age_alone(client, tmp_pa
     assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 409
 
 
-def test_pid_reuse_by_an_unrelated_process_is_not_mistaken_for_our_session(monkeypatch):
-    """What replaced the age cap as the pid-reuse defence: identity, not elapsed time."""
+def test_pid_reuse_is_caught_by_identity_and_by_the_age_of_the_process_itself(monkeypatch):
+    """What replaced the age cap as the pid-reuse defence. A bare `claude` substring was far too
+    loose — it also matches the desktop app, its helpers, and every shell any Claude Code session
+    spawns — so a coincidental match wedged dispatch at 409 with no way to clear it from the
+    phone. Two checks now: the command line must look like a DISPATCH, and the process must not
+    be younger than the record claiming to describe it."""
     import os
+    import time as _time
 
     from app.routers import devtest as dt
 
@@ -786,13 +794,32 @@ def test_pid_reuse_by_an_unrelated_process_is_not_mistaken_for_our_session(monke
 
     class Out:
         returncode = 0
-        stdout = "/usr/sbin/some-unrelated-daemon --serve\n"
+        stdout = "05:00 /usr/sbin/some-unrelated-daemon --serve\n"
 
     monkeypatch.setattr("subprocess.run", lambda *a, **k: Out())
-    assert dt._dispatch_liveness(4242) == "dead"
+    started = _time.time() - 300
+    assert dt._dispatch_liveness(4242, started) == "dead"
 
-    Out.stdout = "/opt/homebrew/bin/claude -p Run the /device-feedback skill...\n"
-    assert dt._dispatch_liveness(4242) == "alive"
+    # Claude-ish but NOT a dispatch — the old substring claimed this one as ours.
+    Out.stdout = "05:00 /bin/zsh -c source /Users/k/.claude/shell-snapshots/snapshot.sh\n"
+    assert dt._dispatch_liveness(4242, started) == "dead"
+
+    Out.stdout = ("05:00 /opt/homebrew/bin/claude -p Run the skill --output-format stream-json "
+                  "--verbose\n")
+    assert dt._dispatch_liveness(4242, started) == "alive"
+
+    # A real dispatch command line, but the process is far YOUNGER than the record — so the
+    # number was reused after we wrote it, and this cannot be our session.
+    assert dt._dispatch_liveness(4242, _time.time() - 30 * 3600) == "dead"
+
+
+def test_etime_parses_every_shape_ps_emits():
+    from app.routers import devtest as dt
+
+    assert dt._parse_etime("05:00") == 300
+    assert dt._parse_etime("01:05:00") == 3900
+    assert dt._parse_etime("2-01:05:00") == 3900 + 2 * 86400
+    assert dt._parse_etime("") is None and dt._parse_etime("garbage") is None
 
 
 def test_liveness_is_unknown_rather_than_a_guess_when_it_cannot_tell(monkeypatch):
@@ -883,9 +910,12 @@ def test_progress_reads_a_result_record_past_the_tail_window(tmp_path):
     assert progress["result"]["text"] == "done"          # the seek landed on whole lines
 
 
-def test_worktree_preparation_refuses_a_tree_with_uncommitted_work(monkeypatch, tmp_path):
-    """The belt to the liveness braces: if single-flight is ever wrong, `reset --hard` plus
-    `clean -fd` would destroy someone's work with no warning and no undo."""
+def test_uncommitted_work_is_stashed_before_the_reset_rather_than_refused(monkeypatch, tmp_path):
+    """The belt to the liveness braces — but it must not become a lockout. Refusing was the first
+    cut and the wrong trade: `git status --porcelain` is non-empty for UNTRACKED files too, so
+    one leftover scratch file 503s every future dispatch, from a phone that cannot resolve it.
+    This PR's own flow reaches that state routinely (ceiling mid-edit, resume declined).
+    Stashing loses nothing and wedges nothing."""
     import subprocess
 
     from app.routers import devtest as dt
@@ -895,15 +925,19 @@ def test_worktree_preparation_refuses_a_tree_with_uncommitted_work(monkeypatch, 
     worktree = root / dt.DISPATCH_WORKTREE
     (worktree / ".git").mkdir(parents=True)
     monkeypatch.setattr(dt, "_main_root", lambda: root)
-    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)
+    ran: list[tuple] = []
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append(a))
 
-    class Out:
+    class Dirty:
         returncode = 0
-        stdout = " M mobile/src/App.tsx\n"
+        stdout = "?? junk-from-a-killed-session.txt\n"
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Out())
-    with pytest.raises(dt.DispatchPrepError):
-        dt._dispatch_cwd()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Dirty())
+    assert dt._dispatch_cwd(dispatch_id="dispatch-xyz") == str(worktree)
+    stash = next(a for a in ran if a[0] == "stash")
+    assert stash[:3] == ("stash", "push", "-u")     # -u: untracked is most of what accumulates
+    assert "pre-dispatch-xyz" in stash              # recoverable, and named for its dispatch
+    assert ("reset", "--hard") in ran               # and the reset still happens afterwards
 
 
 def test_a_failed_fetch_does_not_push_the_session_into_the_live_checkout(monkeypatch, tmp_path):
@@ -942,7 +976,7 @@ def test_preparation_failure_refuses_the_dispatch_instead_of_using_the_live_chec
 
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
 
-    def refuse(reset=True):
+    def refuse(reset=True, dispatch_id="dispatch"):
         raise dt.DispatchPrepError("worktree is dirty")
 
     monkeypatch.setattr(dt, "_dispatch_cwd", refuse)
@@ -1100,3 +1134,89 @@ def test_resume_is_refused_when_there_is_nothing_rate_limited_to_resume(client, 
     r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
     assert r.status_code == 409
     assert "no rate-limited session" in r.json()["detail"]
+
+
+# --- review round 3 (Opus review of PR #468, round 2) -----------------------------------------
+
+def test_a_completed_session_is_never_offered_as_rate_limited(client, tmp_path, monkeypatch):
+    """The first cut treated ANY rate-limit status other than `allowed` as the ceiling, and
+    checked it BEFORE the terminating record. So a session that finished its work and merely
+    brushed the warning threshold on its last turn came back as "hit the usage limit — Resume?",
+    and a tap would re-run a merged loop in the un-reset worktree."""
+    for status in ("allowed_warning", "queueing", "some_future_status"):
+        _record_dispatch(tmp_path, 999999, _stream_log(
+            _rate_limit_event(status=status),
+            {"type": "result", "subtype": "success", "is_error": False,
+             "result": "Merged PR #470", "api_error_status": None, "permission_denials": []},
+        ))
+        _kill_says_gone(monkeypatch)
+        d = client.get("/api/devtest/dispatch").json()["dispatch"]
+        assert d["state"] == "finished", f"{status} was misread as the ceiling"
+        assert d["resumable"] is False
+
+
+def test_a_blocking_status_still_reads_as_the_ceiling_when_there_is_no_result(client, tmp_path,
+                                                                             monkeypatch):
+    """The counterweight to the allow-list: the killed-before-it-could-say-so case must survive.
+    That is the whole reason the rate-limit events are consulted at all."""
+    _record_dispatch(tmp_path, 999999, _stream_log(_rate_limit_event(status="rejected")))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited" and d["resumable"] is True
+
+
+def test_the_step_count_does_not_inflate_while_the_session_is_still_writing(tmp_path):
+    """The memo recorded `seen = size` from the stat but read to EOF, so anything appended
+    between the two was counted, then counted AGAIN on the next poll — and the error was
+    permanent. A live session appends constantly, so this was the normal case, and it got worse
+    the bigger the log."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "live.log"
+    log.write_text(_stream_log(*[_assistant(_tool_use("Read", file_path=f"f{i}"))
+                                 for i in range(3)]))
+
+    class GrowsWhileRead:
+        """A Path that appends right after its size is taken — exactly the race a live session
+        creates between `_count_tool_uses`'s stat() and its read reaching EOF."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def stat(self):
+            info = self._real.stat()
+            with self._real.open("a") as fh:
+                fh.write(_stream_log(*[_assistant(_tool_use("Edit", file_path=f"g{i}"))
+                                       for i in range(4)]))
+            return info
+
+        def open(self, *a, **k):
+            return self._real.open(*a, **k)
+
+        def __str__(self):
+            return str(self._real)
+
+    assert dt._count_tool_uses(GrowsWhileRead(log)) == 3   # only what the stat covered
+    assert dt._count_tool_uses(log) == 7                   # the 4 appended, counted exactly once
+
+def test_a_stale_rate_limited_session_is_no_longer_offered_for_resume(client, tmp_path,
+                                                                     monkeypatch):
+    """The CLI expires stored sessions, so `--resume` on a days-old id spawns a process that
+    dies at once — which would present as a brand-new failure rather than as an expiry."""
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "system", "subtype": "init", "session_id": "sess-old"},
+        _rate_limit_event(status="rejected"),
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")                     # archive it
+    archived = json.loads((d / "last.json").read_text())
+    archived["started_ts"] = _time.time() - (dt.DISPATCH_RESUME_MAX_AGE_S + 3600)
+    (d / "last.json").write_text(json.dumps(archived))
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
+    assert r.status_code == 409

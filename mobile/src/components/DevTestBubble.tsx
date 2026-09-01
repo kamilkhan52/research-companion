@@ -631,11 +631,17 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
   return status;
 }
 
+/** How often the Resume button re-checks whether its window has reopened. Short enough that
+ *  the countdown does not look stuck, long enough to be free. */
+const RESUME_READY_POLL_MS = 15000;
+
 /** "in 48m", "in 2h 10m", or "now" once the window has reopened. */
 function formatUntil(resetsAt: number | null | undefined): string {
   if (!resetsAt) return 'soon';
   const secs = resetsAt - Date.now() / 1000;
-  if (secs <= 0) return 'now';
+  // Under a minute reads as "now": `formatElapsed` renders sub-second as "just started", which
+  // is nonsense pointed at the future.
+  if (secs < 60) return 'now';
   return `in ${formatElapsed(secs)}`;
 }
 
@@ -713,14 +719,18 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
 function ResumeButton({ status }: { status: DispatchStatus }) {
   const [busy, setBusy] = useState(false);
   const resetsAt = status.rate_limit?.resets_at ?? 0;
-  const [ready, setReady] = useState(() => !resetsAt || resetsAt <= Date.now() / 1000);
+  // Recomputed on a tick rather than armed once. A single setTimeout for the real wait is hours
+  // long: RN throttles timers that far out and warns about them, and a backgrounded app may
+  // never fire it at all — so the button could sit disabled at "Resume in 2h 10m" forever while
+  // the poll beside it was delivering fresh data.
+  const [, tick] = useState(0);
+  const ready = !resetsAt || resetsAt <= Date.now() / 1000;
 
   useEffect(() => {
-    if (ready || !resetsAt) return;
-    const ms = Math.max(0, resetsAt * 1000 - Date.now()) + 1000;
-    const timer = setTimeout(() => setReady(true), ms);
-    return () => clearTimeout(timer);
-  }, [ready, resetsAt]);
+    if (ready) return;
+    const timer = setInterval(() => tick((n) => n + 1), RESUME_READY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [ready]);
 
   return (
     <Button
