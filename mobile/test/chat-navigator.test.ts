@@ -344,17 +344,18 @@ test('a target that exhausts its corrections stops claiming the reader is on it'
     useChatNavigator({ listRef: { current: list }, count: 40 }),
   );
   act(() => result.current.onViewableItemsChanged(viewable([26])));
-  act(() => result.current.goUp());                       // aims at 27
+  // With no landmark, stepUp aims at the message the reader is INSIDE — 26, not 26+1.
+  act(() => result.current.goUp());
   for (let i = 0; i < 3; i += 1) {
-    act(() => result.current.onScrollToIndexFailed({ index: 27, averageItemLength: 100 }));
+    act(() => result.current.onScrollToIndexFailed({ index: 26, averageItemLength: 100 }));
     act(() => jest.advanceTimersByTime(200));
   }
   // It gave up around 26-ish; the viewport says so and is now believed.
   act(() => result.current.onViewableItemsChanged(viewable([26])));
   list.scrollToIndex.mockClear();
   act(() => result.current.goUp());
-  // 26 — the head of the message the reader is actually inside, which is what stepUp does with
-  // no landmark. The lie would have given 28, skipping two messages they never saw.
+  // 26 again — the head of the message the reader is actually inside, which is what stepUp
+  // does with no landmark. The lie would have given 27, a message they never reached.
   expect(list.scrollToIndex).toHaveBeenLastCalledWith(
     expect.objectContaining({ index: 26 }));
 });

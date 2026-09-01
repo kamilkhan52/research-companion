@@ -217,11 +217,11 @@ const makeStyles = (t: ThemePalette) =>
     },
     button: {
       width: 40,
-      // 46, not 38: the buttons stack flush, so the hitSlop that used to pad them vertically
+      // 48, not 38: the buttons stack flush, so the hitSlop that used to pad them vertically
       // made each overlap its neighbour and the later sibling won the touch. Removing that slop
       // fixed the overlap but left a 38 dp target, under Material's 48 dp minimum — the height
-      // itself has to carry it now. Four at 46 plus the divider is still a compact pill.
-      height: 46,
+      // itself has to carry it now. Four at 48 plus the divider is still a compact pill.
+      height: 48,
       alignItems: 'center',
       justifyContent: 'center',
     },
