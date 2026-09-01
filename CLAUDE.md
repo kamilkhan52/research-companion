@@ -212,6 +212,26 @@ way they did. This is an index, not a substitute for reading them.
   which a test request reaches his phone. Asking for a device check in chat or a PR body
   without its row means the request never appears in the bubble and silently ages out; the
   row's evidence column is the what-to-test text he sees.
+- **Dispatch from the bubble (DR-092), and the three worktrees it implies.** The bubble can
+  spawn a headless Claude session on an item. Since 2026-09-01 that session runs the WHOLE
+  loop — triage, build, tests, PR, an independent Opus review it launches itself, merge, and a
+  bubble reply — rather than handing back an unreviewed branch (Kamil's call; the half-loop
+  stalled on him twice in one day). It may merge ONLY after that review approves and CI is
+  green at the head sha. Poll `GET /api/devtest/dispatch` for its heartbeat; its log is
+  `stream-json`, one record per line, under `.dev-feedback/dispatch/`.
+  **Three checkouts, three jobs — do not collapse them:**
+  1. the **main checkout** runs the backend server (an `app/` edit here restarts it under
+     `RC_RELOAD` and kills in-flight jobs — DR-083);
+  2. `.claude/worktrees/dispatch` (branch `rc-dispatch-base`) is where dispatched sessions
+     work — reset to `origin/main` at every dispatch, `node_modules` kept so a session need not
+     `npm ci` before it can run the client suites;
+  3. a **third worktree serves Metro to Kamil's phone** and must be edited by nobody.
+  The reason for (3) is the client-side twin of DR-083 and cost 35 minutes on 2026-09-01: the
+  dispatch worktree and the Metro worktree were the same directory, so a DR-115 session's
+  every save Fast-Refreshed half-written UI onto Kamil's phone while he was using it — and any
+  device pass taken then would have been of uncommitted WIP, not of the branch. Check which
+  directory Metro is actually serving (`ps aux | grep "expo start"`) before editing `mobile/`;
+  it is not always the one the docs name.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects

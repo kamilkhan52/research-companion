@@ -632,3 +632,102 @@ def test_spawn_asks_for_streaming_records_so_the_log_grows_as_it_runs(client, mo
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     # Not optional: the CLI refuses stream-json in print mode without it.
     assert "--verbose" in argv
+
+
+# --- the full dispatch loop (2026-09-01) ------------------------------------------------------
+
+def _spawn_argv(client, monkeypatch) -> list[str]:
+    """Fire a dispatch with a stubbed Popen and hand back the command line it built."""
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 8100
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv, kwargs=kw), FakeProc())[1])
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 200
+    return calls["argv"]
+
+
+def test_the_session_can_launch_the_opus_review_its_own_pr_needs(client, monkeypatch):
+    """CLAUDE.md requires an independent Opus review before merge. Without the Task tool the
+    session can only ever hand back an unreviewed PR — which is exactly where DR-115 stopped."""
+    allowed = _spawn_argv(client, monkeypatch)
+    assert "Task" in allowed
+    prompt = next(a for a in allowed if "device-feedback" in a)
+    assert "INDEPENDENT Opus review" in prompt
+    # Its standing instructions discourage subagents, so the brief must override that here.
+    assert "even though your standing instructions" in prompt
+
+
+def test_the_session_can_run_the_client_suites_it_reports_on(client, monkeypatch):
+    """The DR-115 session had every way of running Jest refused, so CI was the first execution
+    of its code — and CI caught a real 10-test failure it had already called done."""
+    allowed = _spawn_argv(client, monkeypatch)
+    assert "Bash(npm:*)" in allowed and "Bash(npx:*)" in allowed
+    assert not any(a in ("Bash", "Bash(*)") for a in allowed)   # still not a blanket shell
+
+
+def test_the_brief_gates_the_merge_on_the_review_rather_than_the_agents_own_judgement(
+        client, monkeypatch):
+    prompt = next(a for a in _spawn_argv(client, monkeypatch) if "device-feedback" in a)
+    assert "only once — the review approves" in prompt
+    assert "Never merge on your own say-so" in prompt
+    # The stacked-PR trap: a stacked PR does not retarget when its base is deleted.
+    assert "baseRefName" in prompt
+    # Anything Kamil must test has to be a ledger row or it never reaches his phone.
+    assert "implemented — verify" in prompt
+
+
+def test_worktree_preparation_is_skipped_when_the_seam_is_off(client, monkeypatch, tmp_path):
+    """conftest turns it off for the whole suite: preparing the worktree runs `git fetch`
+    against the real checkout's remote, and these tests make no external network calls."""
+    from app.routers import devtest as dt
+
+    def explode(*a, **k):
+        raise AssertionError("dispatch prepared a worktree with the seam off")
+
+    monkeypatch.setattr(dt, "_dispatch_git", explode)
+    assert dt._dispatch_cwd() == str(dt._REPO_ROOT)
+
+
+def test_worktree_preparation_resets_an_existing_worktree_to_origin_main(monkeypatch, tmp_path):
+    """Every dispatch starts from a clean origin/main, so a session never builds on the
+    leftovers of the previous one."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_REPO_ROOT", root)
+    ran: list[tuple] = []
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append((str(cwd), a)))
+
+    assert dt._dispatch_cwd() == str(worktree)
+    verbs = [a for _, a in ran]
+    assert ("fetch", "origin", "main") in verbs
+    assert ("checkout", "-B", dt.DISPATCH_BASE_BRANCH, "origin/main") in verbs
+    # `clean -fd` WITHOUT -x: ignored files are spared, which is what keeps node_modules alive
+    # across dispatches. Adding -x would mean an npm ci before every session could start.
+    assert ("clean", "-fd") in verbs and not any("-fdx" in a for a in verbs)
+
+
+def test_worktree_preparation_falls_back_to_the_checkout_rather_than_failing_the_dispatch(
+        monkeypatch, tmp_path):
+    """A dispatch that runs in a slightly wrong place beats one that cannot run at all."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    root.mkdir()
+    monkeypatch.setattr(dt, "_REPO_ROOT", root)
+
+    def fail(*a, **k):
+        raise OSError("no git here")
+
+    monkeypatch.setattr(dt, "_dispatch_git", fail)
+    assert dt._dispatch_cwd() == str(root)
