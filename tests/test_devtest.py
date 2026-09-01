@@ -928,11 +928,17 @@ def test_uncommitted_work_is_stashed_before_the_reset_rather_than_refused(monkey
     ran: list[tuple] = []
     monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append(a))
 
-    class Dirty:
-        returncode = 0
-        stdout = "?? junk-from-a-killed-session.txt\n"
+    # Dirty when first inspected, clean once the stash has taken it — which is what a real
+    # `git stash push -u` does, and what the post-stash re-check is there to confirm.
+    statuses = iter(["?? junk-from-a-killed-session.txt\n", ""])
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Dirty())
+    def status(*a, **k):
+        class Out:
+            returncode = 0
+            stdout = next(statuses, "")
+        return Out()
+
+    monkeypatch.setattr(subprocess, "run", status)
     assert dt._dispatch_cwd(dispatch_id="dispatch-xyz") == str(worktree)
     stash = next(a for a in ran if a[0] == "stash")
     assert stash[:3] == ("stash", "push", "-u")     # -u: untracked is most of what accumulates
@@ -1130,6 +1136,9 @@ def test_resume_is_refused_when_there_is_nothing_rate_limited_to_resume(client, 
     ))
     _kill_says_gone(monkeypatch)
     client.get("/api/devtest/dispatch")               # archive it
+    # Not merely refused — not OFFERED. The banner reading "resumable" while the server always
+    # 409s is a worse shape than either alone, and the flag is what the button renders from.
+    assert client.get("/api/devtest/dispatch").json()["dispatch"]["resumable"] is False
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
     assert r.status_code == 409
@@ -1217,6 +1226,33 @@ def test_a_stale_rate_limited_session_is_no_longer_offered_for_resume(client, tm
     archived["started_ts"] = _time.time() - (dt.DISPATCH_RESUME_MAX_AGE_S + 3600)
     (d / "last.json").write_text(json.dumps(archived))
 
+    # Not merely refused — not OFFERED. The banner reading "resumable" while the server always
+    # 409s is a worse shape than either alone, and the flag is what the button renders from.
+    assert client.get("/api/devtest/dispatch").json()["dispatch"]["resumable"] is False
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
     assert r.status_code == 409
+
+
+def test_a_still_dirty_tree_after_stashing_refuses_rather_than_resetting_over_it(monkeypatch,
+                                                                                 tmp_path):
+    """The stash exiting 0 is not proof the tree is clean. This guard exists to make "cannot
+    lose work" provable rather than probable, so it re-checks instead of inferring."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)   # a stash that "succeeds"
+
+    class StillDirty:
+        returncode = 0
+        stdout = " M app/routers/devtest.py\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: StillDirty())
+    with pytest.raises(dt.DispatchPrepError, match="still dirty"):
+        dt._dispatch_cwd()

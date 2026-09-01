@@ -1019,8 +1019,23 @@ def _preserve_dispatch_worktree(worktree: Path, dispatch_id: str) -> None:
         raise DispatchPrepError(
             f"the dispatch worktree has uncommitted changes and they could not be stashed "
             f"({exc}); resolve it by hand rather than losing it") from exc
+    # The stash exited 0, but this belt exists to make "cannot lose work" provable rather than
+    # probable, so confirm the tree really is clean before the reset is allowed to run.
+    try:
+        still = subprocess.run(["git", "status", "--porcelain"], cwd=str(worktree),
+                               capture_output=True, text=True, check=True,
+                               timeout=DISPATCH_GIT_TIMEOUT_S).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DispatchPrepError(f"could not re-inspect after stashing: {exc}") from exc
+    if still:
+        raise DispatchPrepError(
+            "the dispatch worktree is still dirty after stashing; refusing to reset over it")
+    # `refs/stash` is shared by every worktree of this checkout, so the entry is visible from
+    # the MAIN checkout's `git stash list` too — which is where it will be looked for, and also
+    # somewhere a careless `git stash pop` would apply a dispatch's half-written changes to the
+    # live server's tree. Hence naming every entry for its dispatch.
     log.warning("dispatch worktree had uncommitted changes; stashed as pre-%s "
-                "(recover with `git stash list` in %s)", dispatch_id, worktree)
+                "(shared ref: `git stash list` from any worktree of this checkout)", dispatch_id)
 
 
 def _link_dispatch_venv(root: Path, worktree: Path) -> None:
@@ -1344,5 +1359,9 @@ def dispatch_status(request: Request):
         # Present only when it is the reason the session stopped, so the client can say when
         # the window reopens and offer to pick the session back up rather than restart it.
         "rate_limit": progress["rate_limit"] if state == "rate_limited" else None,
-        "resumable": state == "rate_limited",
+        # The SAME bound the POST gate applies. Without it the banner offered an enabled
+        # "Resume where it stopped" on a session the server would always 409 — the constant
+        # stopped it being accepted but not being offered, which is a worse shape than either.
+        "resumable": state == "rate_limited" and (
+            not started or time.time() - started <= DISPATCH_RESUME_MAX_AGE_S),
     }}

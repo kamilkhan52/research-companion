@@ -724,7 +724,9 @@ function ResumeButton({ status }: { status: DispatchStatus }) {
   // never fire it at all — so the button could sit disabled at "Resume in 2h 10m" forever while
   // the poll beside it was delivering fresh data.
   const [, tick] = useState(0);
-  const ready = !resetsAt || resetsAt <= Date.now() / 1000;
+  // The same 60s grace `formatUntil` uses. Comparing against the exact instant left the button
+  // reading "Resume now" while still disabled — it looked broken rather than early.
+  const ready = !resetsAt || resetsAt - Date.now() / 1000 < 60;
 
   useEffect(() => {
     if (ready) return;
