@@ -444,3 +444,191 @@ def test_dispatch_response_hides_the_internal_timestamp(client, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
     info = client.post("/api/devtest/dispatch", json={"model": "sonnet"}).json()["dispatch"]
     assert "started_ts" not in info and "started_at" in info
+
+
+# --- dispatch status / heartbeat (2026-09-01) -------------------------------------------------
+
+def _stream_log(*records) -> str:
+    """A `--output-format stream-json` log: one COMPACT JSON record per line, exactly as the
+    CLI writes it. Compact matters — the step count reads bytes, not parsed records."""
+    return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records)
+
+
+def _assistant(*blocks) -> dict:
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+def _tool_use(name, **inp) -> dict:
+    return {"type": "tool_use", "name": name, "input": inp}
+
+
+def _kill_says_gone(monkeypatch) -> None:
+    """Make the recorded pid look dead, so the reap branch runs."""
+    import os
+
+    def kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", kill)
+
+
+def _record_dispatch(tmp_path, pid, log_text=""):
+    """Plant a current.json and its log the way a spawn would have."""
+    import time as _time
+
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    log = d / "session.log"
+    log.write_text(log_text)
+    (d / "current.json").write_text(json.dumps({
+        "id": "dispatch-test", "pid": pid, "model": "opus", "item_id": "DR-115",
+        "log": str(log), "started_at": "2026-09-01T08:01:31-0700",
+        "started_ts": _time.time() - 120}))
+    return d
+
+
+def test_dispatch_status_reports_a_live_session_and_what_it_is_doing(client, tmp_path):
+    """The heartbeat: while the process lives the bubble gets a step count and the last action,
+    so a session thinking hard is distinguishable from one that died on its first tool call."""
+    import os
+
+    _record_dispatch(tmp_path, os.getpid(), _stream_log(   # our own pid is certainly alive
+        {"type": "system", "subtype": "init"},
+        _assistant(_tool_use("Read", file_path="mobile/src/App.tsx")),
+        {"type": "system", "subtype": "post_turn_summary", "status_detail": "wired the rail"},
+        _assistant(_tool_use("Edit", file_path="mobile/src/components/ChatNavRail.tsx")),
+    ))
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "running"
+    assert d["item_id"] == "DR-115" and d["model"] == "opus"
+    assert d["steps"] == 2                                  # both tool_use records counted
+    assert d["last_step"] == "Edit: mobile/src/components/ChatNavRail.tsx"
+    assert d["last_summary"] == "wired the rail"
+    assert d["result"] is None and d["elapsed_s"] >= 120
+
+
+def test_dispatch_status_reports_the_outcome_after_the_session_exits(client, tmp_path,
+                                                                    monkeypatch):
+    """A finished session must stay reportable. The pre-existing reap DELETED current.json, so
+    the outcome vanished at exactly the moment Kamil wanted to read it."""
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="gh pr create")),
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Opened PR #467",
+         "total_cost_usd": 1.25, "num_turns": 42, "permission_denials": [],
+         "duration_ms": 930000},
+    ))
+    _kill_says_gone(monkeypatch)
+    body = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert body["state"] == "finished"
+    assert body["result"]["text"] == "Opened PR #467"
+    assert body["result"]["num_turns"] == 42 and body["result"]["denials"] == 0
+    assert body["elapsed_s"] == 930         # the session's own duration, not "when we noticed"
+    assert not (d / "current.json").exists()   # reaped, so dispatch is not wedged behind a 409
+    assert (d / "last.json").exists()
+    # Polled again with the record already archived, it still answers — from last.json.
+    again = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert again["state"] == "finished" and again["id"] == "dispatch-test"
+
+
+def test_dispatch_status_flags_an_errored_session_as_failed(client, tmp_path, monkeypatch):
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "hit the turn limit", "permission_denials": [{"tool": "Bash"}]},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "failed"
+    # Refused steps are the August-2026 failure mode; the count has to reach the phone.
+    assert d["result"]["denials"] == 1
+
+
+def test_dispatch_status_calls_a_session_that_wrote_nothing_gone(client, tmp_path, monkeypatch):
+    """Killed, or dead before its first record. No reply is coming, so say so rather than
+    leaving the bubble on a hopeful 'running' forever."""
+    _record_dispatch(tmp_path, 999999, "")
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "gone" and d["ended_reason"] == "process gone"
+
+
+def test_dispatch_status_still_reads_a_pre_stream_json_log(client, tmp_path, monkeypatch):
+    """Dispatches started before the stream-json switch wrote only a closing prose recap. They
+    reached a reply, so they are `finished` with no step detail — never `gone`, never a 500."""
+    _record_dispatch(tmp_path, 999999, "Done. Recap for whoever reads only this: ...\n")
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "finished"
+    assert d["steps"] == 0 and d["last_step"] is None
+
+
+def test_dispatch_status_tolerates_a_record_caught_mid_write(client, tmp_path):
+    """The log is read while the session writes it, so the last line is routinely partial. It
+    must be skipped — not crash the poll, and not lose the complete records before it."""
+    import os
+
+    _record_dispatch(tmp_path, os.getpid(),
+                     _stream_log(_assistant(_tool_use("Grep", pattern="ChatNavRail")))
+                     + '{"type":"assis')
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "running" and d["last_step"] == "Grep: ChatNavRail"
+
+
+def test_dispatch_status_is_null_before_anything_is_dispatched(client):
+    assert client.get("/api/devtest/dispatch").json()["dispatch"] is None
+
+
+def test_dispatch_status_is_absent_outside_dev(tmp_path, monkeypatch):
+    monkeypatch.setenv("RC_DEV", "0")
+    monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    from app.main import app
+    assert TestClient(app).get("/api/devtest/dispatch").status_code == 404
+
+
+def test_step_count_survives_a_record_split_across_a_read_chunk(tmp_path):
+    """`_count_tool_uses` streams in 1 MiB chunks. A needle straddling a boundary must be
+    counted exactly once — neither dropped nor double-counted by the overlap."""
+    chunk, needle = 1 << 20, '"tool_use"'
+    first = _stream_log(_assistant(_tool_use("Read", file_path="a")))
+    rest = _stream_log(_assistant(_tool_use("Edit", file_path="b")),
+                       _assistant(_tool_use("Write", file_path="c")))
+    # Pad so that `rest`'s FIRST needle straddles the boundary — five of its bytes in chunk one,
+    # the remainder in chunk two. Without the carry it is invisible to both reads.
+    pad_len = chunk - len(first) - rest.index(needle) - 5
+    assert pad_len > 0
+    log = tmp_path / "big.log"
+    log.write_text(first + "x" * pad_len + rest)
+    blob = log.read_bytes()                      # all ASCII, so byte offsets == char offsets
+    start = blob.index(needle.encode(), len(first) + pad_len)
+    assert start < chunk < start + len(needle), "the fixture must actually straddle the chunk"
+    assert devtest._count_tool_uses(log) == 3
+
+
+def test_step_count_is_not_fooled_by_tool_use_id_keys(tmp_path):
+    """`parent_tool_use_id` / `tool_use_id` appear on ordinary records. Counting them would
+    inflate every session's progress."""
+    log = tmp_path / "ids.log"
+    log.write_text(_stream_log(
+        {"type": "user", "parent_tool_use_id": None, "tool_use_id": "abc"},
+        _assistant(_tool_use("Read", file_path="a")),
+    ))
+    assert devtest._count_tool_uses(log) == 1
+
+
+def test_spawn_asks_for_streaming_records_so_the_log_grows_as_it_runs(client, monkeypatch):
+    """The default text format emits only the closing recap, which left the log at 0 bytes for
+    an entire run — the reason there was no feedback to give."""
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 7007
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 200
+    argv = calls["argv"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    # Not optional: the CLI refuses stream-json in print mode without it.
+    assert "--verbose" in argv

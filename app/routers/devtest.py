@@ -476,27 +476,156 @@ def _dispatch_dir() -> Path:
 
 def _dispatch_running() -> dict | None:
     """The current dispatch if its process is genuinely still ours and alive, else None —
-    clearing a stale `current.json` as a side effect so a dead or pid-reused record can never
-    wedge dispatch behind a permanent 409."""
+    archiving and clearing a stale `current.json` as a side effect so a dead or pid-reused
+    record can never wedge dispatch behind a permanent 409."""
+    info, alive = _dispatch_reap()
+    return info if alive else None
+
+
+def _dispatch_reap() -> tuple[dict | None, bool]:
+    """`(record, alive)` for the current dispatch, archiving the record once its process is gone.
+
+    The reap happens on READ rather than on child exit by design: the child is deliberately
+    detached (`start_new_session`) and nothing ever waits on it, so a poll is the only moment
+    the server can learn it ended. When it has, the record moves to `last.json` instead of just
+    being deleted — `GET /api/devtest/dispatch` needs to answer "how did the last one go?" after
+    the session is gone, which the previous delete-and-forget made impossible.
+
+    Returns `(None, False)` when there is no current record at all.
+    """
     import os
 
     current = _dispatch_dir() / "current.json"
     try:
         info = json.loads(current.read_text())
     except (OSError, ValueError):
-        return None
+        return None, False
     # Age cap first: a record older than a session could plausibly run is stale whatever its
     # pid claims (pid reuse across a reboot is the failure this defends against).
     started = float(info.get("started_ts") or 0)
     if started and time.time() - started > DISPATCH_MAX_AGE_S:
-        current.unlink(missing_ok=True)
-        return None
+        ended_reason = "aged out"
+    else:
+        try:
+            os.kill(int(info["pid"]), 0)   # signal 0: existence check, never delivers
+            return info, True
+        except (OSError, ValueError, KeyError, TypeError):
+            ended_reason = "process gone"
+    # Dead: recover rather than leave a 409 wedged, but keep the record for the status route.
+    info["ended_reason"] = ended_reason
+    info["ended_ts"] = time.time()          # when we NOTICED, not when it exited (see below)
+    info["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    atomic_write_text(_dispatch_dir() / "last.json", json.dumps(info, indent=1))
+    current.unlink(missing_ok=True)
+    return info, False
+
+
+#: How much of a dispatch log's tail to parse for the heartbeat. One `system/init` record alone
+#: is ~10 KB (it enumerates every tool and MCP server) and a long session's log runs to
+#: megabytes, so the status poll reads a bounded tail rather than the whole file.
+DISPATCH_LOG_TAIL_BYTES = 256 * 1024
+
+#: Counted over the WHOLE log (cheaply, as bytes) rather than the parsed tail: the step count is
+#: the "still moving" signal, and a count that reset every time the tail window slid would read
+#: as the session going backwards.
+#:
+#: The needle is the quoted VALUE alone, not `"type":"tool_use"`, so it survives the CLI ever
+#: emitting a space after the colon — a whitespace change would otherwise silently zero the
+#: count for good. It cannot collide with `"parent_tool_use_id"` / `"tool_use_id"`: both quotes
+#: must hug the token, and in those keys the following character is `_`.
+_TOOL_USE_NEEDLE = b'"tool_use"'
+
+
+def _describe_tool_use(block: dict) -> str:
+    """A one-line "what it is doing right now" from a `tool_use` block — the tool's name plus
+    the most identifying string in its input. Kept short: this lands in a phone banner."""
+    name = str(block.get("name") or "tool")
+    inp = block.get("input")
+    if not isinstance(inp, dict):
+        return name
+    for key in ("file_path", "path", "command", "pattern", "url", "description", "prompt"):
+        value = inp.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{name}: {' '.join(value.split())[:80]}"
+    return name
+
+
+def _count_tool_uses(path: Path) -> int:
+    """Occurrences of a `tool_use` record across the whole log, streamed. Chunks overlap by the
+    needle length so a record split across a chunk boundary is still counted once."""
+    overlap = len(_TOOL_USE_NEEDLE) - 1
+    total, carry = 0, b""
     try:
-        os.kill(int(info["pid"]), 0)   # signal 0: existence check, never delivers
-    except (OSError, ValueError, KeyError, TypeError):
-        current.unlink(missing_ok=True)   # dead: recover rather than leave a 409 wedged
-        return None
-    return info
+        with path.open("rb") as fh:
+            while chunk := fh.read(1 << 20):
+                buf = carry + chunk
+                total += buf.count(_TOOL_USE_NEEDLE)
+                carry = buf[-overlap:] if overlap else b""
+    except OSError:
+        return 0
+    return total
+
+
+def _dispatch_progress(log_path: str | None) -> dict:
+    """What a dispatch's log says it has been doing — the heartbeat behind the bubble's banner.
+
+    `--output-format stream-json` writes one JSON record per line, so the tail is parseable
+    without reading the whole file. Everything here is BEST EFFORT and must degrade rather than
+    raise: a status poll is not worth failing over a log that is empty, caught mid-write, or in
+    the pre-2026-09 plain-text format (dispatches started before the stream-json switch, whose
+    logs hold a prose recap and no records at all — they report zero steps, not an error).
+    """
+    out: dict = {"steps": 0, "last_step": None, "last_summary": None,
+                 "result": None, "log_bytes": 0}
+    if not log_path:
+        return out
+    path = Path(log_path)
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > DISPATCH_LOG_TAIL_BYTES:
+                fh.seek(size - DISPATCH_LOG_TAIL_BYTES)
+                fh.readline()          # drop the partial line the seek landed inside
+            tail = fh.read()
+    except OSError:
+        return out
+    out["log_bytes"] = size
+    out["steps"] = _count_tool_uses(path)
+    for line in tail.split(b"\n"):
+        line = line.strip()
+        if not line.startswith(b"{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue                   # a record still being written; the next poll gets it
+        if not isinstance(rec, dict):
+            continue
+        kind = rec.get("type")
+        if kind == "assistant":
+            message = rec.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            for block in blocks or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    out["last_step"] = _describe_tool_use(block)
+        elif kind == "system" and rec.get("subtype") == "post_turn_summary":
+            detail = rec.get("status_detail") or rec.get("status_category")
+            if isinstance(detail, str) and detail.strip():
+                out["last_summary"] = " ".join(detail.split())[:200]
+        elif kind == "result":
+            text = rec.get("result")
+            out["result"] = {
+                "is_error": bool(rec.get("is_error")),
+                "subtype": rec.get("subtype"),
+                "text": " ".join(text.split())[:2000] if isinstance(text, str) else None,
+                "cost_usd": rec.get("total_cost_usd"),
+                "num_turns": rec.get("num_turns"),
+                # The August 2026 lesson (see DISPATCH_ALLOWED_TOOLS): a headless session whose
+                # steps are refused looks identical to one doing nothing. Surface the count.
+                "denials": len(rec.get("permission_denials") or []),
+                "duration_ms": rec.get("duration_ms"),
+            }
+    return out
 
 
 def _via_public_tunnel(request: Request) -> bool:
@@ -588,6 +717,13 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             process = subprocess.Popen(
                 [binary, "-p", _dispatch_prompt(item_id),
                  "--model", req.model, "--permission-mode", "acceptEdits",
+                 # One JSON record per line, written AS THE SESSION RUNS. The default text
+                 # format emits only the closing recap, so the log sat at 0 bytes for the whole
+                 # run and there was no way — from the phone or the Mac — to tell a session
+                 # thinking hard from one that died on its first tool call. `--verbose` is not
+                 # optional: the CLI refuses `--output-format stream-json` in print mode
+                 # without it. `_dispatch_progress` parses the tail.
+                 "--output-format", "stream-json", "--verbose",
                  # The inbox lives in the MAIN checkout while the session runs in the
                  # device-main worktree; without this the headless session's reads of
                  # feedback.jsonl / screenshots are refused as outside its working directory.
@@ -605,3 +741,63 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     log.info("devtest dispatch %s: model=%s item=%s pid=%d",
              dispatch_id, req.model, item_id or "ALL", process.pid)
     return {"dispatch": {k: v for k, v in info.items() if k != "started_ts"}}
+
+
+@router.get("/api/devtest/dispatch")
+def dispatch_status():
+    """Whether a dispatched session is alive, what it is doing, and how the last one ended.
+
+    **Why this exists.** As DR-092 originally shipped, the spawn toast was the ONLY feedback a
+    dispatch ever gave: `POST /dispatch` answered once, the bubble said "Claude is on it", and
+    from then on nothing distinguished a session mid-way through a feature build from one that
+    died on its first refused tool call. On a feature-sized item that is tens of minutes of
+    flying blind, and the failure mode is silent in the direction that matters — you wait.
+
+    Cheap enough to poll, in invariant 1's spirit: a `kill(pid, 0)` liveness check plus a
+    bounded tail read of the log. It starts no work and never blocks on the session.
+
+    `state` is one of:
+      - `running`  — the process is alive.
+      - `finished` — it ended and its log carries a successful `result` record.
+      - `failed`   — it ended and its `result` record is flagged `is_error`.
+      - `gone`     — it ended having written NOTHING. Killed, or it died before its first
+                     record; either way there is no reply coming and a re-dispatch is the move.
+    """
+    _require_dev()
+    with _dispatch_lock:                   # the reap writes; keep it off a concurrent spawn
+        info, alive = _dispatch_reap()
+        if info is None:
+            try:
+                info = json.loads((_dispatch_dir() / "last.json").read_text())
+            except (OSError, ValueError):
+                return {"dispatch": None}   # nothing has ever been dispatched
+    progress = _dispatch_progress(info.get("log"))
+    result = progress["result"]
+    if alive:
+        state = "running"
+    elif result:
+        state = "failed" if result["is_error"] else "finished"
+    elif progress["log_bytes"]:
+        # No `result` record but the log has content: either a pre-stream-json dispatch (whose
+        # whole log is the closing prose recap) or one killed after writing. It reached a reply,
+        # so reporting it as `gone` would be wrong.
+        state = "finished"
+    else:
+        state = "gone"
+    started = float(info.get("started_ts") or 0)
+    if alive:
+        elapsed = time.time() - started if started else None
+    elif result and result.get("duration_ms"):
+        elapsed = result["duration_ms"] / 1000.0        # the session's own true duration
+    else:
+        # Falls back to when the reap NOTICED the exit, which can overshoot by up to one poll
+        # interval. Good enough for a banner; never presented as exact.
+        elapsed = (float(info.get("ended_ts") or 0) - started) or None
+    return {"dispatch": {
+        "id": info.get("id"), "model": info.get("model"), "item_id": info.get("item_id"),
+        "state": state, "started_at": info.get("started_at"),
+        "elapsed_s": round(elapsed) if elapsed and elapsed > 0 else None,
+        "ended_reason": info.get("ended_reason"),
+        "steps": progress["steps"], "last_step": progress["last_step"],
+        "last_summary": progress["last_summary"], "result": result,
+    }}

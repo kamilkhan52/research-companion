@@ -162,6 +162,43 @@ export const dispatchToClaude = (model: DispatchModel, itemId?: string) =>
   apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch',
     itemId ? { model, item_id: itemId } : { model });
 
+/** `running` = the process is alive; `finished`/`failed` = it ended and said so; `gone` = it
+ *  ended having written nothing at all, so no bubble reply is coming and a re-dispatch is the
+ *  move. */
+export type DispatchState = 'running' | 'finished' | 'failed' | 'gone';
+
+export interface DispatchStatus {
+  id: string;
+  model: DispatchModel;
+  item_id: string | null;
+  state: DispatchState;
+  started_at: string;
+  /** Null until the server can date it; a banner should fall back to "just started". */
+  elapsed_s: number | null;
+  ended_reason: string | null;
+  /** Tool calls so far — the "still moving" signal. 0 for pre-stream-json sessions. */
+  steps: number;
+  last_step: string | null;
+  last_summary: string | null;
+  result: {
+    is_error: boolean;
+    subtype: string | null;
+    text: string | null;
+    cost_usd: number | null;
+    num_turns: number | null;
+    /** Refused steps. A headless session cannot ask, so a denial is final — see DR-092. */
+    denials: number;
+    duration_ms: number | null;
+  } | null;
+}
+
+// The dispatch heartbeat. Before this the spawn toast was the only feedback a dispatch gave,
+// so a session mid-way through a feature build looked exactly like one that died on its first
+// tool call. Cheap to poll: a pid liveness check plus a bounded tail read of the session log.
+// `dispatch` is null when nothing has ever been dispatched on this server.
+export const getDispatchStatus = () =>
+  apiGet<{ dispatch: DispatchStatus | null }>('/api/devtest/dispatch');
+
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');
