@@ -31,7 +31,9 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type ViewabilityConfig,
   type ViewStyle,
+  type ViewToken,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -74,6 +76,10 @@ import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import { ChatNavRail, type ChatNavRailHandle } from '@/components/chat/ChatNavRail';
+// The chat library's `messagesContainerRef` is a gesture-handler FlatList (its own
+// `AnimatedList<TMessage>`), which the package does not re-export; name the same type here.
+import type { FlatList as GestureFlatList } from 'react-native-gesture-handler';
 import {
   discussionChromeLayout,
   discussionComposerPadding,
@@ -125,8 +131,11 @@ import {
   useRevealPaused,
 } from '@/hooks/useStreamPinnedScroll';
 import { useDeferredFirstMount, useTranscriptFirstPaint } from '@/hooks/useTranscriptFirstPaint';
+import { useChatNavigator } from '@/hooks/useChatNavigator';
+import { useReduceMotion } from '@/hooks/useReduceMotion';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import { useReadingSettings } from '@/store/readingSettings';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
 import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
@@ -1661,6 +1670,16 @@ function DiscussionThread({
   // DR-101 — commit the skeleton ALONE first (milliseconds), so its pulse starts on the UI
   // thread before the multi-second transcript mount blocks JS; then mount the list under it.
   const mountTranscript = useDeferredFirstMount(!firstPaint.painted);
+  // DR-115 — the landmark navigation rail. Off unless the reader turned it on, because it is
+  // a permanent overlay on a reading surface.
+  const { chatNavRail } = useReadingSettings();
+  const reduceMotion = useReduceMotion();
+  // The library's prop is typed RefObject<AnimatedList<T>> (non-null), the same React-19
+  // nullability gap the textInputRef cast above bridges.
+  const listRef = useRef<GestureFlatList<DiscussionMessage>>(null) as RefObject<
+    GestureFlatList<DiscussionMessage>
+  >;
+  const railRef = useRef<ChatNavRailHandle>(null);
 
   // Reconcile authored text against what the server accepted: once the submitted edit shows
   // up in the transcript, drop the local draft.
@@ -1796,6 +1815,45 @@ function DiscussionThread({
       hideFromIndex,
       editTranscriptIndex,
     ],
+  );
+
+  // DR-115 — landmark stepping over the same inverted list. `messages.length` is what the
+  // navigator counts: the rail steps over rendered rows, including the optimistic user echo
+  // and the live streaming row, because those are exactly the landmarks a reader can see.
+  const chatNav = useChatNavigator({
+    listRef,
+    count: messages.length,
+    animated: !reduceMotion,
+  });
+  // FlatList requires the viewability pair's identity never to change across renders, and two
+  // consumers need it: DR-100's first-paint signal and the rail's top-of-viewport anchor. Both
+  // callbacks are ref-stable by construction, so composing them once here is safe.
+  const viewabilityRef = useRef<{
+    viewabilityConfig: ViewabilityConfig;
+    onViewableItemsChanged: (info: { viewableItems: ViewToken[] }) => void;
+  }>(null);
+  if (!viewabilityRef.current) {
+    const onFirstPaint = firstPaint.onViewableItemsChanged;
+    const onNav = chatNav.onViewableItemsChanged;
+    viewabilityRef.current = {
+      viewabilityConfig: firstPaint.viewabilityConfig,
+      onViewableItemsChanged: (info) => {
+        onFirstPaint(info);
+        onNav(info);
+      },
+    };
+  }
+  const viewability = viewabilityRef.current;
+
+  // The rail behaves like the iOS scroll indicator: any movement of the thread brings it back
+  // to full strength. DR-089's `away` tracking already receives every scroll event, so this
+  // rides along rather than adding a second listener.
+  const onListScroll = useCallback(
+    (event: Parameters<typeof readerPin.onScroll>[0]) => {
+      readerPin.onScroll(event);
+      railRef.current?.wake();
+    },
+    [readerPin.onScroll],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -2451,6 +2509,9 @@ function DiscussionThread({
       user={DISCUSSION_USER}
       text={inputText}
       textInputRef={inputRef}
+      // DR-115 — the rail steps this list directly; the library only ever scrolls it to the
+      // live edge, so sharing the ref costs nothing.
+      messagesContainerRef={listRef}
       textInputProps={{
         onChangeText,
         editable: !disabled,
@@ -2487,11 +2548,19 @@ function DiscussionThread({
         // streamed reveal pauses (see useStreamPinnedScroll for why every viewport-side
         // correction lost to this list). The library forwards onScroll on the JS thread
         // in reanimated's event shape.
-        onScroll: readerPin.onScroll,
+        // DR-115 also wakes the navigation rail from here.
+        onScroll: onListScroll,
+        // DR-115 — a finger drag (never a programmatic scroll) retires the rail's remembered
+        // landmark, so the next step re-aims at wherever the reader actually stopped.
+        onScrollBeginDrag: chatNav.onScrollBeginDrag,
+        // DR-115 — `scrollToIndex` can only land on a row this list has measured, and it
+        // deliberately renders a tiny window (see initialNumToRender below).
+        onScrollToIndexFailed: chatNav.onScrollToIndexFailed,
         // DR-100 — first-paint signal for the skeleton overlay: the first non-empty
-        // viewable set means a real message is on screen.
-        viewabilityConfig: firstPaint.viewabilityConfig,
-        onViewableItemsChanged: firstPaint.onViewableItemsChanged,
+        // viewable set means a real message is on screen. DR-115 shares the same pair to
+        // learn which message is at the top of the viewport.
+        viewabilityConfig: viewability.viewabilityConfig,
+        onViewableItemsChanged: viewability.onViewableItemsChanged,
         // DR-100 — keep the first commit small: chat items here are HEAVY (a single
         // analysis message can be hundreds of Markdown blocks and dozens of SVG
         // equations), and the RN defaults (initialNumToRender 10, windowSize 21) mounted
@@ -2527,6 +2596,22 @@ function DiscussionThread({
       {...ROW_STYLES_PROP}
     />
     </RevealPausedContext.Provider>
+    ) : null}
+    {/* DR-115 — only once the transcript is actually on screen and there is more than one
+        message to move between; a single-response thread has no landmarks to step to. */}
+    {chatNavRail && mountTranscript && messages.length > 1 ? (
+      <ChatNavRail
+        ref={railRef}
+        onOldest={chatNav.goOldest}
+        onUp={chatNav.goUp}
+        onDown={chatNav.goDown}
+        onLive={chatNav.goLive}
+        // `headerHeight` already includes the safe-area inset when the header overlays the
+        // transcript (it is measured on the padded wrapper), which is also why
+        // `listContentPadding` adds it alone. An in-flow header takes its own space.
+        topInset={headerOverlays ? headerHeight : 0}
+        bottomInset={chromeLayout.scrollButtonBottom}
+      />
     ) : null}
     {/* DR-100 — the same skeleton the loading gate shows, held OVER the mounting list until
         its first message is actually viewable. Without this the skeleton vanished when the
