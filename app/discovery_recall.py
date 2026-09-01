@@ -852,6 +852,17 @@ def _strong_ids_conflict(a: dict, b: dict) -> bool:
     return bool(arxiv_left) and bool(arxiv_right) and arxiv_left != arxiv_right
 
 
+#: The identifiers that name a specific WORK to the outside world — the three
+#: `_strong_ids_conflict` reasons about. `paper_id` is deliberately absent: it is a
+#: provider-local handle, so a row carrying only one has not yet claimed to be any particular
+#: published paper and has nothing to be blended with.
+_STRONG_ID_FIELDS = ("arxiv_id", "doi", "openalex_id")
+
+
+def _carries_strong_id(row: dict) -> bool:
+    return any(str(row.get(field) or "").strip() for field in _STRONG_ID_FIELDS)
+
+
 def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> list[dict]:
     """Coalesce candidates from several channels, unioning channels and provenance.
 
@@ -864,12 +875,33 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
     for group in groups:
         for candidate in group:
             keys = _identity_with_openalex(candidate, identity_keys)
-            hit = next((merged[k] for k in keys if k in merged), None)
-            conflicted = hit is not None and _strong_ids_conflict(hit, candidate)
+            matched_key = next((k for k in keys if k in merged), None)
+            hit = merged[matched_key] if matched_key is not None else None
+            # DR-114: a match found ONLY through the title alias, between two rows that each
+            # already name a published work, is not evidence of anything — distinct papers share
+            # exact titles, and neither row's identifiers say they are the same. Merging them
+            # produced a hybrid: one paper's title, DOI and abstract beside ANOTHER paper's arXiv
+            # id, so Add-to-library from that card fetched the wrong PDF. The foreign DOI it
+            # acquired then CONFLICTED with the arXiv paper's true siblings, so that paper took a
+            # second row as well — one work on two cards, and one card belonging to neither.
+            #
+            # `_strong_ids_conflict` could not see this: it compares each KIND of identifier
+            # separately, so an arXiv-only row and a DOI-only row never disagree about anything.
+            # The alias is still what lets an unidentified lexical or snippet hit adopt the first
+            # identity offered to it — that row is not yet committed to being a particular paper,
+            # so it cannot blend two identified ones. That case is untouched; only the both-sides-
+            # identified bridge is refused, and in practice a genuine pair coalesces on a strong
+            # key anyway, because Semantic Scholar reports `externalIds.ArXiv` alongside its DOI.
+            alias_only = bool(matched_key and matched_key.startswith("title:"))
+            unrelated = (hit is not None and alias_only
+                         and _carries_strong_id(hit) and _carries_strong_id(candidate))
+            conflicted = hit is not None and (unrelated or _strong_ids_conflict(hit, candidate))
             # A title alias is enough to FIND a possible match but not to trust one: distinct
             # papers share exact titles, and merging them would blend two works into a hybrid
-            # whose screening verdict, citations and provenance describe neither. When both rows
-            # carry a strong identifier and they disagree, treat them as different papers.
+            # whose screening verdict, citations and provenance describe neither. Two rows that
+            # both carry a strong identifier are different papers unless something stronger than
+            # the title says otherwise — whether they openly disagree (DR-113) or merely fail to
+            # agree (DR-114).
             if conflicted:
                 hit = None
             if hit is None:

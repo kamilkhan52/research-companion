@@ -621,6 +621,18 @@ def collect_candidates(
                 )
                 # Titles bridge providers when one side lacks the other's external id. Do not
                 # collapse distinct same-provider search hits that happen to share a title.
+                #
+                # DR-116: this bridge has the DR-114 hazard too — two DIFFERENT papers sharing a
+                # title, one from arXiv and one from Semantic Scholar, blend into a card holding
+                # one paper's DOI beside the other's arXiv id and PDF. It is NOT fixed the way
+                # `merge_candidates` is, deliberately. There the bridge joins id-rich lanes and
+                # nothing pinned it; here it is the documented point of the alias
+                # (`test_collect_candidates_uses_normalized_title_as_a_cross_provider_alias`) and
+                # it is what stops a preprint and its published record becoming two cards — the
+                # duplicate DR-113 was raised about. Refusing the merge would swallow one of the
+                # two rows outright, and refusing only the donation would swallow it just as
+                # surely, since the bridged row is discarded rather than kept. Changing it is a
+                # recall-versus-correctness call for Kamil, filed rather than taken here.
                 if (
                     not owners
                     and title_owner
