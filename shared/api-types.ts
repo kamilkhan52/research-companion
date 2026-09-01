@@ -598,7 +598,39 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Dispatch Status
+         * @description Whether a dispatched session is alive, what it is doing, and how the last one ended.
+         *
+         *     **Why this exists.** As DR-092 originally shipped, the spawn toast was the ONLY feedback a
+         *     dispatch ever gave: `POST /dispatch` answered once, the bubble said "Claude is on it", and
+         *     from then on nothing distinguished a session mid-way through a feature build from one that
+         *     died on its first refused tool call. On a feature-sized item that is tens of minutes of
+         *     flying blind, and the failure mode is silent in the direction that matters — you wait.
+         *
+         *     Cheap enough to poll, in invariant 1's spirit: a `kill(pid, 0)` liveness check plus a
+         *     bounded tail read of the log. It starts no work and never blocks on the session.
+         *
+         *     `state` is one of:
+         *       - `running`  — the process is alive.
+         *       - `finished` — it ended and its log carries a successful `result` record.
+         *       - `failed`   — it ended and its `result` record is flagged `is_error`.
+         *       - `gone`     — it ended without the `result` record print mode always writes: killed, or
+         *                      dead before its first record. Either way no reply is coming and a
+         *                      re-dispatch is the move.
+         *       - `rate_limited` — it ended because the ACCOUNT ran out of window, not because anything
+         *                      about the work went wrong. `rate_limit.resets_at` says when that window
+         *                      reopens, and this is the one ending that can be RESUMED (same CLI session,
+         *                      same worktree, context intact) rather than restarted.
+         *
+         *     Over the PUBLIC tunnel this answers, but without detail: `last_step` carries file paths,
+         *     shell command lines and Task prompts, and `result.text` up to 2000 characters of the
+         *     session's closing message. The dev server is open-auth and sometimes tunnelled, so those go
+         *     only to the tailnet. State, step count and elapsed still cross, which keeps the banner
+         *     useful on a device that is not on the tailnet — the reason this is redaction and not the
+         *     outright refusal POST uses.
+         */
+        get: operations["dispatch_status_api_devtest_dispatch_get"];
         put?: never;
         /**
          * Dispatch To Claude
@@ -619,8 +651,21 @@ export interface paths {
          *       checkout's own allowlists cover git push / gh / python). Dispatch is refused for any
          *       request bearing Cloudflare edge headers — it works from the tailnet (the phone's baked
          *       stable path) and loopback only. The feedback/screenshot routes are unaffected.
-         *     - **`--permission-mode acceptEdits`, never skip-permissions.** Even from the tailnet the
-         *       session stays inside the repo's own tool allowlists rather than running unrestricted.
+         *     - **`--permission-mode acceptEdits` plus an explicit `--allowedTools` list, never
+         *       skip-permissions.** The session runs `DISPATCH_ALLOWED_TOOLS` rather than unrestricted;
+         *       `--add-dir` admits the inbox, which lives in the main checkout rather than the worktree
+         *       the session runs in.
+         *
+         *     Since 2026-09-01 the session runs the WHOLE loop — build, review, merge (see
+         *     `_dispatch_prompt`) — so be honest about where the safety now lives. It is NOT the tool
+         *     list: that list has to include `npx` and a Python interpreter, which together are general
+         *     execution. It is the gating above (dev-only, no public tunnel, single-flight) and the
+         *     throwaway worktree it runs in.
+         *
+         *     And be equally honest about the review gate: "it may merge only once an Opus review
+         *     approves" is a PROMPT-LEVEL guarantee, not a mechanical one. The session holds
+         *     `Bash(gh:*)` and could `gh pr merge` at any point. That is inherent to giving it the loop;
+         *     do not read the allowlist as enforcing it.
          */
         post: operations["dispatch_to_claude_api_devtest_dispatch_post"];
         delete?: never;
@@ -1436,6 +1481,10 @@ export interface paths {
         /**
          * Notes Job Latest
          * @description Most recent retained proposal, whether it is still running or ready to apply.
+         *
+         *     The exact-match cleanup also repairs a proposal retained by an older client or interrupted
+         *     response after its result reached the git record. A genuinely stale proposal whose content
+         *     differs remains reviewable and is still refused on apply.
          */
         get: operations["notes_job_latest_api_projects__pid__notes_jobs_latest__target__get"];
         put?: never;
@@ -2116,6 +2165,11 @@ export interface components {
             item_id?: string | null;
             /** Model */
             model: string;
+            /**
+             * Resume
+             * @default false
+             */
+            resume: boolean;
         };
         /** EditReq */
         EditReq: {
@@ -3410,6 +3464,26 @@ export interface operations {
         };
     };
     status_api_devtest_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    dispatch_status_api_devtest_dispatch_get: {
         parameters: {
             query?: never;
             header?: never;

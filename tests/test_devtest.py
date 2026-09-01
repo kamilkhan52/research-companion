@@ -444,3 +444,815 @@ def test_dispatch_response_hides_the_internal_timestamp(client, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
     info = client.post("/api/devtest/dispatch", json={"model": "sonnet"}).json()["dispatch"]
     assert "started_ts" not in info and "started_at" in info
+
+
+# --- dispatch status / heartbeat (2026-09-01) -------------------------------------------------
+
+def _stream_log(*records) -> str:
+    """A `--output-format stream-json` log: one COMPACT JSON record per line, exactly as the
+    CLI writes it. Compact matters — the step count reads bytes, not parsed records."""
+    return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records)
+
+
+def _assistant(*blocks) -> dict:
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+def _tool_use(name, **inp) -> dict:
+    return {"type": "tool_use", "name": name, "input": inp}
+
+
+def _pid_says_alive(monkeypatch) -> None:
+    """Our own pid is a live process but its command line is pytest, not `claude`, so the
+    identity check correctly refuses it. Tests that plant a LIVE record say so directly."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid, started=0.0: "alive")
+
+
+def _kill_says_gone(monkeypatch) -> None:
+    """Make the recorded pid look dead, so the reap branch runs."""
+    import os
+
+    def kill(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "kill", kill)
+
+
+def _record_dispatch(tmp_path, pid, log_text=""):
+    """Plant a current.json and its log the way a spawn would have."""
+    import time as _time
+
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    log = d / "session.log"
+    log.write_text(log_text)
+    (d / "current.json").write_text(json.dumps({
+        "id": "dispatch-test", "pid": pid, "model": "opus", "item_id": "DR-115",
+        "log": str(log), "started_at": "2026-09-01T08:01:31-0700",
+        "started_ts": _time.time() - 120}))
+    return d
+
+
+def test_dispatch_status_reports_a_live_session_and_what_it_is_doing(client, tmp_path,
+                                                                    monkeypatch):
+    """The heartbeat: while the process lives the bubble gets a step count and the last action,
+    so a session thinking hard is distinguishable from one that died on its first tool call."""
+    import os
+
+    _pid_says_alive(monkeypatch)
+    _record_dispatch(tmp_path, os.getpid(), _stream_log(   # our own pid is certainly alive
+        {"type": "system", "subtype": "init"},
+        _assistant(_tool_use("Read", file_path="mobile/src/App.tsx")),
+        {"type": "system", "subtype": "post_turn_summary", "status_detail": "wired the rail"},
+        _assistant(_tool_use("Edit", file_path="mobile/src/components/ChatNavRail.tsx")),
+    ))
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "running"
+    assert d["item_id"] == "DR-115" and d["model"] == "opus"
+    assert d["steps"] == 2                                  # both tool_use records counted
+    assert d["last_step"] == "Edit: mobile/src/components/ChatNavRail.tsx"
+    assert d["last_summary"] == "wired the rail"
+    assert d["result"] is None and d["elapsed_s"] >= 120
+
+
+def test_dispatch_status_reports_the_outcome_after_the_session_exits(client, tmp_path,
+                                                                    monkeypatch):
+    """A finished session must stay reportable. The pre-existing reap DELETED current.json, so
+    the outcome vanished at exactly the moment Kamil wanted to read it."""
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="gh pr create")),
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Opened PR #467",
+         "total_cost_usd": 1.25, "num_turns": 42, "permission_denials": [],
+         "duration_ms": 930000},
+    ))
+    _kill_says_gone(monkeypatch)
+    body = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert body["state"] == "finished"
+    assert body["result"]["text"] == "Opened PR #467"
+    assert body["result"]["num_turns"] == 42 and body["result"]["denials"] == 0
+    assert body["elapsed_s"] == 930         # the session's own duration, not "when we noticed"
+    assert not (d / "current.json").exists()   # reaped, so dispatch is not wedged behind a 409
+    assert (d / "last.json").exists()
+    # Polled again with the record already archived, it still answers — from last.json.
+    again = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert again["state"] == "finished" and again["id"] == "dispatch-test"
+
+
+def test_dispatch_status_flags_an_errored_session_as_failed(client, tmp_path, monkeypatch):
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "hit the turn limit", "permission_denials": [{"tool": "Bash"}]},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "failed"
+    # Refused steps are the August-2026 failure mode; the count has to reach the phone.
+    assert d["result"]["denials"] == 1
+
+
+def test_dispatch_status_calls_a_session_that_wrote_nothing_gone(client, tmp_path, monkeypatch):
+    """Killed, or dead before its first record. No reply is coming, so say so rather than
+    leaving the bubble on a hopeful 'running' forever."""
+    _record_dispatch(tmp_path, 999999, "")
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "gone" and d["ended_reason"] == "process gone"
+
+
+def test_dispatch_status_still_reads_a_pre_stream_json_log(client, tmp_path, monkeypatch):
+    """Dispatches started before the stream-json switch wrote only a closing prose recap. They
+    reached a reply, so they are `finished` with no step detail — never `gone`, never a 500."""
+    _record_dispatch(tmp_path, 999999, "Done. Recap for whoever reads only this: ...\n")
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "finished"
+    assert d["steps"] == 0 and d["last_step"] is None
+
+
+def test_dispatch_status_tolerates_a_record_caught_mid_write(client, tmp_path, monkeypatch):
+    """The log is read while the session writes it, so the last line is routinely partial. It
+    must be skipped — not crash the poll, and not lose the complete records before it."""
+    import os
+
+    _pid_says_alive(monkeypatch)
+    _record_dispatch(tmp_path, os.getpid(),
+                     _stream_log(_assistant(_tool_use("Grep", pattern="ChatNavRail")))
+                     + '{"type":"assis')
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "running" and d["last_step"] == "Grep: ChatNavRail"
+
+
+def test_dispatch_status_is_null_before_anything_is_dispatched(client):
+    assert client.get("/api/devtest/dispatch").json()["dispatch"] is None
+
+
+def test_dispatch_status_is_absent_outside_dev(tmp_path, monkeypatch):
+    monkeypatch.setenv("RC_DEV", "0")
+    monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    from app.main import app
+    assert TestClient(app).get("/api/devtest/dispatch").status_code == 404
+
+
+def test_step_count_survives_a_record_split_across_a_read_chunk(tmp_path):
+    """`_count_tool_uses` streams in 1 MiB chunks. A needle straddling a boundary must be
+    counted exactly once — neither dropped nor double-counted by the overlap."""
+    chunk, needle = 1 << 20, '"tool_use"'
+    first = _stream_log(_assistant(_tool_use("Read", file_path="a")))
+    rest = _stream_log(_assistant(_tool_use("Edit", file_path="b")),
+                       _assistant(_tool_use("Write", file_path="c")))
+    # Pad so that `rest`'s FIRST needle straddles the boundary — five of its bytes in chunk one,
+    # the remainder in chunk two. Without the carry it is invisible to both reads.
+    pad_len = chunk - len(first) - rest.index(needle) - 5
+    assert pad_len > 0
+    log = tmp_path / "big.log"
+    log.write_text(first + "x" * pad_len + rest)
+    blob = log.read_bytes()                      # all ASCII, so byte offsets == char offsets
+    start = blob.index(needle.encode(), len(first) + pad_len)
+    assert start < chunk < start + len(needle), "the fixture must actually straddle the chunk"
+    assert devtest._count_tool_uses(log) == 3
+
+
+def test_step_count_is_not_fooled_by_tool_use_id_keys(tmp_path):
+    """`parent_tool_use_id` / `tool_use_id` appear on ordinary records. Counting them would
+    inflate every session's progress."""
+    log = tmp_path / "ids.log"
+    log.write_text(_stream_log(
+        {"type": "user", "parent_tool_use_id": None, "tool_use_id": "abc"},
+        _assistant(_tool_use("Read", file_path="a")),
+    ))
+    assert devtest._count_tool_uses(log) == 1
+
+
+def test_spawn_asks_for_streaming_records_so_the_log_grows_as_it_runs(client, monkeypatch):
+    """The default text format emits only the closing recap, which left the log at 0 bytes for
+    an entire run — the reason there was no feedback to give."""
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 7007
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 200
+    argv = calls["argv"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    # Not optional: the CLI refuses stream-json in print mode without it.
+    assert "--verbose" in argv
+
+
+# --- the full dispatch loop (2026-09-01) ------------------------------------------------------
+
+def _spawn_argv(client, monkeypatch) -> list[str]:
+    """Fire a dispatch with a stubbed Popen and hand back the command line it built."""
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 8100
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv, kwargs=kw), FakeProc())[1])
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 200
+    return calls["argv"]
+
+
+def test_the_session_can_launch_the_opus_review_its_own_pr_needs(client, monkeypatch):
+    """CLAUDE.md requires an independent Opus review before merge. Without the Task tool the
+    session can only ever hand back an unreviewed PR — which is exactly where DR-115 stopped."""
+    allowed = _spawn_argv(client, monkeypatch)
+    assert "Task" in allowed
+    prompt = next(a for a in allowed if "device-feedback" in a)
+    assert "Opus review" in prompt and "Task tool" in prompt
+
+
+def test_the_session_can_run_the_client_suites_it_reports_on(client, monkeypatch):
+    """The DR-115 session had every way of running Jest refused, so CI was the first execution
+    of its code — and CI caught a real 10-test failure it had already called done."""
+    allowed = _spawn_argv(client, monkeypatch)
+    assert "Bash(npm:*)" in allowed and "Bash(npx:*)" in allowed
+    assert not any(a in ("Bash", "Bash(*)") for a in allowed)   # still not a blanket shell
+
+
+def test_the_brief_gates_the_merge_on_the_review_rather_than_the_agents_own_judgement(
+        client, monkeypatch):
+    prompt = next(a for a in _spawn_argv(client, monkeypatch) if "device-feedback" in a)
+    assert "Never merge on your own say-so" in prompt
+    # The stacked-PR trap: a stacked PR does not retarget when its base is deleted.
+    assert "baseRefName" in prompt
+    # Anything Kamil must test has to be a ledger row or it never reaches his phone.
+    assert "implemented — verify" in prompt
+
+
+def test_worktree_preparation_is_skipped_when_the_seam_is_off(client, monkeypatch, tmp_path):
+    """conftest turns it off for the whole suite: preparing the worktree runs `git fetch`
+    against the real checkout's remote, and these tests make no external network calls."""
+    from app.routers import devtest as dt
+
+    def explode(*a, **k):
+        raise AssertionError("dispatch prepared a worktree with the seam off")
+
+    monkeypatch.setattr(dt, "_dispatch_git", explode)
+    # `_main_root()`, not `_REPO_ROOT`: they are the same in the main checkout and in CI, and
+    # DIFFER inside a git worktree — which is exactly where CLAUDE.md says to do backend work,
+    # so asserting the wrong one made the suite red for every agent and green only here.
+    assert dt._dispatch_cwd() == str(dt._main_root())
+
+
+def test_worktree_preparation_resets_an_existing_worktree_to_origin_main(monkeypatch, tmp_path):
+    """Every dispatch starts from a clean origin/main, so a session never builds on the
+    leftovers of the previous one."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    ran: list[tuple] = []
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append((str(cwd), a)))
+
+    class Clean:            # the scratch-tree inspection: on the base branch, nothing dirty
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Clean())
+
+    assert dt._dispatch_cwd() == str(worktree)
+    verbs = [a for _, a in ran]
+    assert ("fetch", "origin", "main") in verbs
+    assert ("checkout", "-B", dt.DISPATCH_BASE_BRANCH, "origin/main") in verbs
+    # `clean -fd` WITHOUT -x: ignored files are spared, which is what keeps node_modules alive
+    # across dispatches. Adding -x would mean an npm ci before every session could start.
+    assert ("clean", "-fd") in verbs and not any("-fdx" in a for a in verbs)
+
+
+def test_worktree_preparation_raises_rather_than_using_the_live_checkout(monkeypatch, tmp_path):
+    """It used to return _REPO_ROOT on any failure. That was defensible when the fallback was a
+    spare worktree and the session only proposed a branch; it is not when the session edits
+    `app/` (restarting the live server — DR-083) and merges its own PR."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    root.mkdir()
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+
+    def fail(cwd, *args):
+        raise OSError("no git here")
+
+    monkeypatch.setattr(dt, "_dispatch_git", fail)
+    with pytest.raises(dt.DispatchPrepError):
+        dt._dispatch_cwd()
+
+
+# --- review round 2 (Opus review of PR #468) --------------------------------------------------
+
+def test_a_long_running_session_is_not_declared_dead_by_age_alone(client, tmp_path, monkeypatch):
+    """The age cap used to OVERRIDE liveness. Harmless when its only effect was releasing the
+    409 — but a dispatch now resets its worktree on the way in, so declaring a live session
+    dead makes the next one `git reset --hard` the tree it is still editing. And the full loop
+    (build, suites, PR, an Opus round-trip, CI, merge) makes a long session unremarkable."""
+    import os
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    d = _record_dispatch(tmp_path, os.getpid(), _stream_log(
+        _assistant(_tool_use("Bash", command="npm test"))))
+    aged = json.loads((d / "current.json").read_text())
+    aged["started_ts"] = _time.time() - (dt.DISPATCH_MAX_AGE_S + 3600)
+    (d / "current.json").write_text(json.dumps(aged))
+    monkeypatch.setattr(dt, "_dispatch_liveness", lambda pid, started=0.0: "alive")
+
+    body = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert body["state"] == "running"
+    assert (d / "current.json").exists()            # NOT archived out from under itself
+    # And single-flight still holds, so no second session can reach the worktree reset.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    assert client.post("/api/devtest/dispatch", json={"model": "opus"}).status_code == 409
+
+
+def test_pid_reuse_is_caught_by_identity_and_by_the_age_of_the_process_itself(monkeypatch):
+    """What replaced the age cap as the pid-reuse defence. A bare `claude` substring was far too
+    loose — it also matches the desktop app, its helpers, and every shell any Claude Code session
+    spawns — so a coincidental match wedged dispatch at 409 with no way to clear it from the
+    phone. Two checks now: the command line must look like a DISPATCH, and the process must not
+    be younger than the record claiming to describe it."""
+    import os
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)      # the number exists
+
+    class Out:
+        returncode = 0
+        stdout = "05:00 /usr/sbin/some-unrelated-daemon --serve\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Out())
+    started = _time.time() - 300
+    assert dt._dispatch_liveness(4242, started) == "dead"
+
+    # Claude-ish but NOT a dispatch — the old substring claimed this one as ours.
+    Out.stdout = "05:00 /bin/zsh -c source /Users/k/.claude/shell-snapshots/snapshot.sh\n"
+    assert dt._dispatch_liveness(4242, started) == "dead"
+
+    Out.stdout = ("05:00 /opt/homebrew/bin/claude -p Run the skill --output-format stream-json "
+                  "--verbose\n")
+    assert dt._dispatch_liveness(4242, started) == "alive"
+
+    # A real dispatch command line, but the process is far YOUNGER than the record — so the
+    # number was reused after we wrote it, and this cannot be our session.
+    assert dt._dispatch_liveness(4242, _time.time() - 30 * 3600) == "dead"
+
+
+def test_etime_parses_every_shape_ps_emits():
+    from app.routers import devtest as dt
+
+    assert dt._parse_etime("05:00") == 300
+    assert dt._parse_etime("01:05:00") == 3900
+    assert dt._parse_etime("2-01:05:00") == 3900 + 2 * 86400
+    assert dt._parse_etime("") is None and dt._parse_etime("garbage") is None
+
+
+def test_liveness_is_unknown_rather_than_a_guess_when_it_cannot_tell(monkeypatch):
+    """Wrongly declaring a session dead is the DESTRUCTIVE direction — it gets the worktree
+    reset — but claiming alive forever would wedge dispatch. Hence the third value."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+    def boom(*a, **k):
+        raise OSError("no ps on this box")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    # "unknown", not "alive": treated as running, but the age cap may still overrule it — the
+    # only case where age decides anything.
+    assert dt._dispatch_liveness(4242) == "unknown"
+
+
+def test_a_killed_stream_json_session_is_gone_not_finished(client, tmp_path, monkeypatch):
+    """Print mode ALWAYS terminates with a `result` record, so its absence in a stream-json log
+    means killed. Reporting that as 'finished — check the item for its reply' would send Kamil
+    looking for something that does not exist: this feature's own failure mode, inverted."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Edit", file_path="mobile/src/App.tsx"))))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "gone"
+    assert d["steps"] == 1                      # it did work; it just never got to say so
+
+
+def test_the_public_tunnel_gets_state_without_the_session_transcript(client, tmp_path,
+                                                                    monkeypatch):
+    """`last_step` carries file paths, command lines and Task prompts; `result.text` carries the
+    closing message. The dev server is open-auth and sometimes tunnelled. State and progress
+    still cross so the banner works off-tailnet — redaction, not the refusal POST uses."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="gh pr merge 467 --squash")),
+        {"type": "result", "subtype": "success", "is_error": False,
+         "result": "merged, and here is everything I learned", "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch",
+                   headers={"cf-ray": "8a1b2c3d4e5f6789-LHR"}).json()["dispatch"]
+    assert d["state"] == "finished" and d["steps"] == 1     # still useful
+    assert d["last_step"] is None and d["result"]["text"] is None
+    assert "gh pr merge" not in json.dumps(d)
+
+
+def test_the_step_count_is_memoized_across_polls_and_stays_exact(tmp_path):
+    """A multi-hour log reaches hundreds of MB and the bubble polls every 5s, so the count
+    resumes from where it left off. Appends must stay exact, including a needle straddling the
+    resume point, and a file that SHRANK is a different log and is recounted."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "grow.log"
+    first = _stream_log(_assistant(_tool_use("Read", file_path="a")))
+    log.write_text(first)
+    assert dt._count_tool_uses(log) == 1
+
+    # Append, splitting a needle exactly across the resume point.
+    rest = _stream_log(_assistant(_tool_use("Edit", file_path="b")))
+    split = rest.index('"tool_use"') + 4
+    with log.open("a") as fh:
+        fh.write(rest[:split])
+    dt._count_tool_uses(log)                     # counts the partial, carries the fragment
+    with log.open("a") as fh:
+        fh.write(rest[split:])
+    assert dt._count_tool_uses(log) == 2         # not 1 (dropped) and not 3 (double-counted)
+
+    log.write_text(first)                        # shorter: a different log reusing the name
+    assert dt._count_tool_uses(log) == 1
+
+
+def test_progress_reads_a_result_record_past_the_tail_window(tmp_path):
+    """The tail seek only runs on a log bigger than the window, which no other test produces."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "huge.log"
+    filler = _stream_log(*[_assistant(_tool_use("Read", file_path=f"f{i}")) for i in range(200)])
+    log.write_text(filler * ((dt.DISPATCH_LOG_TAIL_BYTES // len(filler)) + 2)
+                   + _stream_log({"type": "result", "subtype": "success", "is_error": False,
+                                  "result": "done", "permission_denials": []}))
+    assert log.stat().st_size > dt.DISPATCH_LOG_TAIL_BYTES
+    progress = dt._dispatch_progress(str(log))
+    assert progress["structured"] is True
+    assert progress["result"]["text"] == "done"          # the seek landed on whole lines
+
+
+def test_uncommitted_work_is_stashed_before_the_reset_rather_than_refused(monkeypatch, tmp_path):
+    """The belt to the liveness braces — but it must not become a lockout. Refusing was the first
+    cut and the wrong trade: `git status --porcelain` is non-empty for UNTRACKED files too, so
+    one leftover scratch file 503s every future dispatch, from a phone that cannot resolve it.
+    This PR's own flow reaches that state routinely (ceiling mid-edit, resume declined).
+    Stashing loses nothing and wedges nothing."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    ran: list[tuple] = []
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append(a))
+
+    # Dirty when first inspected, clean once the stash has taken it — which is what a real
+    # `git stash push -u` does, and what the post-stash re-check is there to confirm.
+    statuses = iter(["?? junk-from-a-killed-session.txt\n", ""])
+
+    def status(*a, **k):
+        class Out:
+            returncode = 0
+            stdout = next(statuses, "")
+        return Out()
+
+    monkeypatch.setattr(subprocess, "run", status)
+    assert dt._dispatch_cwd(dispatch_id="dispatch-xyz") == str(worktree)
+    stash = next(a for a in ran if a[0] == "stash")
+    assert stash[:3] == ("stash", "push", "-u")     # -u: untracked is most of what accumulates
+    assert "pre-dispatch-xyz" in stash              # recoverable, and named for its dispatch
+    assert ("reset", "--hard") in ran               # and the reset still happens afterwards
+
+
+def test_a_failed_fetch_does_not_push_the_session_into_the_live_checkout(monkeypatch, tmp_path):
+    """An offline Mac or a slow remote must not silently drop an unattended, merge-authorized
+    session into the checkout the live backend serves from."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+
+    def git(cwd, *args):
+        if args[0] == "fetch":
+            raise OSError("network is down")
+
+    monkeypatch.setattr(dt, "_dispatch_git", git)
+
+    class Clean:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Clean())
+    # Fetch failure is survivable — reset to the origin/main already on disk.
+    assert dt._dispatch_cwd() == str(worktree)
+
+
+def test_preparation_failure_refuses_the_dispatch_instead_of_using_the_live_checkout(
+        client, monkeypatch):
+    """The old fallback returned _REPO_ROOT. Fine when the session only proposed a branch;
+    not when it edits app/ (restarting the live server — DR-083) and merges its own PR."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    def refuse(reset=True, dispatch_id="dispatch"):
+        raise dt.DispatchPrepError("worktree is dirty")
+
+    monkeypatch.setattr(dt, "_dispatch_cwd", refuse)
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    assert "worktree" in r.json()["detail"]
+
+
+def test_the_worktree_gets_the_venv_the_session_cannot_bootstrap(monkeypatch, tmp_path):
+    """`git worktree add` materialises TRACKED files only and `.venv` is gitignored, so the
+    session's one permitted interpreter — the RELATIVE path `.venv/bin/python` — would not
+    exist. Without it there is no pytest and, far worse, no `append_response`: that is
+    filesystem-side by design (DR-080), so the bubble reply, which is the whole deliverable,
+    becomes impossible."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    (root / ".venv" / "bin").mkdir(parents=True)
+    (root / ".venv" / "bin" / "python").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)
+
+    class Clean:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Clean())
+    dt._dispatch_cwd()
+    assert (worktree / ".venv" / "bin" / "python").exists()
+    # Gitignored, so it survives the `clean -fd` of every subsequent dispatch.
+    assert (worktree / ".venv").is_symlink()
+
+
+# --- hitting the account ceiling, and picking the session back up (Kamil, 2026-09-01) ---------
+
+def _rate_limit_event(status="rejected", resets_at=1788282600, scope="five_hour") -> dict:
+    return {"type": "rate_limit_event",
+            "rate_limit_info": {"status": status, "resetsAt": resets_at,
+                                "rateLimitType": scope}}
+
+
+def test_a_session_stopped_by_the_usage_limit_is_not_reported_as_failed(client, tmp_path,
+                                                                       monkeypatch):
+    """`failed` says "look at this"; the ceiling says "wait". Kamil watched a review agent die
+    at the limit on 2026-09-01 and the surface could not tell him which it was."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="npm test")),
+        _rate_limit_event(status="allowed"),          # fine for most of the run...
+        _rate_limit_event(status="rejected"),         # ...and then not
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited"
+    assert d["resumable"] is True
+    assert d["rate_limit"]["resets_at"] == 1788282600     # when the window reopens
+    assert d["rate_limit"]["scope"] == "five_hour"
+
+
+def test_a_429_in_the_result_record_also_reads_as_the_ceiling(client, tmp_path, monkeypatch):
+    """The other shape: a session that gets the 429 mid-turn terminates with a result record
+    rather than being killed, so it never writes a rejecting rate_limit_event."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "usage limit reached", "api_error_status": 429, "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited" and d["resumable"] is True
+
+
+def test_an_ordinary_failure_is_still_a_failure(client, tmp_path, monkeypatch):
+    """The counterweight: an errored session that merely SAW an allowed rate-limit record must
+    not be mistaken for one the ceiling stopped, or a real defect gets waited on instead of
+    read."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _rate_limit_event(status="allowed"),
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "hit the turn limit", "api_error_status": None, "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "failed" and d["resumable"] is False
+    assert d["rate_limit"] is None
+
+
+def test_resume_continues_the_same_cli_session_rather_than_starting_over(client, tmp_path,
+                                                                        monkeypatch):
+    """The point of resuming: the interrupted session already worked things out, and throwing
+    that away is most of what the wasted window cost."""
+    import subprocess
+
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "system", "subtype": "init", "session_id": "sess-abc-123"},
+        _rate_limit_event(status="rejected"),
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")               # reap archives it to last.json
+    assert (d / "last.json").exists()
+
+    calls = {}
+
+    class FakeProc:
+        pid = 9100
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv, kwargs=kw), FakeProc())[1])
+    # The model in the body is ignored — a resume must not quietly become a different job.
+    r = client.post("/api/devtest/dispatch", json={"model": "haiku", "resume": True})
+    assert r.status_code == 200
+    argv = calls["argv"]
+    assert argv[argv.index("--resume") + 1] == "sess-abc-123"
+    assert argv[argv.index("--model") + 1] == "opus"          # from the record, not the request
+    assert r.json()["dispatch"]["item_id"] == "DR-115"        # likewise
+    # The brief must not restate the whole loop: a resumed session has the transcript already.
+    prompt = argv[argv.index("-p") + 1]
+    assert "Continue where you left off" in prompt
+    assert "Run the /device-feedback skill" not in prompt
+
+
+def test_resume_keeps_the_worktree_it_left_behind(monkeypatch, tmp_path):
+    """A resume must NOT reset: the uncommitted half of the interrupted session is exactly what
+    `git reset --hard` would destroy, and it is what we are resuming."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+
+    def git(cwd, *args):
+        raise AssertionError(f"a resume must not run git {args[0]} on the worktree")
+
+    monkeypatch.setattr(dt, "_dispatch_git", git)
+    assert dt._dispatch_cwd(reset=False) == str(worktree)
+
+
+def test_resume_is_refused_when_there_is_nothing_rate_limited_to_resume(client, tmp_path,
+                                                                       monkeypatch):
+    """A finished session has nothing to continue and a failed one should be READ, not blindly
+    carried on — so neither is resumable."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "success", "is_error": False, "result": "done",
+         "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")               # archive it
+    # Not merely refused — not OFFERED. The banner reading "resumable" while the server always
+    # 409s is a worse shape than either alone, and the flag is what the button renders from.
+    assert client.get("/api/devtest/dispatch").json()["dispatch"]["resumable"] is False
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
+    assert r.status_code == 409
+    assert "no rate-limited session" in r.json()["detail"]
+
+
+# --- review round 3 (Opus review of PR #468, round 2) -----------------------------------------
+
+def test_a_completed_session_is_never_offered_as_rate_limited(client, tmp_path, monkeypatch):
+    """The first cut treated ANY rate-limit status other than `allowed` as the ceiling, and
+    checked it BEFORE the terminating record. So a session that finished its work and merely
+    brushed the warning threshold on its last turn came back as "hit the usage limit — Resume?",
+    and a tap would re-run a merged loop in the un-reset worktree."""
+    for status in ("allowed_warning", "queueing", "some_future_status"):
+        _record_dispatch(tmp_path, 999999, _stream_log(
+            _rate_limit_event(status=status),
+            {"type": "result", "subtype": "success", "is_error": False,
+             "result": "Merged PR #470", "api_error_status": None, "permission_denials": []},
+        ))
+        _kill_says_gone(monkeypatch)
+        d = client.get("/api/devtest/dispatch").json()["dispatch"]
+        assert d["state"] == "finished", f"{status} was misread as the ceiling"
+        assert d["resumable"] is False
+
+
+def test_a_blocking_status_still_reads_as_the_ceiling_when_there_is_no_result(client, tmp_path,
+                                                                             monkeypatch):
+    """The counterweight to the allow-list: the killed-before-it-could-say-so case must survive.
+    That is the whole reason the rate-limit events are consulted at all."""
+    _record_dispatch(tmp_path, 999999, _stream_log(_rate_limit_event(status="rejected")))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited" and d["resumable"] is True
+
+
+def test_the_step_count_does_not_inflate_while_the_session_is_still_writing(tmp_path):
+    """The memo recorded `seen = size` from the stat but read to EOF, so anything appended
+    between the two was counted, then counted AGAIN on the next poll — and the error was
+    permanent. A live session appends constantly, so this was the normal case, and it got worse
+    the bigger the log."""
+    from app.routers import devtest as dt
+
+    log = tmp_path / "live.log"
+    log.write_text(_stream_log(*[_assistant(_tool_use("Read", file_path=f"f{i}"))
+                                 for i in range(3)]))
+
+    class GrowsWhileRead:
+        """A Path that appends right after its size is taken — exactly the race a live session
+        creates between `_count_tool_uses`'s stat() and its read reaching EOF."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def stat(self):
+            info = self._real.stat()
+            with self._real.open("a") as fh:
+                fh.write(_stream_log(*[_assistant(_tool_use("Edit", file_path=f"g{i}"))
+                                       for i in range(4)]))
+            return info
+
+        def open(self, *a, **k):
+            return self._real.open(*a, **k)
+
+        def __str__(self):
+            return str(self._real)
+
+    assert dt._count_tool_uses(GrowsWhileRead(log)) == 3   # only what the stat covered
+    assert dt._count_tool_uses(log) == 7                   # the 4 appended, counted exactly once
+
+def test_a_stale_rate_limited_session_is_no_longer_offered_for_resume(client, tmp_path,
+                                                                     monkeypatch):
+    """The CLI expires stored sessions, so `--resume` on a days-old id spawns a process that
+    dies at once — which would present as a brand-new failure rather than as an expiry."""
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "system", "subtype": "init", "session_id": "sess-old"},
+        _rate_limit_event(status="rejected"),
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")                     # archive it
+    archived = json.loads((d / "last.json").read_text())
+    archived["started_ts"] = _time.time() - (dt.DISPATCH_RESUME_MAX_AGE_S + 3600)
+    (d / "last.json").write_text(json.dumps(archived))
+
+    # Not merely refused — not OFFERED. The banner reading "resumable" while the server always
+    # 409s is a worse shape than either alone, and the flag is what the button renders from.
+    assert client.get("/api/devtest/dispatch").json()["dispatch"]["resumable"] is False
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
+    assert r.status_code == 409
+
+
+def test_a_still_dirty_tree_after_stashing_refuses_rather_than_resetting_over_it(monkeypatch,
+                                                                                 tmp_path):
+    """The stash exiting 0 is not proof the tree is clean. This guard exists to make "cannot
+    lose work" provable rather than probable, so it re-checks instead of inferring."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: None)   # a stash that "succeeds"
+
+    class StillDirty:
+        returncode = 0
+        stdout = " M app/routers/devtest.py\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: StillDirty())
+    with pytest.raises(dt.DispatchPrepError, match="still dirty"):
+        dt._dispatch_cwd()

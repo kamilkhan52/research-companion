@@ -23,7 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as api from '@/api/endpoints';
 import { DISPATCH_MODELS } from '@/api/dispatch';
 import type { DispatchModel } from '@/api/dispatch';
-import type { DevTestItem, DevTestFeedbackEntry } from '@/api/endpoints';
+import type { DevTestItem, DevTestFeedbackEntry, DispatchStatus } from '@/api/endpoints';
 import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
@@ -239,6 +239,9 @@ export function DevTestBubble() {
   // DR-092: the model a bubble dispatch uses, persisted so it survives reopen like the toolbar.
   const modelDraft = usePersistedDraft<DispatchModel>(draftKey('devtest-dispatch-model'), 'sonnet');
   const [dispatchingAll, setDispatchingAll] = useState(false);
+  // The heartbeat behind the banner below: what a dispatched session is doing, and how the last
+  // one ended. Polls only while this sheet is open.
+  const dispatchStatus = useDispatchHeartbeat(visible);
 
   // DR-077: search/filter/sort state persists across opens the same way everything else in
   // this sheet does — one key for the whole toolbar, so leaving mid-review (e.g. filtered to
@@ -459,6 +462,7 @@ export function DevTestBubble() {
               onPress={() => void fireDispatch(modelDraft.value, undefined, setDispatchingAll)}
             />
           </View>
+          {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
 
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
@@ -563,6 +567,7 @@ async function fireDispatch(model: DispatchModel, itemId: string | undefined,
   try {
     const { dispatch } = await api.dispatchToClaude(model, itemId);
     showToast(`Claude (${model}) is on ${itemId ?? 'all pending issues'}. Replies land here.`);
+    refreshDispatchStatus?.();     // pull the banner forward instead of waiting for the tick
     return dispatch;
   } catch (e) {
     // 409 = a session is already running; the server's message says so plainly.
@@ -571,6 +576,184 @@ async function fireDispatch(model: DispatchModel, itemId: string | undefined,
   } finally {
     setBusy(false);
   }
+}
+
+// The heartbeat poller publishes its refresh here so `fireDispatch` — a module-level helper
+// shared by the header and every card — can pull the banner forward the moment a session
+// spawns, rather than leaving it blank until the next tick. Same module-level handoff the
+// sheet opener above uses.
+let refreshDispatchStatus: (() => void) | null = null;
+
+/** Poll the dispatch heartbeat while the sheet is open.
+ *
+ *  The polling interval follows the state: a live session is worth watching closely, but a
+ *  finished record never changes again, so continuing to hit it every few seconds would be
+ *  pure noise against a dev server that is also serving the reader.
+ *
+ *  A failed poll resolves to the previous value rather than surfacing an error — this is a
+ *  status ornament, and an unreachable dev server already shows up in the item list above.
+ */
+function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
+  const [status, setStatus] = useState<DispatchStatus | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const tick = async () => {
+      // Cleared up front so an out-of-band refresh() mid-cycle re-arms once, not twice.
+      if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+      let next: DispatchStatus | null = null;
+      try {
+        next = (await api.getDispatchStatus()).dispatch;
+        if (!cancelled) setStatus(next);
+      } catch {
+        // keep the last known state on the screen
+      }
+      if (cancelled) return;
+      timer.current = setTimeout(() => void tick(), next?.state === 'running' ? 5000 : 30000);
+    };
+    void tick();
+    const refresh = () => void tick();
+    refreshDispatchStatus = refresh;
+    return () => {
+      cancelled = true;
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = null;
+      // Only de-register if we are still the registered one. Clearing unconditionally is
+      // last-writer-wins, and a transient second mount's cleanup would then de-register the
+      // survivor, leaving the banner without its post-dispatch refresh — the same shape the
+      // `sheetOpener` guard and the `adjustBubbleMounts` counter above already exist to avoid.
+      if (refreshDispatchStatus === refresh) refreshDispatchStatus = null;
+    };
+  }, [visible]);
+
+  return status;
+}
+
+/** How often the Resume button re-checks whether its window has reopened. Short enough that
+ *  the countdown does not look stuck, long enough to be free. */
+const RESUME_READY_POLL_MS = 15000;
+
+/** "in 48m", "in 2h 10m", or "now" once the window has reopened. */
+function formatUntil(resetsAt: number | null | undefined): string {
+  if (!resetsAt) return 'soon';
+  const secs = resetsAt - Date.now() / 1000;
+  // Under a minute reads as "now": `formatElapsed` renders sub-second as "just started", which
+  // is nonsense pointed at the future.
+  if (secs < 60) return 'now';
+  return `in ${formatElapsed(secs)}`;
+}
+
+/** "22m", "1h 04m" — a duration a glance can read, not a precise one. */
+function formatElapsed(seconds: number | null): string {
+  if (!seconds || seconds < 1) return 'just started';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+}
+
+/** The dispatch heartbeat, shown under the Dispatch row whenever a session has ever run.
+ *
+ *  This is the whole point of the status route: a dispatched session works for tens of minutes
+ *  on a feature-sized item, and until now the bubble said nothing at all after the spawn toast.
+ *  It shows what the session is doing (`last_step`), that it is still moving (`steps`), and —
+ *  the case that used to be invisible — that it ended, well or badly. */
+export function DispatchBanner({ status }: { status: DispatchStatus }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const running = status.state === 'running';
+  const limited = status.state === 'rate_limited';
+  const bad = status.state === 'failed' || status.state === 'gone';
+  // Amber, not red: nothing is broken, the account is out of window. Colouring it as a failure
+  // would send you looking for a defect that is not there.
+  const tint = running ? t.violet
+    : limited ? t.amber
+    : status.state === 'finished' ? t.mint : t.danger;
+  const wash = running ? t.violetWash
+    : limited ? t.amberWash
+    : status.state === 'finished' ? t.mintWash : t.dangerWash;
+  const target = status.item_id ?? 'all pending issues';
+  const headline = running
+    ? `${status.model} is on ${target}`
+    : limited ? `${status.model} hit the usage limit on ${target}`
+    : status.state === 'finished' ? `${status.model} finished ${target}`
+    : status.state === 'failed' ? `${status.model} failed on ${target}`
+    // `gone` is the one that most needs saying out loud: nothing was written, so no reply is
+    // coming and waiting longer will not help.
+    : `${status.model} stopped without replying (${status.ended_reason ?? 'no output'})`;
+  // Prefer the model's own turn summary over the raw tool call — it reads as a sentence.
+  const detail = running ? (status.last_summary ?? status.last_step)
+    : limited ? `The window reopens ${formatUntil(status.rate_limit?.resets_at)}. Resuming keeps everything it had worked out.`
+    : status.result?.text;
+
+  return (
+    <View style={[styles.dispatchBanner, { backgroundColor: wash, borderColor: tint }]}
+          testID="devtest-dispatch-status">
+      <View style={styles.dispatchBannerHead}>
+        <Icon name={running ? 'zap' : bad ? 'alert-triangle' : 'check'} size={14} color={tint} />
+        <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>{headline}</Text>
+        <Text variant="caption" color={t.muted}>{formatElapsed(status.elapsed_s)}</Text>
+      </View>
+      {detail ? (
+        <Text variant="caption" color={t.muted} numberOfLines={2}>{detail}</Text>
+      ) : null}
+      <Text variant="caption" color={t.muted}>
+        {status.steps > 0 ? `${status.steps} steps` : 'no step detail'}
+        {status.result?.num_turns ? ` · ${status.result.num_turns} turns` : ''}
+        {/* Refused steps are the DR-092 failure mode: a headless session cannot ask, so a
+            denial is final and the session looks idle rather than blocked. */}
+        {status.result?.denials ? ` · ${status.result.denials} refused` : ''}
+        {running || limited ? '' : ' · check the item below for its reply'}
+      </Text>
+      {status.resumable ? <ResumeButton status={status} /> : null}
+    </View>
+  );
+}
+
+/** Pick a rate-limited session back up. Deliberately a manual tap rather than an automatic
+ *  retry: resuming spends the freshly-reopened window, and which job that goes to is Kamil's
+ *  call, not the client's. Enabled once the window has reopened — pressing early only earns
+ *  another refusal. */
+function ResumeButton({ status }: { status: DispatchStatus }) {
+  const [busy, setBusy] = useState(false);
+  const resetsAt = status.rate_limit?.resets_at ?? 0;
+  // Recomputed on a tick rather than armed once. A single setTimeout for the real wait is hours
+  // long: RN throttles timers that far out and warns about them, and a backgrounded app may
+  // never fire it at all — so the button could sit disabled at "Resume in 2h 10m" forever while
+  // the poll beside it was delivering fresh data.
+  const [, tick] = useState(0);
+  // The same 60s grace `formatUntil` uses. Comparing against the exact instant left the button
+  // reading "Resume now" while still disabled — it looked broken rather than early.
+  const ready = !resetsAt || resetsAt - Date.now() / 1000 < 60;
+
+  useEffect(() => {
+    if (ready) return;
+    const timer = setInterval(() => tick((n) => n + 1), RESUME_READY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [ready]);
+
+  return (
+    <Button
+      title={ready ? 'Resume where it stopped' : `Resume ${formatUntil(resetsAt)}`}
+      variant="ghost"
+      icon="play"
+      loading={busy}
+      disabled={busy || !ready}
+      testID="devtest-dispatch-resume"
+      onPress={() => {
+        setBusy(true);
+        void api.resumeDispatch(status.model)
+          .then(() => {
+            showToast(`${status.model} is picking up where it stopped.`);
+            refreshDispatchStatus?.();
+          })
+          .catch((e: Error) => showToast(e.message ?? 'Could not resume.'))
+          .finally(() => setBusy(false));
+      }}
+    />
+  );
 }
 
 /** A compact model selector — the same chip vocabulary the toolbar rows use. */
@@ -987,6 +1170,17 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
   dispatchRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.sm },
+  dispatchBanner: {
+    marginTop: space.xs,
+    paddingVertical: space.xs,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 2,
+  },
+  dispatchBannerHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  // Takes the slack so the elapsed time stays pinned right however long the headline runs.
+  dispatchBannerTitle: { flex: 1 },
   // minWidth, not width: at OS font scales past ~1.4x "Filter" outgrows 44px and a fixed width
   // would wrap it to a second line (Opus review, PR #388) — min keeps the two rows' chips
   // aligned at 1x and lets the label take more room instead of wrapping when scaled.
