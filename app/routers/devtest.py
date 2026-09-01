@@ -435,6 +435,10 @@ class DispatchReq(BaseModel):
     #: session — Kamil's pick, 2026-08-21 — not one per issue).
     item_id: str | None = None
     model: str
+    #: Continue the last rate-limited session instead of starting a new one: same CLI session
+    #: (so its context survives), same worktree, NOT reset. `item_id`/`model` are taken from
+    #: the record being resumed and ignored here.
+    resume: bool = False
 
 
 #: Serializes the check-then-spawn-then-write below. FastAPI runs sync routes in a threadpool,
@@ -618,6 +622,10 @@ DISPATCH_LOG_TAIL_BYTES = 256 * 1024
 #: `system/init` record (~10 KB) into memory on every poll.
 DISPATCH_LOG_HEAD_BYTES = 64
 
+#: The whole `system/init` record, read only when a resume needs its session id. It lists every
+#: tool and MCP server, so it is generously bounded rather than assumed small.
+DISPATCH_INIT_RECORD_MAX_BYTES = 256 * 1024
+
 #: Counted over the WHOLE log (cheaply, as bytes) rather than the parsed tail: the step count is
 #: the "still moving" signal, and a count that reset every time the tail window slid would read
 #: as the session going backwards.
@@ -695,7 +703,7 @@ def _dispatch_progress(log_path: str | None) -> dict:
     logs hold a prose recap and no records at all — they report zero steps, not an error).
     """
     out: dict = {"steps": 0, "last_step": None, "last_summary": None,
-                 "result": None, "log_bytes": 0, "structured": False}
+                 "result": None, "log_bytes": 0, "structured": False, "rate_limit": None}
     if not log_path:
         return out
     path = Path(log_path)
@@ -740,6 +748,17 @@ def _dispatch_progress(log_path: str | None) -> dict:
             detail = rec.get("status_detail") or rec.get("status_category")
             if isinstance(detail, str) and detail.strip():
                 out["last_summary"] = " ".join(detail.split())[:200]
+        elif kind == "rate_limit_event":
+            # The CLI reports the account's window state as it goes. The LAST one is what
+            # matters: a session that ran fine for an hour and then hit the ceiling has plenty
+            # of `allowed` records before the one that stopped it.
+            info = rec.get("rate_limit_info")
+            if isinstance(info, dict):
+                out["rate_limit"] = {
+                    "status": info.get("status"),
+                    "scope": info.get("rateLimitType"),
+                    "resets_at": info.get("resetsAt"),
+                }
         elif kind == "result":
             text = rec.get("result")
             out["result"] = {
@@ -751,9 +770,60 @@ def _dispatch_progress(log_path: str | None) -> dict:
                 # The August 2026 lesson (see DISPATCH_ALLOWED_TOOLS): a headless session whose
                 # steps are refused looks identical to one doing nothing. Surface the count.
                 "denials": len(rec.get("permission_denials") or []),
+                # 429 here is the account's ceiling, not a defect in the work — the difference
+                # between "this needs fixing" and "this needs waiting".
+                "api_error_status": rec.get("api_error_status"),
                 "duration_ms": rec.get("duration_ms"),
             }
     return out
+
+
+def _hit_the_ceiling(result: dict | None, rate_limit: dict | None) -> bool:
+    """Whether a dispatch ended because the ACCOUNT ran out of window rather than because
+    anything about the work went wrong.
+
+    Two independent signatures, because the two ways it ends look different. A session that
+    gets a 429 mid-turn terminates with a `result` record carrying that status. A session
+    killed by the limit before it can write one leaves only its last `rate_limit_event` — and
+    those records report the window continuously, so the last one is the one that stopped it.
+    """
+    if result and result.get("api_error_status") == 429:
+        return True
+    status = (rate_limit or {}).get("status")
+    return bool(status) and status != "allowed"
+
+
+def _resumable_dispatch() -> dict | None:
+    """The archived record of the last session, if it ended by hitting the account ceiling.
+
+    Only that ending is resumable, and deliberately so: a session that FAILED should be looked
+    at, not blindly continued, and one that FINISHED has nothing to continue. Rate-limiting is
+    the one case where the work was going fine and the only thing wrong was the clock.
+    """
+    try:
+        info = json.loads((_dispatch_dir() / "last.json").read_text())
+    except (OSError, ValueError):
+        return None
+    progress = _dispatch_progress(info.get("log"))
+    if not _hit_the_ceiling(progress["result"], progress["rate_limit"]):
+        return None
+    return info
+
+
+def _dispatch_session_id(log_path: str | None) -> str | None:
+    """The CLI session id, for `--resume`. It is in the `system/init` record, which is the FIRST
+    line of the log — read on demand rather than on every poll, because that record enumerates
+    every tool and MCP server and runs to ~10 KB."""
+    if not log_path:
+        return None
+    try:
+        with Path(log_path).open("rb") as fh:
+            first = fh.readline(DISPATCH_INIT_RECORD_MAX_BYTES)
+        rec = json.loads(first)
+    except (OSError, ValueError):
+        return None
+    session_id = rec.get("session_id") if isinstance(rec, dict) else None
+    return session_id if isinstance(session_id, str) and session_id else None
 
 
 def _via_public_tunnel(request: Request) -> bool:
@@ -777,7 +847,7 @@ class DispatchPrepError(RuntimeError):
     """The dispatch worktree could not be made safe to run in, so the dispatch is refused."""
 
 
-def _dispatch_cwd() -> str:
+def _dispatch_cwd(reset: bool = True) -> str:
     """Prepare and return the working directory for a spawned session — see DISPATCH_WORKTREE
     for why it is neither the live checkout nor Metro's.
 
@@ -802,6 +872,15 @@ def _dispatch_cwd() -> str:
     if os.environ.get("RC_DISPATCH_WORKTREE", "1").strip().lower() in ("0", "false", "off", "no"):
         return str(root)
     worktree = root / DISPATCH_WORKTREE
+    if not reset:
+        # A RESUME continues the interrupted session in the tree it left behind. Resetting here
+        # would `git reset --hard` away exactly the work we are resuming — the uncommitted half
+        # of a session that ran out of window mid-edit.
+        if not (worktree / ".git").exists():
+            raise DispatchPrepError(
+                "there is no dispatch worktree to resume into; start a fresh dispatch instead")
+        _link_dispatch_venv(root, worktree)
+        return str(worktree)
     # Best effort, NOT fatal: an offline Mac or a slow remote must not push the dispatch into
     # the live checkout. Resetting to an already-fetched origin/main is a fine outcome.
     try:
@@ -883,7 +962,7 @@ def _link_dispatch_venv(root: Path, worktree: Path) -> None:
             "session cannot run pytest or reply to the bubble") from exc
 
 
-def _dispatch_prompt(item_id: str | None) -> str:
+def _dispatch_prompt(item_id: str | None, resuming: bool = False) -> str:
     """The dispatched session's brief: the WHOLE loop, ending at a merged PR.
 
     Kamil's call, 2026-09-01, after the half-loop stalled on him twice in a day. The stopping
@@ -897,6 +976,18 @@ def _dispatch_prompt(item_id: str | None) -> str:
     """
     scope = (f"Work ONLY on item {item_id}" if item_id
              else "Work on ALL unprocessed inbox entries and every actionable open item")
+    if resuming:
+        # A resumed session has the whole earlier transcript, so restating the brief would have
+        # it start over. Tell it what happened and where it stands instead.
+        return (
+            "Continue where you left off. Your previous turn was cut short because the "
+            "account hit its usage limit, not because anything was wrong with the work — the "
+            "window has since reopened. You are in the SAME worktree, so your uncommitted "
+            "changes are still there; check `git status` before assuming anything was lost. "
+            "Re-read the loop you were given and carry on from the step you had reached, "
+            "through to a merged PR and a bubble reply via devtest.append_response. If you had "
+            "already replied in the bubble, post a short follow-up saying you resumed."
+        )
     return (
         f"Run the /device-feedback skill for the Research Companion repo. {scope}. "
         "Triage into the device-review ledger per the skill's rules, then carry the work all "
@@ -985,6 +1076,23 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     item_id = (req.item_id or "").strip()[:40] or None
     if item_id and not re.fullmatch(r"[A-Za-z0-9-]+", item_id):
         raise HTTPException(status_code=400, detail="item_id has an unexpected shape")
+    model, resume_of, session_id = req.model, None, None
+    if req.resume:
+        # Resume the last session rather than starting a new one, so its context — everything
+        # it had already worked out before the window closed — is not thrown away. The item and
+        # model come from the record being resumed; taking them from the request would let a
+        # resume quietly become a different job.
+        resume_of = _resumable_dispatch()
+        if resume_of is None:
+            raise HTTPException(
+                status_code=409,
+                detail="There is no rate-limited session to resume.")
+        session_id = _dispatch_session_id(resume_of.get("log"))
+        if not session_id:
+            raise HTTPException(
+                status_code=409,
+                detail="That session left no resumable id; dispatch it fresh instead.")
+        item_id, model = resume_of.get("item_id"), resume_of.get("model") or model
     binary = shutil.which("claude")
     if not binary:
         raise HTTPException(status_code=503,
@@ -1001,15 +1109,18 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
         # Refuse rather than run an unattended, merge-authorized session in the live server's
         # own checkout — see `_dispatch_cwd`.
         try:
-            cwd = _dispatch_cwd()
+            cwd = _dispatch_cwd(reset=not req.resume)
         except DispatchPrepError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=f"Could not prepare the dispatch worktree: {exc}") from exc
         with log_path.open("wb") as log_file:
+            argv = [binary, "-p", _dispatch_prompt(item_id, resuming=bool(session_id))]
+            if session_id:
+                argv += ["--resume", session_id]
             process = subprocess.Popen(
-                [binary, "-p", _dispatch_prompt(item_id),
-                 "--model", req.model, "--permission-mode", "acceptEdits",
+                argv +
+                ["--model", model, "--permission-mode", "acceptEdits",
                  # One JSON record per line, written AS THE SESSION RUNS. The default text
                  # format emits only the closing recap, so the log sat at 0 bytes for the whole
                  # run and there was no way — from the phone or the Mac — to tell a session
@@ -1025,8 +1136,9 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
                 cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
-        info = {"id": dispatch_id, "pid": process.pid, "model": req.model,
+        info = {"id": dispatch_id, "pid": process.pid, "model": model,
                 "item_id": item_id, "log": str(log_path),
+                "resumed_from": resume_of.get("id") if resume_of else None,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "started_ts": time.time()}
         atomic_write_text(_dispatch_dir() / "current.json", json.dumps(info, indent=1))
@@ -1056,6 +1168,10 @@ def dispatch_status(request: Request):
       - `gone`     — it ended without the `result` record print mode always writes: killed, or
                      dead before its first record. Either way no reply is coming and a
                      re-dispatch is the move.
+      - `rate_limited` — it ended because the ACCOUNT ran out of window, not because anything
+                     about the work went wrong. `rate_limit.resets_at` says when that window
+                     reopens, and this is the one ending that can be RESUMED (same CLI session,
+                     same worktree, context intact) rather than restarted.
 
     Over the PUBLIC tunnel this answers, but without detail: `last_step` carries file paths,
     shell command lines and Task prompts, and `result.text` up to 2000 characters of the
@@ -1083,8 +1199,14 @@ def dispatch_status(request: Request):
             return {"dispatch": None}       # nothing has ever been dispatched
     progress = _dispatch_progress(info.get("log"))
     result = progress["result"]
+    rate_limit = progress["rate_limit"]
     if alive:
         state = "running"
+    elif _hit_the_ceiling(result, rate_limit):
+        # Distinct from `failed` on purpose: nothing is wrong with the work, the account ran
+        # out of window. It is the one ending that is RESUMABLE, and the only useful thing to
+        # show is when the window reopens.
+        state = "rate_limited"
     elif result:
         state = "failed" if result["is_error"] else "finished"
     elif progress["log_bytes"] and not progress["structured"]:
@@ -1120,4 +1242,8 @@ def dispatch_status(request: Request):
         "last_step": None if public else progress["last_step"],
         "last_summary": None if public else progress["last_summary"],
         "result": result,
+        # Present only when it is the reason the session stopped, so the client can say when
+        # the window reopens and offer to pick the session back up rather than restart it.
+        "rate_limit": progress["rate_limit"] if state == "rate_limited" else None,
+        "resumable": state == "rate_limited",
     }}

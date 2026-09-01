@@ -631,6 +631,14 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
   return status;
 }
 
+/** "in 48m", "in 2h 10m", or "now" once the window has reopened. */
+function formatUntil(resetsAt: number | null | undefined): string {
+  if (!resetsAt) return 'soon';
+  const secs = resetsAt - Date.now() / 1000;
+  if (secs <= 0) return 'now';
+  return `in ${formatElapsed(secs)}`;
+}
+
 /** "22m", "1h 04m" — a duration a glance can read, not a precise one. */
 function formatElapsed(seconds: number | null): string {
   if (!seconds || seconds < 1) return 'just started';
@@ -650,19 +658,29 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const running = status.state === 'running';
+  const limited = status.state === 'rate_limited';
   const bad = status.state === 'failed' || status.state === 'gone';
-  const tint = running ? t.violet : status.state === 'finished' ? t.mint : t.danger;
-  const wash = running ? t.violetWash : status.state === 'finished' ? t.mintWash : t.dangerWash;
+  // Amber, not red: nothing is broken, the account is out of window. Colouring it as a failure
+  // would send you looking for a defect that is not there.
+  const tint = running ? t.violet
+    : limited ? t.amber
+    : status.state === 'finished' ? t.mint : t.danger;
+  const wash = running ? t.violetWash
+    : limited ? t.amberWash
+    : status.state === 'finished' ? t.mintWash : t.dangerWash;
   const target = status.item_id ?? 'all pending issues';
   const headline = running
     ? `${status.model} is on ${target}`
+    : limited ? `${status.model} hit the usage limit on ${target}`
     : status.state === 'finished' ? `${status.model} finished ${target}`
     : status.state === 'failed' ? `${status.model} failed on ${target}`
     // `gone` is the one that most needs saying out loud: nothing was written, so no reply is
     // coming and waiting longer will not help.
     : `${status.model} stopped without replying (${status.ended_reason ?? 'no output'})`;
   // Prefer the model's own turn summary over the raw tool call — it reads as a sentence.
-  const detail = running ? (status.last_summary ?? status.last_step) : status.result?.text;
+  const detail = running ? (status.last_summary ?? status.last_step)
+    : limited ? `The window reopens ${formatUntil(status.rate_limit?.resets_at)}. Resuming keeps everything it had worked out.`
+    : status.result?.text;
 
   return (
     <View style={[styles.dispatchBanner, { backgroundColor: wash, borderColor: tint }]}
@@ -681,9 +699,48 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
         {/* Refused steps are the DR-092 failure mode: a headless session cannot ask, so a
             denial is final and the session looks idle rather than blocked. */}
         {status.result?.denials ? ` · ${status.result.denials} refused` : ''}
-        {running ? '' : ' · check the item below for its reply'}
+        {running || limited ? '' : ' · check the item below for its reply'}
       </Text>
+      {status.resumable ? <ResumeButton status={status} /> : null}
     </View>
+  );
+}
+
+/** Pick a rate-limited session back up. Deliberately a manual tap rather than an automatic
+ *  retry: resuming spends the freshly-reopened window, and which job that goes to is Kamil's
+ *  call, not the client's. Enabled once the window has reopened — pressing early only earns
+ *  another refusal. */
+function ResumeButton({ status }: { status: DispatchStatus }) {
+  const [busy, setBusy] = useState(false);
+  const resetsAt = status.rate_limit?.resets_at ?? 0;
+  const [ready, setReady] = useState(() => !resetsAt || resetsAt <= Date.now() / 1000);
+
+  useEffect(() => {
+    if (ready || !resetsAt) return;
+    const ms = Math.max(0, resetsAt * 1000 - Date.now()) + 1000;
+    const timer = setTimeout(() => setReady(true), ms);
+    return () => clearTimeout(timer);
+  }, [ready, resetsAt]);
+
+  return (
+    <Button
+      title={ready ? 'Resume where it stopped' : `Resume ${formatUntil(resetsAt)}`}
+      variant="ghost"
+      icon="play"
+      loading={busy}
+      disabled={busy || !ready}
+      testID="devtest-dispatch-resume"
+      onPress={() => {
+        setBusy(true);
+        void api.resumeDispatch(status.model)
+          .then(() => {
+            showToast(`${status.model} is picking up where it stopped.`);
+            refreshDispatchStatus?.();
+          })
+          .catch((e: Error) => showToast(e.message ?? 'Could not resume.'))
+          .finally(() => setBusy(false));
+      }}
+    />
   );
 }
 

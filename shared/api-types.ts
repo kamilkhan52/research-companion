@@ -618,6 +618,10 @@ export interface paths {
          *       - `gone`     — it ended without the `result` record print mode always writes: killed, or
          *                      dead before its first record. Either way no reply is coming and a
          *                      re-dispatch is the move.
+         *       - `rate_limited` — it ended because the ACCOUNT ran out of window, not because anything
+         *                      about the work went wrong. `rate_limit.resets_at` says when that window
+         *                      reopens, and this is the one ending that can be RESUMED (same CLI session,
+         *                      same worktree, context intact) rather than restarted.
          *
          *     Over the PUBLIC tunnel this answers, but without detail: `last_step` carries file paths,
          *     shell command lines and Task prompts, and `result.text` up to 2000 characters of the
@@ -2161,6 +2165,11 @@ export interface components {
             item_id?: string | null;
             /** Model */
             model: string;
+            /**
+             * Resume
+             * @default false
+             */
+            resume: boolean;
         };
         /** EditReq */
         EditReq: {

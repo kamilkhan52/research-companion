@@ -942,7 +942,7 @@ def test_preparation_failure_refuses_the_dispatch_instead_of_using_the_live_chec
 
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
 
-    def refuse():
+    def refuse(reset=True):
         raise dt.DispatchPrepError("worktree is dirty")
 
     monkeypatch.setattr(dt, "_dispatch_cwd", refuse)
@@ -979,3 +979,124 @@ def test_the_worktree_gets_the_venv_the_session_cannot_bootstrap(monkeypatch, tm
     assert (worktree / ".venv" / "bin" / "python").exists()
     # Gitignored, so it survives the `clean -fd` of every subsequent dispatch.
     assert (worktree / ".venv").is_symlink()
+
+
+# --- hitting the account ceiling, and picking the session back up (Kamil, 2026-09-01) ---------
+
+def _rate_limit_event(status="rejected", resets_at=1788282600, scope="five_hour") -> dict:
+    return {"type": "rate_limit_event",
+            "rate_limit_info": {"status": status, "resetsAt": resets_at,
+                                "rateLimitType": scope}}
+
+
+def test_a_session_stopped_by_the_usage_limit_is_not_reported_as_failed(client, tmp_path,
+                                                                       monkeypatch):
+    """`failed` says "look at this"; the ceiling says "wait". Kamil watched a review agent die
+    at the limit on 2026-09-01 and the surface could not tell him which it was."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _assistant(_tool_use("Bash", command="npm test")),
+        _rate_limit_event(status="allowed"),          # fine for most of the run...
+        _rate_limit_event(status="rejected"),         # ...and then not
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited"
+    assert d["resumable"] is True
+    assert d["rate_limit"]["resets_at"] == 1788282600     # when the window reopens
+    assert d["rate_limit"]["scope"] == "five_hour"
+
+
+def test_a_429_in_the_result_record_also_reads_as_the_ceiling(client, tmp_path, monkeypatch):
+    """The other shape: a session that gets the 429 mid-turn terminates with a result record
+    rather than being killed, so it never writes a rejecting rate_limit_event."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "usage limit reached", "api_error_status": 429, "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "rate_limited" and d["resumable"] is True
+
+
+def test_an_ordinary_failure_is_still_a_failure(client, tmp_path, monkeypatch):
+    """The counterweight: an errored session that merely SAW an allowed rate-limit record must
+    not be mistaken for one the ceiling stopped, or a real defect gets waited on instead of
+    read."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        _rate_limit_event(status="allowed"),
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "hit the turn limit", "api_error_status": None, "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    d = client.get("/api/devtest/dispatch").json()["dispatch"]
+    assert d["state"] == "failed" and d["resumable"] is False
+    assert d["rate_limit"] is None
+
+
+def test_resume_continues_the_same_cli_session_rather_than_starting_over(client, tmp_path,
+                                                                        monkeypatch):
+    """The point of resuming: the interrupted session already worked things out, and throwing
+    that away is most of what the wasted window cost."""
+    import subprocess
+
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "system", "subtype": "init", "session_id": "sess-abc-123"},
+        _rate_limit_event(status="rejected"),
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")               # reap archives it to last.json
+    assert (d / "last.json").exists()
+
+    calls = {}
+
+    class FakeProc:
+        pid = 9100
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv, kwargs=kw), FakeProc())[1])
+    # The model in the body is ignored — a resume must not quietly become a different job.
+    r = client.post("/api/devtest/dispatch", json={"model": "haiku", "resume": True})
+    assert r.status_code == 200
+    argv = calls["argv"]
+    assert argv[argv.index("--resume") + 1] == "sess-abc-123"
+    assert argv[argv.index("--model") + 1] == "opus"          # from the record, not the request
+    assert r.json()["dispatch"]["item_id"] == "DR-115"        # likewise
+    # The brief must not restate the whole loop: a resumed session has the transcript already.
+    prompt = argv[argv.index("-p") + 1]
+    assert "Continue where you left off" in prompt
+    assert "Run the /device-feedback skill" not in prompt
+
+
+def test_resume_keeps_the_worktree_it_left_behind(monkeypatch, tmp_path):
+    """A resume must NOT reset: the uncommitted half of the interrupted session is exactly what
+    `git reset --hard` would destroy, and it is what we are resuming."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_DISPATCH_WORKTREE", "1")
+    root = tmp_path / "checkout"
+    worktree = root / dt.DISPATCH_WORKTREE
+    (worktree / ".git").mkdir(parents=True)
+    monkeypatch.setattr(dt, "_main_root", lambda: root)
+
+    def git(cwd, *args):
+        raise AssertionError(f"a resume must not run git {args[0]} on the worktree")
+
+    monkeypatch.setattr(dt, "_dispatch_git", git)
+    assert dt._dispatch_cwd(reset=False) == str(worktree)
+
+
+def test_resume_is_refused_when_there_is_nothing_rate_limited_to_resume(client, tmp_path,
+                                                                       monkeypatch):
+    """A finished session has nothing to continue and a failed one should be READ, not blindly
+    carried on — so neither is resumable."""
+    _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "result", "subtype": "success", "is_error": False, "result": "done",
+         "permission_denials": []},
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")               # archive it
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
+    assert r.status_code == 409
+    assert "no rate-limited session" in r.json()["detail"]

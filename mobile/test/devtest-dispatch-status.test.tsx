@@ -13,6 +13,7 @@ jest.mock('@/api/endpoints', () => ({
   getDevTestFeedback: jest.fn().mockResolvedValue({ entries: [] }),
   dispatchToClaude: jest.fn(),
   getDispatchStatus: jest.fn().mockResolvedValue({ dispatch: null }),
+  resumeDispatch: jest.fn().mockResolvedValue({ dispatch: {} }),
 }));
 
 import { render } from '@testing-library/react-native';
@@ -25,6 +26,7 @@ const base: DispatchStatus = {
   started_at: '2026-09-01T08:01:31-0700', elapsed_s: 1340, ended_reason: null,
   steps: 47, last_step: 'Edit: mobile/src/components/ChatNavRail.tsx',
   last_summary: 'wiring the rail into the chat screen', result: null,
+  rate_limit: null, resumable: false,
 };
 
 const status = (over: Partial<DispatchStatus>): DispatchStatus => ({ ...base, ...over });
@@ -91,4 +93,48 @@ test('an elapsed time the server could not date degrades instead of showing 0s',
 test('an hour-plus session reads in hours and minutes', () => {
   const { getByText } = render(<DispatchBanner status={status({ elapsed_s: 3900 })} />);
   getByText('1h 05m');
+});
+
+test('a session stopped by the usage limit says so, and offers to pick it up', () => {
+  // Not a failure and not styled as one: nothing is wrong with the work, the account ran out
+  // of window. What matters is when it reopens and that resuming keeps the context.
+  const { getByText, getByTestId } = render(<DispatchBanner status={status({
+    state: 'rate_limited', last_summary: null, resumable: true,
+    rate_limit: { status: 'rejected', scope: 'five_hour', resets_at: Date.now() / 1000 + 3600 },
+    result: null,
+  })} />);
+  getByText('opus hit the usage limit on DR-115');
+  getByText(/window reopens in 1h 00m/);
+  getByText(/Resuming keeps everything it had worked out/);
+  // Not "check the item for its reply" — there is no reply, and there will not be one until
+  // it resumes.
+  expect(() => getByText(/check the item below for its reply/)).toThrow();
+  getByTestId('devtest-dispatch-resume');
+});
+
+test('resume is held back until the window has actually reopened', () => {
+  const { getByText } = render(<DispatchBanner status={status({
+    state: 'rate_limited', last_summary: null, resumable: true,
+    rate_limit: { status: 'rejected', scope: 'five_hour', resets_at: Date.now() / 1000 + 1800 },
+    result: null,
+  })} />);
+  getByText('Resume in 30m');           // pressing early would only earn another refusal
+});
+
+test('an already-reopened window offers resume immediately', () => {
+  const { getByText } = render(<DispatchBanner status={status({
+    state: 'rate_limited', last_summary: null, resumable: true,
+    rate_limit: { status: 'rejected', scope: 'five_hour', resets_at: Date.now() / 1000 - 60 },
+    result: null,
+  })} />);
+  getByText('Resume where it stopped');
+});
+
+test('no resume offer on the endings that are not resumable', () => {
+  // A finished session has nothing to continue; a failed one should be READ, not carried on.
+  for (const state of ['finished', 'failed', 'gone'] as const) {
+    const { queryByTestId } = render(
+      <DispatchBanner status={status({ state, last_summary: null, resumable: false })} />);
+    expect(queryByTestId('devtest-dispatch-resume')).toBeNull();
+  }
 });

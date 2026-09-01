@@ -219,6 +219,11 @@ way they did. This is an index, not a substitute for reading them.
   stalled on him twice in one day). It may merge ONLY after that review approves and CI is
   green at the head sha. Poll `GET /api/devtest/dispatch` for its heartbeat; its log is
   `stream-json`, one record per line, under `.dev-feedback/dispatch/`.
+  **A session stopped by the account's usage limit reports `rate_limited`, not `failed`** —
+  nothing is wrong with the work, so it is the one ending that can be RESUMED (`POST
+  /api/devtest/dispatch` with `resume: true`) rather than restarted. A resume continues the
+  same CLI session, so its context survives, and deliberately does **not** reset the dispatch
+  worktree: the uncommitted half of the interrupted session is exactly what it is resuming.
   **Three checkouts, three jobs — do not collapse them:**
   1. the **main checkout** runs the backend server (an `app/` edit here restarts it under
      `RC_RELOAD` and kills in-flight jobs — DR-083);

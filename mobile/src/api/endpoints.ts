@@ -163,9 +163,10 @@ export const dispatchToClaude = (model: DispatchModel, itemId?: string) =>
     itemId ? { model, item_id: itemId } : { model });
 
 /** `running` = the process is alive; `finished`/`failed` = it ended and said so; `gone` = it
- *  ended having written nothing at all, so no bubble reply is coming and a re-dispatch is the
- *  move. */
-export type DispatchState = 'running' | 'finished' | 'failed' | 'gone';
+ *  ended without the terminating record, so no bubble reply is coming and a re-dispatch is the
+ *  move; `rate_limited` = the ACCOUNT ran out of window, which is nothing to do with the work
+ *  and is the one ending that can be resumed with its context intact. */
+export type DispatchState = 'running' | 'finished' | 'failed' | 'gone' | 'rate_limited';
 
 export interface DispatchStatus {
   id: string;
@@ -190,6 +191,10 @@ export interface DispatchStatus {
     denials: number;
     duration_ms: number | null;
   } | null;
+  /** Set only when the ceiling is why it stopped. `resets_at` is epoch SECONDS. */
+  rate_limit: { status: string | null; scope: string | null; resets_at: number | null } | null;
+  /** Whether `resumeDispatch()` will be accepted — true exactly when `rate_limited`. */
+  resumable: boolean;
 }
 
 // The dispatch heartbeat. Before this the spawn toast was the only feedback a dispatch gave,
@@ -198,6 +203,13 @@ export interface DispatchStatus {
 // `dispatch` is null when nothing has ever been dispatched on this server.
 export const getDispatchStatus = () =>
   apiGet<{ dispatch: DispatchStatus | null }>('/api/devtest/dispatch');
+
+// Pick the last rate-limited session back up: same CLI session, so the context it had already
+// built is not thrown away, and the same worktree, NOT reset — its uncommitted work is what we
+// are resuming. Item and model come from the record being resumed, so `model` here is only the
+// picker's current value and the server ignores it.
+export const resumeDispatch = (model: DispatchModel) =>
+  apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch', { model, resume: true });
 
 // ---------- projects (management) ----------
 
