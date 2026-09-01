@@ -15,6 +15,7 @@ import { AuthProvider } from '@/auth/AuthProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
+import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { ThemeProvider } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
 
@@ -86,7 +87,9 @@ function renderScreen() {
           <ProjectProvider>
             <ListeningProvider>
               <GraphSettingsProvider>
-                <SettingsScreen />
+                <ReadingSettingsProvider>
+                  <SettingsScreen />
+                </ReadingSettingsProvider>
               </GraphSettingsProvider>
             </ListeningProvider>
           </ProjectProvider>
@@ -117,6 +120,7 @@ const LOCAL_TOGGLES = [
   'System', 'Dim', 'Black', 'Light',      // theme
   'Comfortable', 'Tight',                 // density
   'Hidden', 'Shown',                      // the map's "All" filter
+  'Off', 'On',                            // DR-115 chat navigation controls
 ];
 
 test('a reader sees the shared settings read-only, with their device controls still live', async () => {
