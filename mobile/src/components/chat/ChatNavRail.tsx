@@ -32,6 +32,9 @@ export const RAIL_RESTING_OPACITY = 0.3;
  *  presses, short enough that it is not sitting at full strength over a page of prose. */
 export const RAIL_IDLE_MS = 2400;
 const RAIL_WAKE_MS = 110;
+/** How long an already-pending idle countdown may stand before a further scroll frame re-arms
+ *  it. Bounds the timer churn on a 60 fps scroll to ~4 re-arms/s instead of ~60. */
+const WAKE_COALESCE_MS = 250;
 const RAIL_DIM_MS = 380;
 
 export interface ChatNavRailHandle {
@@ -64,11 +67,22 @@ export const ChatNavRail = forwardRef<ChatNavRailHandle, {
   const reduceMotionRef = useRef(reduceMotion);
   reduceMotionRef.current = reduceMotion;
 
+  const lastWake = useRef(0);
+
   const wake = useCallback(() => {
     const instant = reduceMotionRef.current;
     if (dimmed.current) {
       dimmed.current = false;
       opacity.value = withTiming(1, { duration: instant ? 0 : RAIL_WAKE_MS });
+    } else {
+      // Already awake with a countdown pending. The scroll handler calls this on EVERY frame
+      // (`scrollEventThrottle` is 1 and the library runOnJS-es each event), so re-arming the
+      // timer here churns a clearTimeout+setTimeout ~60×/s on the JS thread that DR-100/DR-101
+      // established is the bottleneck on this surface. Deferring the re-arm costs at most
+      // WAKE_COALESCE_MS of extra visible time and does no work in the common frame.
+      const now = Date.now();
+      if (timer.current && now - lastWake.current < WAKE_COALESCE_MS) return;
+      lastWake.current = now;
     }
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
@@ -169,7 +183,10 @@ function RailButton({
       accessibilityRole="button"
       accessibilityLabel={label}
       testID={testID}
-      hitSlop={6}
+      // Horizontal only. The buttons are stacked flush, so a vertical hitSlop made each one
+      // overlap its neighbour by 12px — and in that band the later sibling wins, so a near-miss
+      // on "start of thread" fired "one message up" instead. Two very different journeys.
+      hitSlop={{ left: 6, right: 6 }}
       style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
       <Icon name={name} size={18} color={color} />
     </Pressable>

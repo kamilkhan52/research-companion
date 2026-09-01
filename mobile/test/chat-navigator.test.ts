@@ -26,8 +26,15 @@ function viewable(indices: number[]) {
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
 
-test('an index landing aligns the row\'s TOP with the viewport top', () => {
-  // The list is inverted, so viewPosition 1 — not 0 — is the top of a row. Getting this
+test('an index landing passes the inverted-list viewPosition through unchanged', () => {
+  // Scoped honestly: Jest cannot exercise the inverted transform, so this pins the constant
+  // and its plumbing, NOT that the row lands top-first — the client matching its own constant.
+  // The binding itself is derived, for whoever has to re-verify it without a device:
+  // VirtualizedList computes `offset = max(0, cellOffset - viewPosition * (visibleLength -
+  // frame.length))`, so viewPosition 1 gives `cellOffset + frame.length - visibleLength`, i.e.
+  // the cell's content-space END aligned with the viewport's END. `inverted` is a scaleY(-1),
+  // so content-space END renders as the visual TOP — and the alignment target holds even when
+  // the row is taller than the screen, which is the case this feature exists for. Getting it
   // backwards would leave the reader at the FOOT of the response they asked to jump to.
   expect(CHAT_NAV_VIEW_POSITION).toBe(1);
   const list = fakeList();
@@ -185,4 +192,132 @@ test('the viewability handler is identity-stable across renders (FlatList requir
   const handler = result.current.onViewableItemsChanged;
   rerender({ count: 7 });
   expect(result.current.onViewableItemsChanged).toBe(handler);
+});
+
+// --- landmarks that no longer describe the reader (Opus review of PR #467) --------------------
+
+test('a scroll we did not issue retires the landmark, even without a finger drag', () => {
+  // The blocking review finding. `onScrollBeginDrag` was the ONLY retirement path, on the
+  // theory that a drag is the only way the reader moves without us. The chat library's own
+  // scroll-to-latest button disproves that: its press scrolls programmatically, so no drag
+  // fires, and `messages.length` does not change either, so neither guard clears the landmark.
+  // The reader was then teleported by the next step — the exact behaviour the feature promises
+  // to prevent. A landmark claims "message N's top is at the top of the viewport", and the
+  // viewability callback reports that independently, so the claim is checked before it is used.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8 }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([1, 2])));
+  act(() => result.current.goUp());                       // lands on 2, landmark = 2
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 2 }));
+  act(() => result.current.onViewableItemsChanged(viewable([2])));   // the jump arrives
+
+  // The scroll-to-latest button fires: the viewport is now at the newest messages. No drag,
+  // no length change — only the viewability report moves.
+  act(() => result.current.onViewableItemsChanged(viewable([0])));
+  list.scrollToIndex.mockClear();
+  act(() => result.current.goDown());
+  // Stale landmark 2 would have aimed at index 1 — back UP the thread, away from the live
+  // edge the reader had just jumped to.
+  expect(list.scrollToIndex).not.toHaveBeenCalledWith(
+    expect.objectContaining({ index: 1 }));
+  expect(list.scrollToOffset).toHaveBeenCalledWith(
+    expect.objectContaining({ offset: 0 }));            // straight to live, from topIndex 0
+});
+
+test('a landmark the viewport still agrees with survives', () => {
+  // The check must not be so eager that it throws away a good landmark — that would undo
+  // "repeated presses keep stepping" and re-aim at the same message forever.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8 }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());                        // landmark = 2
+  act(() => result.current.onViewableItemsChanged(viewable([2])));  // arrived where it aimed
+  act(() => result.current.goUp());
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 3 }));                // stepped on, did not re-aim at 2
+});
+
+test('the live-edge landmark is exempt, since it makes no claim about the top row', () => {
+  // Parked at the newest message, whichever row fits above it is at the visual top — so an
+  // equality check against topIndex would spuriously retire a landmark that is perfectly good.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8 }),
+  );
+  act(() => result.current.goLive());                      // landmark = LIVE_EDGE
+  act(() => result.current.onViewableItemsChanged(viewable([3])));  // some older row on screen
+  act(() => result.current.goUp());
+  // From the live edge, up is the NEWEST message's own top — not topIndex 3's neighbour.
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 0 }));
+});
+
+test('start-of-thread re-issues once, because scrollToEnd never reports a failure', () => {
+  // `scrollToEnd` derives its offset from the average row length and cannot fail, so the
+  // bounded re-aim that protects index targets does not cover it — on a thread of screen-tall
+  // rows the first landing can be far short. This is the control the ledger row asks Kamil to
+  // check ("the double-chevrons reach the very start of the thread").
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40 }),
+  );
+  act(() => result.current.goOldest());
+  expect(list.scrollToEnd).toHaveBeenCalledTimes(1);
+  act(() => jest.advanceTimersByTime(200));
+  expect(list.scrollToEnd).toHaveBeenCalledTimes(2);       // corrected after the rows measured
+  act(() => jest.advanceTimersByTime(2000));
+  expect(list.scrollToEnd).toHaveBeenCalledTimes(2);       // exactly one correction, not a loop
+});
+
+test('another jump cancels the start-of-thread correction', () => {
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40 }),
+  );
+  act(() => result.current.goOldest());
+  act(() => result.current.goLive());
+  act(() => jest.advanceTimersByTime(500));
+  expect(list.scrollToEnd).toHaveBeenCalledTimes(1);       // the pending correction was dropped
+});
+
+test('a shrinking list retires the pending correction instead of throwing past the end', () => {
+  // `messages` shrinks while mounted — retrying a turn and editing a user turn both truncate
+  // it. `scrollToIndex` throws a hard invariant when the index is past the end, and this one
+  // would have fired from a timer, uncaught.
+  const list = fakeList();
+  const { result, rerender } = renderHook<
+    ReturnType<typeof useChatNavigator>, { count: number }
+  >(({ count }) => useChatNavigator({ listRef: { current: list }, count }),
+    { initialProps: { count: 30 } });
+  act(() => result.current.onScrollToIndexFailed({ index: 27, averageItemLength: 100 }));
+  rerender({ count: 4 });                                  // the thread was truncated
+  list.scrollToIndex.mockClear();
+  act(() => jest.advanceTimersByTime(500));
+  expect(list.scrollToIndex).not.toHaveBeenCalled();
+});
+
+test('stepping keeps working when viewability lags the animated scroll', () => {
+  // The trap in the retirement check, and the reason it tracks ARRIVAL rather than comparing
+  // the landmark to topIndex at press time. Viewability reports lag an animated scroll, so a
+  // second press mid-travel reads a stale top row. Compared naively that looks like "the reader
+  // moved", the landmark is thrown away, and the rail re-aims at the message it just left —
+  // stepping stalls. Reports that do not match the target in flight must mean nothing.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 12 }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());                                 // aims at 2
+  act(() => result.current.onViewableItemsChanged(viewable([2])));  // arrives
+  act(() => result.current.goUp());                                 // aims at 3
+  // Mid-flight report still naming the row we are leaving — not the reader moving.
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 4 }));    // kept stepping; did not stall back on 2 or 3
 });
