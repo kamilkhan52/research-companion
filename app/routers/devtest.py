@@ -107,7 +107,7 @@ _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 #: `The immersive discussion canvas itself (#413, merged …): full-bleed …` would lose its. The
 #: name is the safe discriminator — Kamil is the only reporter this ledger has — so widen it
 #: deliberately if that ever changes.
-_ATTRIBUTION_RE = re.compile("^\\s*Kamil\\s*(?:\\([^)]*\\))?\\s*:\\s*")
+_ATTRIBUTION_RE = re.compile(r"^\s*Kamil\s*(?:\([^)]*\)\s*)?:\s*")
 
 #: Within such a row Kamil's own words are the first quoted run; whatever follows is the
 #: triager's annotation (his longer description, "(description empty; his screenshot is …)",
@@ -119,7 +119,8 @@ _QUOTED_TITLE_RE = re.compile(r'^["\u201c](?P<t>[^"\u201d]+)["\u201d]')
 #: emits smart quotes and he quotes UI labels constantly — so
 #: `Kamil (chat): "the "Done" button does nothing"` would have become the single word `the`,
 #: silently, and the row would then be unfindable by the bubble's title search.
-_ANNOTATION_RE = re.compile(r'^\s*(?:$|[\u2014\u2013(\[/]|-\s|Remarks?\b|Screenshot\b)')
+_ANNOTATION_RE = re.compile(
+    r'^\s*(?:$|[\u2014\u2013(\[]|Remarks?\b|Description\b|Screenshot\b)')
 
 #: Straight and smart, opening and closing.
 _QUOTE_CHARS = "\"\u201c\u201d"

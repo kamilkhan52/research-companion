@@ -1341,17 +1341,24 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
 
   // DR-118: expanding stamps the visit; collapsing leaves the stamp alone, so "when did I last
   // open this" is not overwritten by the tap that closes it a second later.
-  const setExpanded = (next: boolean) => {
-    // Kamil, 2026-09-02: "when I collapse the issue, I have to scroll up." Expanding adds
-    // screens of content BELOW the header, so the reading position drifts far down; collapsing
-    // then removes it again and leaves the list scrolled past where he started. Hand the
-    // offset he was at to the list, which puts him back there when this card closes.
+  // EVERY open/close goes through here. A Pass/Fail used to collapse the card by writing
+  // `expanded: false` straight into the draft inside `send`, which meant the commonest way a
+  // card closes — the one that follows reading the whole thing — skipped both the scroll
+  // restore and the details reset entirely. That is the same divergence PR #380's review found
+  // in this function between `clear()` and `setValue`; one helper so it cannot happen a third
+  // time.
+  //
+  // Kamil, 2026-09-02: "when I collapse the issue, I have to scroll up." Expanding adds screens
+  // of content BELOW the header, so the reading position drifts far down; collapsing removes it
+  // again and leaves the list scrolled past where he started. Hand the offset he was at to the
+  // list, which puts him back there when this card closes.
+  const setExpanded = useCallback((next: boolean) => {
     onExpandChange?.(next, item.id);
     if (!next) setDetails(false);   // reopening starts collapsed again
     draft.setValue((v) => (
       next ? { ...v, expanded: true, openedAt: Date.now() } : { ...v, expanded: false }
     ));
-  };
+  }, [draft, item.id, onExpandChange]);
   const setComment = (next: string) => draft.setValue((v) => ({ ...v, comment: next }));
   const setAttach = (next: boolean) => draft.setValue((v) => ({ ...v, attach: next }));
 
@@ -1379,6 +1386,8 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
       // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
       // (which actually persists) instead, resetting only the ephemeral fields.
+      // A verdict closes the card, and it must close it the same way a header tap does.
+      if (verdict !== 'remark') setExpanded(false);
       draft.setValue((v) => ({
         // A remark is a COMMENT, and the card used to collapse on submit with the history list
         // untouched — so the note you had just written vanished and nothing said it had landed.
@@ -1386,6 +1395,8 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
         // see them after remarking." They were being placed; the card just closed over them.
         // A pass/fail still collapses: that finishes with the item, and DR-077's queue wants it
         // out of the way.
+        // `setExpanded(false)` above already wrote the collapse for a verdict; this literal
+        // replaces the whole draft, so it has to carry the same value rather than contradict it.
         expanded: verdict === 'remark', comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
         verdictAt: verdict === 'remark' ? v.verdictAt : Date.now(),
@@ -1465,7 +1476,10 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             <Pressable
               onPress={() => setDetails(!details)}
               accessibilityRole="button"
-              accessibilityLabel={details ? 'Hide the details' : 'Show the details'}
+              // This file's own note at the card header: an explicit label on a Pressable
+              // REPLACES whatever its children would have announced, so the prose has to be
+              // carried here or a screen reader loses the description entirely.
+              accessibilityLabel={`${details ? 'Hide' : 'Show'} details. ${item.how_to_test}`}
               testID="devtest-item-details">
               <Text
                 variant="caption"

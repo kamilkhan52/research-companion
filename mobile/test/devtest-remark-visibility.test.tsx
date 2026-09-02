@@ -123,3 +123,34 @@ test('the list is told when a card opens and closes, so it can restore the posit
   fireEvent.press(view.getByLabelText(/Tap to collapse/i));
   expect(seen).toEqual([[true, 'DR-118'], [false, 'DR-118']]);
 });
+
+test('a Pass closes the card the same way a header tap does', async () => {
+  // The commonest way a card closes, and the one that follows reading the whole thing. It used
+  // to write `expanded: false` straight into the draft, bypassing the collapse helper — so the
+  // scroll restore never ran on the very case the feature exists for, and the description
+  // stayed expanded on reopen.
+  const seen: Array<[boolean, string]> = [];
+  const view = render(
+    <ItemCard item={ITEM} shot={null} route="/discover" startExpanded
+              onExpandChange={(e, id) => seen.push([e, id])} />);
+  fireEvent.press(view.getByTestId('devtest-item-details'));
+  await view.findByText('Hide details');
+
+  fireEvent.press(await view.findByText('Pass'));
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  await waitFor(() => expect(seen).toContainEqual([false, 'DR-118']));
+
+  fireEvent.press(await view.findByLabelText(/Tap to leave a pass/i));
+  await view.findByText('Show details');    // and the description reset with it
+});
+
+test('the description is clamped until it is asked for', async () => {
+  // Without this the "Show details" label exists but clamps nothing, which every other test
+  // here would happily accept.
+  const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
+  const prose = await view.findByText(ITEM.how_to_test);
+  expect(prose.props.numberOfLines).toBe(3);
+  fireEvent.press(view.getByTestId('devtest-item-details'));
+  await waitFor(() => expect(
+    view.getByText(ITEM.how_to_test).props.numberOfLines).toBeUndefined());
+});
