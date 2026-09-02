@@ -204,6 +204,10 @@ def _append_feedback(entry: dict) -> dict:
 #: timestamp (`dispatch-YYYYmmdd-HHMMSS-hex.json`), so sorting by name puts the newest last and a
 #: tail is exactly the newest N — and an older dispatch cannot win "most recent activity" against
 #: them anyway. A bound at all because this runs on every bubble open and the directory only grows.
+#:
+#: What it costs, stated: an item whose last dispatch is further back than this reports NO dispatch
+#: activity rather than an old one. That is the right way round — the sort exists to surface what
+#: moved recently — but it means "never dispatched" and "dispatched 201 dispatches ago" look alike.
 DISPATCH_ACTIVITY_SCAN = 200
 
 
@@ -222,7 +226,11 @@ def _entry_epoch(ts: object) -> float | None:
         return None
     try:
         return datetime.fromisoformat(ts).timestamp()
-    except ValueError:
+    except (ValueError, OverflowError, OSError):
+        # `timestamp()` on a naive year-1 / year-9999 value raises OverflowError or OSError on
+        # some platforms rather than ValueError. Unreachable today — no caller lets a client
+        # choose a `ts` — but this module's rule is that a malformed record drops out of the
+        # list rather than 500ing the route and emptying the bubble.
         return None
 
 

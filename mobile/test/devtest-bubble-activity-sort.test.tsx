@@ -8,11 +8,13 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { ScrollView } from 'react-native';
 
 import {
   DevTestBubble, activityAt, activityNote, loadLocalItemState,
 } from '@/components/DevTestBubble';
 import { draftKey } from '@/hooks/usePersistedDraft';
+import { space } from '@/theme/tokens';
 import type { DevTestItem } from '@/api/endpoints';
 
 jest.mock('expo-router', () => ({ usePathname: () => '/discover' }));
@@ -200,6 +202,87 @@ test('the list does not re-sort under the finger that opened a card', async () =
   const second = await openBubble();
   await waitFor(() => expect(second.getByText(/^Results \(3\)/)).toBeTruthy());
   expect(order(second)[0]).toBe('Beta gadget');
+});
+
+// --- the sort row is now wide enough to hide its own selection (Opus review, PR #471) ---------
+//
+// DR-116 was filed because a selected FILTER chip sat off-screen in a row that opens at offset 0,
+// so every visible chip looked unselected. A fourth sort chip pushes the sort row past a phone's
+// width too — and unlike the filter row it has no caption naming it (sort hides nothing, so it is
+// deliberately excluded from `narrowingReasons`), which makes an invisible selection there strictly
+// harder to diagnose. The DR-116 reveal is now shared by both rows; these pin the sort half.
+
+async function openWithPersistedSort(sort: string) {
+  await AsyncStorage.setItem(
+    draftKey('devtest-toolbar'),
+    JSON.stringify({ version: 1, value: { query: '', filter: 'all', sort }, submitted: false, acceptedBaseline: null }),
+  );
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
+  return screen;
+}
+
+/** The receiver matters, not just the arguments (Opus review, PR #469): a prototype spy matches
+ *  any of the sheet's ScrollViews, and a call aimed at the vertical item list — a no-op on device
+ *  — would otherwise satisfy every assertion here. */
+function expectScrolledChipRow(scrollTo: jest.SpyInstance, x: number) {
+  expect(scrollTo).toHaveBeenCalledWith({ x, animated: false });
+  const receiver = (scrollTo.mock.contexts ?? scrollTo.mock.instances)[0] as { props: { horizontal?: boolean } };
+  expect(receiver.props.horizontal).toBe(true);
+}
+
+test('a selected off-screen SORT chip is scrolled into view when the sheet opens', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openWithPersistedSort('az');
+  fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 52, height: 28 } } });
+  expectScrolledChipRow(scrollTo, 420 - space.md);
+
+  // Once per open, and only for the selection: another chip measuring later must not drag the row.
+  scrollTo.mockClear();
+  fireEvent(screen.getByLabelText('Last activity'), 'layout', { nativeEvent: { layout: { x: 100, y: 0, width: 126, height: 28 } } });
+  expect(scrollTo).not.toHaveBeenCalled();
+  scrollTo.mockRestore();
+});
+
+test('tapping a sort chip never scrolls the sort row', async () => {
+  // Selecting a chip switches its label to semibold, which re-measures the row — the bug that
+  // snapped the filter row sideways under the finger in PR #469.
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openBubble();
+  fireEvent.press(screen.getByLabelText('A–Z'));
+  await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
+  fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 58, height: 28 } } });
+  expect(scrollTo).not.toHaveBeenCalled();
+  scrollTo.mockRestore();
+});
+
+test('the default "Priority" chip never triggers a scroll — it is already leftmost', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openBubble();
+  fireEvent(screen.getByLabelText('Priority'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 89, height: 28 } } });
+  expect(scrollTo).not.toHaveBeenCalled();
+  scrollTo.mockRestore();
+});
+
+test('reopening the sheet reveals the still-active sort chip from a FRESH measurement', async () => {
+  // Keeping the previous open's measurement would fire the effect path before this open's
+  // ScrollView has been laid out natively — which on Android clamps the scroll to 0 — and spend
+  // the once-per-open token, so the real measurement arriving after is discarded (PR #469).
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openWithPersistedSort('az');
+  fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 52, height: 28 } } });
+  expectScrolledChipRow(scrollTo, 420 - space.md);
+
+  fireEvent.press(screen.getByLabelText('Close'));
+  scrollTo.mockClear();
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
+  expect(scrollTo).not.toHaveBeenCalled();          // nothing measured THIS open yet
+  fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 480, y: 0, width: 52, height: 28 } } });
+  expectScrolledChipRow(scrollTo, 480 - space.md);
+  scrollTo.mockRestore();
 });
 
 // --- the two pure helpers, directly ----------------------------------------------------------

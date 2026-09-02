@@ -285,6 +285,57 @@ export function narrowingReasons(query: string, filter: ReviewFilter): string[] 
   return reasons;
 }
 
+/** DR-116, generalised by DR-118: keep the SELECTED chip of a horizontal chip row on screen.
+ *
+ *  Such a row always opens at offset 0, so a restored selection past the fold leaves every chip
+ *  the tester can see looking unselected — indistinguishable from the leftmost (default) chip
+ *  being on, which is exactly how "the Filter is set to All" got reported while a filter was
+ *  narrowing the list. The restored selection is scrolled into view once per sheet open.
+ *
+ *  Two paths, because neither alone is sufficient (Opus review, PR #469): a chip's `x` is only
+ *  known once it has laid out, and the persisted selection only once AsyncStorage answers — either
+ *  can land first. `rememberX` covers "selection known, chip measured later"; the effect covers
+ *  "chip measured, selection hydrated later". Neither spends the once-per-open token while `x` is
+ *  still unknown, or a sheet that lays out before hydration would silently never scroll at all.
+ *
+ *  `visible` drives the reset: RN's Modal returns null while hidden, so children unmount and every
+ *  chip lays out again on the next open. The MEASUREMENTS are dropped with the token — kept, they
+ *  would let the next open scroll from the previous open's cache before this open's ScrollView has
+ *  been laid out natively (which on Android clamps to 0) and then spend the token, discarding the
+ *  real measurement that arrives a moment later.
+ */
+function useChipReveal<K extends string>(
+  selected: K, leftmost: K, ready: boolean, visible: boolean,
+) {
+  const scrollRef = useRef<ScrollView>(null);
+  const chipX = useRef<Partial<Record<K, number>>>({});
+  const revealedRef = useRef(false);
+  const reveal = useCallback(() => {
+    // The leftmost chip is already at offset 0, so revealing it would be motion for nothing.
+    if (!ready || revealedRef.current || selected === leftmost) return;
+    const x = chipX.current[selected];
+    if (x == null) return;
+    revealedRef.current = true;
+    scrollRef.current?.scrollTo({ x: Math.max(0, x - space.md), animated: false });
+  }, [leftmost, ready, selected]);
+  const rememberX = useCallback((key: K, e: LayoutChangeEvent) => {
+    chipX.current[key] = e.nativeEvent.layout.x;
+    reveal();
+  }, [reveal]);
+  useEffect(() => {
+    if (!visible) {
+      revealedRef.current = false;
+      chipX.current = {};
+      return;
+    }
+    reveal();
+  }, [visible, reveal]);
+  /** The tester chose this himself: the chip is on screen by definition, so spend the token
+   *  rather than let the re-measure a selection triggers snap the row under his finger. */
+  const markChosen = useCallback(() => { revealedRef.current = true; }, []);
+  return { scrollRef, rememberX, markChosen };
+}
+
 export function DevTestBubble() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -339,44 +390,25 @@ export function DevTestBubble() {
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
   const narrowed = narrowedBy.length > 0;
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
-  const setSort = (next: SortMode) => toolbar.setValue((v) => ({ ...v, sort: next }));
-
-  // DR-116: the filter chips live in a horizontal ScrollView that always opens at offset 0, so
-  // on a phone-width screen an active "Passed"/"Failed" chip sits off-screen and every chip the
-  // tester CAN see looks unselected — visually indistinguishable from "All" being on, which is
-  // exactly how he read it. The RESTORED selection is scrolled into view once per sheet open.
-  //
-  // Two paths, because neither alone is sufficient (Opus review, PR #469): a chip's `x` is only
-  // known once it has laid out, and the persisted filter is only known once AsyncStorage answers
-  // — either can land first. The layout callback covers "selection known, chip measured later";
-  // the effect covers "chip measured, selection hydrated later". Neither spends the once-per-open
-  // token while `x` is still unknown, or a sheet that lays out before hydration would silently
-  // never scroll at all.
-  const filterScrollRef = useRef<ScrollView>(null);
-  const filterChipX = useRef<Partial<Record<ReviewFilter, number>>>({});
-  const filterRevealedRef = useRef(false);
-  const revealSelectedChip = useCallback(() => {
-    // "All" is already the leftmost chip, so revealing it would be motion for nothing.
-    if (!toolbar.ready || filterRevealedRef.current || filter === 'all') return;
-    const x = filterChipX.current[filter];
-    if (x == null) return;
-    filterRevealedRef.current = true;
-    filterScrollRef.current?.scrollTo({ x: Math.max(0, x - space.md), animated: false });
-  }, [filter, toolbar.ready]);
-  const rememberChipX = (key: ReviewFilter, e: LayoutChangeEvent) => {
-    filterChipX.current[key] = e.nativeEvent.layout.x;
-    revealSelectedChip();
+  const setSort = (next: SortMode) => {
+    sortChips.markChosen();
+    toolbar.setValue((v) => ({ ...v, sort: next }));
   };
-  useEffect(() => {
-    if (visible) revealSelectedChip();
-  }, [visible, revealSelectedChip]);
+
+  // DR-116's chip reveal, for BOTH rows. DR-118 made this general rather than filter-only: adding
+  // a fourth sort chip widened that row past a phone's width, so a restored "A–Z"/"Recently
+  // reviewed" could now sit off-screen with every visible chip looking unselected — the same
+  // unreadable state DR-116 was filed about, one row down and with no caption naming it (sort is
+  // deliberately excluded from `narrowingReasons`, because it hides nothing).
+  const filterChips = useChipReveal(filter, 'all', toolbar.ready, visible);
+  const sortChips = useChipReveal(sort, 'default', toolbar.ready, visible);
 
   // A tap is not a restore, so it spends the token even though the tester's own choice must never
   // move the row (Opus review, PR #469: selecting a chip switches its label to semibold, which
   // changes its measured width and re-fires `onLayout` for the whole row — without this the first
   // filter tap of each open snapped the chip row sideways, unanimated, under the finger).
   const setFilter = (next: ReviewFilter) => {
-    filterRevealedRef.current = true;
+    filterChips.markChosen();
     toolbar.setValue((v) => ({ ...v, filter: next }));
   };
   // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
@@ -496,17 +528,11 @@ export function DevTestBubble() {
   // DR-074: restore once per open, after the list has real content to scroll to — not on every
   // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
   useEffect(() => {
-    // DR-116's chip reveal is "once per open" too, and RN's Modal returns null while hidden, so
-    // its children unmount and every chip lays out again on the next open. The MEASUREMENTS go
-    // with the token (Opus review, PR #469): kept, they would let the next open scroll from the
-    // effect path using last open's cache — before this open's ScrollView has been laid out
-    // natively, which on Android clamps to 0 — and then spend the token, so the real measurement
-    // arriving a moment later is discarded and the chip stays off-screen. Same class of bug the
-    // `requestAnimationFrame` three lines below already exists for.
+    // The chip rows' own "once per open" reset lives in `useChipReveal`, which resets the same
+    // way and for the same reason (RN's Modal returns null while hidden, so its children unmount
+    // and everything is measured afresh on the next open).
     if (!visible) {
       restoredScrollRef.current = false;
-      filterRevealedRef.current = false;
-      filterChipX.current = {};
       return;
     }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
@@ -591,7 +617,7 @@ export function DevTestBubble() {
           <View style={styles.toolbarRow} testID="devtest-filter-toolbar">
             <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
             <ScrollView
-              ref={filterScrollRef}
+              ref={filterChips.scrollRef}
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
@@ -602,16 +628,27 @@ export function DevTestBubble() {
                   label={f.label}
                   active={filter === f.key}
                   onPress={() => setFilter(f.key)}
-                  onLayout={(e) => rememberChipX(f.key, e)}
+                  onLayout={(e) => filterChips.rememberX(f.key, e)}
                 />
               ))}
             </ScrollView>
           </View>
           <View style={styles.toolbarRow} testID="devtest-sort-toolbar">
             <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            <ScrollView
+              ref={sortChips.scrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+            >
               {SORT_MODES.map((s) => (
-                <ToggleChip key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
+                <ToggleChip
+                  key={s.key}
+                  label={s.label}
+                  active={sort === s.key}
+                  onPress={() => setSort(s.key)}
+                  onLayout={(e) => sortChips.rememberX(s.key, e)}
+                />
               ))}
             </ScrollView>
           </View>
@@ -1261,7 +1298,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
   // (undefined) value during the one render before `ready` flips would transiently clobber a
-  // verdict the parent already knows about from its own bulk `loadAllVerdicts` read on open.
+  // verdict the parent already knows about from its own bulk `loadLocalItemState` read on open.
   useEffect(() => {
     if (!draft.ready) return;
     onVerdictChange?.(item.id, lastVerdict ? { verdict: lastVerdict, at: verdictAt ?? 0 } : undefined);
