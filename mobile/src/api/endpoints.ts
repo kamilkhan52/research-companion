@@ -163,12 +163,18 @@ export interface DevTestDispatch {
   item_id: string | null;
   log: string;
   started_at: string;
+  /** True when this picked an existing session back up rather than starting one. Server-decided:
+   *  it depends on what is on disk and how old it is. */
+  continued_session?: boolean;
 }
 // DR-092: spawn a headless Claude Code session from the bubble. item_id omitted = the pending
 // batch (one session, Kamil's pick). Dev-only route.
-export const dispatchToClaude = (model: DispatchModel, itemId?: string) =>
+// `fresh` forces a NEW session. By default a dispatch on an item a session already worked
+// CONTINUES that session, because it holds the diagnosis and the code it already read; this is
+// the escape hatch for when that context is the problem rather than the point.
+export const dispatchToClaude = (model: DispatchModel, itemId?: string, fresh = false) =>
   apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch',
-    itemId ? { model, item_id: itemId } : { model });
+    { model, ...(itemId ? { item_id: itemId } : {}), ...(fresh ? { fresh: true } : {}) });
 
 /** `running` = the process is alive; `finished`/`failed` = it ended and said so; `gone` = it
  *  ended without the terminating record, so no bubble reply is coming and a re-dispatch is the

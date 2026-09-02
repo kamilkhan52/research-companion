@@ -2221,3 +2221,156 @@ def test_the_status_route_reports_which_branch_the_server_checkout_is_on(client,
     monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
     monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
     assert client.get("/api/devtest/deploy").json()["deploy"]["server_branch"] == "main"
+
+
+# --- continuing the session that already knows the item (Kamil, 2026-09-02) --------------------
+
+def _archive_dispatch(tmp_path, *, item_id, session_id="sess-1", age_s=60.0,
+                      dispatch_id="dispatch-old", model="opus"):
+    """A finished dispatch on disk, as a spawn would have left it."""
+    import time as _time
+
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    log = d / f"{dispatch_id}.log"
+    log.write_text(_stream_log({"type": "system", "subtype": "init", "session_id": session_id}))
+    (d / f"{dispatch_id}.json").write_text(json.dumps({
+        "id": dispatch_id, "pid": 999999, "model": model, "item_id": item_id,
+        "log": str(log), "started_ts": _time.time() - age_s}))
+    return d
+
+
+def test_a_follow_up_continues_the_session_that_already_did_the_work(client, monkeypatch,
+                                                                    tmp_path):
+    """Kamil: "if an agent worked on an issue and I have a remark or Fail etc which needs an
+    agent to work some more, can the same session do the work since it has all the context?"
+    A fresh session pays for that context again and then answers his follow-up without knowing
+    what it is a follow-up TO."""
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-115", session_id="sess-115", model="opus")
+    calls = {}
+
+    class FakeProc:
+        pid = 9200
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    r = client.post("/api/devtest/dispatch", json={"item_id": "DR-115", "model": "haiku"})
+    assert r.status_code == 200
+    argv = calls["argv"]
+    assert argv[argv.index("--resume") + 1] == "sess-115"
+    # The model comes from the session being continued: switching it mid-conversation would
+    # hand a different model someone else's reasoning.
+    assert argv[argv.index("--model") + 1] == "opus"
+    prompt = argv[argv.index("-p") + 1]
+    assert "new feedback on DR-115" in prompt
+    assert "trust or re-verify" in prompt      # his instruction: judge it, do not apply a rule
+
+
+def test_a_first_dispatch_on_an_item_is_a_fresh_session(client, monkeypatch, tmp_path):
+    """The common case, and it must stay silent — no --resume, and the full brief."""
+    import subprocess
+
+    calls = {}
+
+    class FakeProc:
+        pid = 9201
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-999", "model": "sonnet"})
+    argv = calls["argv"]
+    assert "--resume" not in argv
+    assert "Run the /device-feedback skill" in argv[argv.index("-p") + 1]
+
+
+def test_fresh_forces_a_new_session_even_when_one_could_be_continued(client, monkeypatch,
+                                                                     tmp_path):
+    """The escape hatch for when the accumulated context is the PROBLEM — a session that went
+    down a wrong path, or an item whose meaning has changed since."""
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-115", session_id="sess-115")
+    calls = {}
+
+    class FakeProc:
+        pid = 9202
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch",
+                json={"item_id": "DR-115", "model": "sonnet", "fresh": True})
+    assert "--resume" not in calls["argv"]
+
+
+def test_a_stale_session_is_not_continued(client, monkeypatch, tmp_path):
+    """The CLI expires stored sessions, so `--resume` on a dead id spawns a process that exits
+    at once — which would look like a brand-new failure rather than an expiry. Past the window,
+    a fresh session is the honest answer, and it happens without asking."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    _archive_dispatch(tmp_path, item_id="DR-115",
+                      age_s=dt.DISPATCH_RESUME_MAX_AGE_S + 3600)
+    calls = {}
+
+    class FakeProc:
+        pid = 9203
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-115", "model": "sonnet"})
+    assert "--resume" not in calls["argv"]
+
+
+def test_a_batch_run_is_never_a_continuation(client, monkeypatch, tmp_path):
+    """"More work on THIS issue" has no meaning for a run over the whole pending queue."""
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-115")
+    calls = {}
+
+    class FakeProc:
+        pid = 9204
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"model": "sonnet"})
+    assert "--resume" not in calls["argv"]
+
+
+def test_the_newest_session_for_an_item_wins(client, monkeypatch, tmp_path):
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-115", session_id="older",
+                      dispatch_id="dispatch-a", age_s=7200)
+    _archive_dispatch(tmp_path, item_id="DR-115", session_id="newer",
+                      dispatch_id="dispatch-b", age_s=120)
+    calls = {}
+
+    class FakeProc:
+        pid = 9205
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-115", "model": "sonnet"})
+    assert calls["argv"][calls["argv"].index("--resume") + 1] == "newer"
+
+
+def test_every_dispatch_bounds_its_context(client, monkeypatch, tmp_path):
+    """Kamil: "set Dispatch sessions to auto compact at 400k context to avoid accumulating too
+    much context." It matters more now that sessions are CONTINUED across follow-ups — the
+    point of continuing is that context accumulates, so it needs a ceiling."""
+    from app.routers import devtest as dt
+
+    argv = _spawn_argv(client, monkeypatch)
+    assert argv[argv.index("--autocompact") + 1] == str(dt.DISPATCH_AUTOCOMPACT_TOKENS)
+    assert 100_000 <= dt.DISPATCH_AUTOCOMPACT_TOKENS <= 1_000_000   # the CLI's accepted range

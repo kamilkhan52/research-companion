@@ -2211,6 +2211,11 @@ export interface components {
              * @default false
              */
             resume: boolean;
+            /**
+             * Fresh
+             * @default false
+             */
+            fresh: boolean;
         };
         /** EditReq */
         EditReq: {
