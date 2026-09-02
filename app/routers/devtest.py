@@ -200,10 +200,82 @@ def _append_feedback(entry: dict) -> dict:
     return entry
 
 
+#: How many dispatch records the activity scan below reads. Their filenames embed the spawn
+#: timestamp (`dispatch-YYYYmmdd-HHMMSS-hex.json`), so sorting by name puts the newest last and a
+#: tail is exactly the newest N — and an older dispatch cannot win "most recent activity" against
+#: them anyway. A bound at all because this runs on every bubble open and the directory only grows.
+DISPATCH_ACTIVITY_SCAN = 200
+
+
+def _entry_epoch(ts: object) -> float | None:
+    """An inbox/dispatch ISO timestamp → epoch seconds, or None if it cannot be read.
+
+    Entries are UTC-aware since `_append_feedback` was fixed, but the file is append-only and
+    still holds older NAIVE local timestamps. `fromisoformat().timestamp()` reads both correctly
+    — an aware value keeps its offset, a naive one is interpreted as local time, which is what it
+    was written as. Comparing the ISO strings instead would order a naive `2026-08-01T09:00:00`
+    against an aware `2026-08-01T08:00:00+00:00` by text and get it backwards.
+    """
+    from datetime import datetime
+
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts).timestamp()
+    except ValueError:
+        return None
+
+
+def _dispatch_activity(aliases: dict[str, str]) -> dict[str, float]:
+    """item id → epoch seconds of the most recent Claude dispatch aimed at that item.
+
+    A BATCH dispatch (`item_id` null — "address all pending issues") is deliberately not counted:
+    it names no single row, and crediting it to every pending item would flatten the ordering this
+    exists to produce. A record whose item is a provisional `NEW-…` id counts toward the DR row it
+    has since been triaged into, the same way its inbox entries do.
+    """
+    out: dict[str, float] = {}
+    try:
+        paths = sorted(_dispatch_dir().glob("dispatch-*.json"))[-DISPATCH_ACTIVITY_SCAN:]
+    except OSError:
+        return out
+    for path in paths:
+        try:
+            info = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue        # a torn record loses one dispatch, never the scan
+        if not isinstance(info, dict):
+            continue
+        item_id = info.get("item_id")
+        if not item_id or not isinstance(item_id, str):
+            continue
+        try:
+            when = float(info.get("started_ts") or 0)
+        except (TypeError, ValueError):
+            when = 0.0
+        # Pre-`started_ts` records (and any that lost it) still carry the human timestamp.
+        when = when or _entry_epoch(info.get("started_at")) or 0.0
+        if not when:
+            continue
+        target = aliases.get(item_id, item_id)
+        if when > out.get(target, 0.0):
+            out[target] = when
+    return out
+
+
 @router.get("/api/devtest/items")
 def list_items():
     """Every ledger row plus app-created items not yet triaged into the ledger, with the
-    tester-facing ordering hint (open → verify → the rest) left to the client."""
+    tester-facing ordering hint (open → verify → the rest) left to the client.
+
+    DR-118: each item also carries `last_activity` (epoch seconds) and `last_activity_kind`, the
+    server's half of the bubble's "Last activity" sort. Kamil: "I usually want to just find the
+    last item I opened or dispatched or was last worked on by Claude." Two of those three live
+    here — an agent reply (`kind: response`) and a dispatch record — and the third (which card he
+    last expanded) is device-local, so the client maxes this against its own draft state. What is
+    NOT counted: a ledger EDIT. Rows are rewritten in bulk by a triage pass and the file carries no
+    per-row mtime, so "Claude touched this row" is only legible through the reply it filed.
+    """
     _require_dev()
     try:
         items = parse_ledger(_LEDGER.read_text(encoding="utf-8"))
@@ -226,19 +298,45 @@ def list_items():
             known.add(entry["id"])
     counts: dict[str, int] = {}
     response_counts: dict[str, int] = {}
+    # DR-118: (epoch seconds, kind) of the newest thing that happened to each item. `kind` is the
+    # kind of the WINNING event, so the client can say what the timestamp refers to rather than
+    # showing a bare age.
+    activity: dict[str, tuple[float, str]] = {}
+
+    def note(target: str | None, when: float | None, kind: str) -> None:
+        if not target or not when:
+            return
+        seen = activity.get(target)
+        if seen is None or when > seen[0]:
+            activity[target] = (when, kind)
+
     for entry in inbox:
         # Entries recorded under the provisional id (a verdict given before triage, or a
         # reply filed against it) count toward the row it became.
         target = aliases.get(entry.get("item_id") or "", entry.get("item_id"))
-        if entry.get("kind") == "feedback" and target:
+        kind = entry.get("kind")
+        when = _entry_epoch(entry.get("ts"))
+        if kind == "feedback" and target:
             counts[target] = counts.get(target, 0) + 1
-        elif entry.get("kind") == "response" and target:
+            note(target, when, "you")
+        elif kind == "response" and target:
             response_counts[target] = response_counts.get(target, 0) + 1
+            note(target, when, "claude")
+        elif kind == "new_item":
+            # Raising it is activity too, and for an untriaged item it is the only kind there is —
+            # without this a brand-new issue would sort as though nothing had ever happened to it.
+            new_id = entry.get("id")
+            note(aliases.get(new_id or "", new_id), when, "raised")
+    for target, when in _dispatch_activity(aliases).items():
+        note(target, when, "dispatch")
     for item in items:
         item["feedback_count"] = counts.get(item["id"], 0)
         # DR-080: an agent reply is the signal the tester can decide pass/close from — the
         # card surfaces its presence without having to open the history first.
         item["response_count"] = response_counts.get(item["id"], 0)
+        latest = activity.get(item["id"])
+        item["last_activity"] = round(latest[0], 3) if latest else None
+        item["last_activity_kind"] = latest[1] if latest else None
     return {"items": items}
 
 

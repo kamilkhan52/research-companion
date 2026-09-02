@@ -88,6 +88,9 @@ test('a submitted verdict clears the ephemeral fields but keeps the verdict mark
     const stored = JSON.parse(raw!);
     expect(stored.value).toEqual({
       expanded: false, comment: '', attach: false, verdict: 'pass', verdictAt: expect.any(Number),
+      // DR-118: the visit stamp is durable state like the verdict beside it, not one of the
+      // ephemeral fields a submitted verdict resets — the "Last activity" sort reads it.
+      openedAt: expect.any(Number),
     });
   });
 });
