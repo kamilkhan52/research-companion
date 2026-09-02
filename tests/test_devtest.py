@@ -2030,3 +2030,108 @@ def test_a_sibling_worktree_on_a_main_prefixed_branch_does_not_block_deploying(m
     monkeypatch.setattr(dt, "_git_try", make("main"))
     with pytest.raises(dt.DeployError, match="another worktree"):
         dt._assert_server_can_fast_forward(tmp_path)
+
+
+# --- readable titles and visible comments (Kamil, 2026-09-02) ---------------------------------
+
+def test_a_triaged_phone_item_shows_his_words_not_the_attribution_around_them():
+    """Kamil: "the title for the last few dev test items … start with what appears like some
+    formatting or syntax of some sort. I want it clean like the rest." The triage step had been
+    writing the source, the provisional id and the route in front of his title, backticks and
+    all, so the card led with metadata instead of the issue."""
+    row = ("| DR-115 | 2026-09-01 | Kamil (bubble, provisional id `NEW-1788274884`, "
+           "`/paper/chime`): \"Advanced chat navigation controls\" — \"I would like an option "
+           "in settings\" | `open` | Evidence. |")
+    item = devtest.parse_ledger(f"|---|\n{row}")[0]
+    assert item["title"] == "Advanced chat navigation controls"
+    # DR-097's link between the phone item and the row it became is read from the RAW text, so
+    # cleaning the display must not cost the alias.
+    assert item["aliases"] == ["NEW-1788274884"]
+
+
+def test_the_annotation_after_his_words_is_not_part_of_the_title():
+    """Rows carry a triager's aside after the quote — "(description empty; his screenshot is …)"
+    — which belongs in the evidence column, not in front of him on a card."""
+    row = ("| DR-116 | 2026-09-01 | Kamil (bubble, provisional id `NEW-1788308416`, route `/`): "
+           "\"Dev test bubble shows 11 of 117\" (description empty; his screenshot is the "
+           "Library screen) | `open` | Evidence. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "Dev test bubble shows 11 of 117"
+
+
+def test_the_attribution_is_recognised_in_every_shape_the_ledger_uses():
+    """The parenthetical varies — "bubble, provisional id …", "chat", "on DR-091's fail" — and
+    is sometimes absent entirely (DR-075, DR-079), which the EMULATOR pass is what caught: the
+    unit tests only had the bracketed shape because that was the one I had gone looking for."""
+    for lead in ("Kamil (chat): ", "Kamil (bubble, provisional id `NEW-1`, `/x`): ",
+                 "Kamil (on DR-091's fail, filed under its provisional id): ", "Kamil: "):
+        row = f"| DR-900 | 2026-09-01 | {lead}\"The actual thing\" | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "The actual thing", lead
+
+
+def test_attribution_followed_by_prose_loses_the_prefix_and_keeps_the_prose():
+    """DR-093 is `Kamil: the paper's "Reference graph" option loaded the full Map…` — the quote
+    is mid-sentence, so taking the first quoted run would leave two words. Strip the prefix,
+    keep everything after it."""
+    row = ("| DR-093 | 2026-08-01 | Kamil: the paper's \"Reference graph\" option loaded the "
+           "full Map. | `open` | E. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == (
+        "the paper's \"Reference graph\" option loaded the full Map.")
+
+
+def test_a_title_that_merely_has_a_colon_keeps_its_subject():
+    """The tempting generalisation — strip any capitalised word before a colon — would eat the
+    subject of a perfectly good title. The reporter's NAME is the discriminator."""
+    for text in ('Discover: "no results" state is confusing',
+                 "The immersive discussion canvas itself (#413, merged 2026-08-21): full-bleed."):
+        row = f"| DR-901 | 2026-08-01 | {text} | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == text
+
+
+def test_ordinary_prose_rows_are_returned_untouched():
+    """Most of the ledger was always fine, and a title cleaner that rewords those is worse than
+    the problem. Anything without the attribution shape comes back byte-identical — including
+    prose that merely opens with a capitalised word and a bracket."""
+    for text in ("Toast notifications (`mobile/src/ui/Toast.tsx`) are absolutely positioned.",
+                 "The immersive discussion canvas itself (#413, merged 2026-08-21): full-bleed.",
+                 "Opening the keyboard hides the mini player (comment mode enabled)."):
+        row = f"| DR-901 | 2026-08-01 | {text} | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == text
+
+
+def test_an_unterminated_quote_still_loses_the_attribution():
+    """A row someone hand-edited into a broken shape should still read better, not blow up."""
+    row = ("| DR-902 | 2026-09-01 | Kamil (chat): \"a thought he never closed | `open` | E. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "a thought he never closed"
+
+
+def test_an_inner_quote_never_truncates_the_title():
+    """The quoted-run pattern stops at the first closing quote, and his own words routinely
+    contain one — his keyboard emits smart quotes and he quotes UI labels constantly. Cutting
+    there produced a one-word title, silently, and made the row unfindable by title search."""
+    row = ('| DR-903 | 2026-09-02 | Kamil (chat): "the "Done" button does nothing" '
+           '| `open` | E. |')
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == 'the "Done" button does nothing'
+
+
+def test_a_smart_quoted_label_keeps_both_of_its_quotes():
+    """Set-stripping the wrapper ate the opening smart quote with it, so only ONE character
+    comes off each end."""
+    row = '| DR-904 | 2026-09-02 | Kamil (chat): "“Done” does nothing" | `open` | E. |'
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "“Done” does nothing"
+
+
+def test_a_title_is_never_emptied():
+    """A blank title is a card with no subject and an accessibility label reading "DR-9xx: ."."""
+    row = '| DR-905 | 2026-09-02 | Kamil (chat): "   " | `open` | E. |'
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"].strip()
+
+
+def test_the_quoted_run_is_only_taken_when_an_ASIDE_follows_it():
+    """What may follow his words is the triager's annotation, never more of his sentence."""
+    for tail, expected in ((' — "his longer description"', "His words"),
+                           (' Description: "and the rest of it"', "His words"),
+                           (' (description empty; screenshot below)', "His words"),
+                           (' [screenshot](assets/x.jpg)', "His words"),
+                           ('', "His words")):
+        row = f'| DR-906 | 2026-09-02 | Kamil (chat): "His words"{tail} | `open` | E. |'
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == expected, tail

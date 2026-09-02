@@ -42,9 +42,14 @@ delete them**. This skill turns that inbox into ledger updates.
    - **new_item** → view its `screenshot` when present (it is usually the context the title
      abbreviates), and carry it — copied to `docs/device-review-assets/<DR-id>/` per the rule
      below — plus the `route` into the new row's evidence column. Then create the next `DR-0XX`
-     row (max existing + 1), `open`, with his title as
-     the feedback text and his description in the evidence column; note the provisional
-     `NEW-…` id so the app's untriaged entry reconciles on his next refresh.
+     row (max existing + 1), `open`, with **his title, and nothing else, as the feedback text** —
+     his description, the route, the screenshot link and the provisional `NEW-…` id all go in
+     the EVIDENCE column. The `NEW-…` id must appear somewhere in the row (it is the only link
+     back to his untriaged entry, DR-097) and evidence is where it belongs: written in front of
+     the title instead, it renders on his phone as a wall of leading syntax, backticks and all
+     — "I want it clean like the rest of the issues" (Kamil, 2026-09-02). Do not prefix the
+     feedback column with `Kamil (bubble, …):` or any other attribution; the row's own columns
+     already say who raised it and when.
 3. **Answer him in the bubble (DR-080).** For every triaged entry that deserves a reply —
    a diagnosis, "fixed in PR #N, please re-test", "split into DR-0XX, this one can close",
    or "couldn't reproduce, which screen?" — append a `response` entry:

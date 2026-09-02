@@ -86,6 +86,78 @@ _ROW_RE = re.compile(
 #: opened.
 _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 
+#: The attribution a triaged phone item picked up in the FEEDBACK column — "Kamil (bubble,
+#: provisional id `NEW-…`, `/route`): ". The skill only ever meant his title to go there, but it
+#: did not say where the provisional id belonged, so the id, the source and the route were all
+#: written in front of the title. On the phone that renders as a wall of leading syntax,
+#: backticks and all, and 37 of 119 rows carry it (Kamil, 2026-09-02: "they start with what
+#: appears like some formatting or syntax of some sort. I want it clean like the rest").
+#: Stripped for DISPLAY only — the raw text still feeds `aliases`, which is the DR-097 link
+#: between a `NEW-…` item and the row it became.
+#: The discriminator is the SHAPE — a name, a parenthetical, a colon, and then his words in
+#: quotes — not the words inside the parenthetical, which vary ("bubble, provisional id …",
+#: "chat", "on DR-091's fail, filed under its provisional id"). Requiring the quote is what
+#: keeps this off ordinary prose that happens to open with a capitalised word and a bracket,
+#: like DR-072's "Toast notifications (`mobile/src/ui/Toast.tsx`) are absolutely positioned…".
+#: Named rather than generic, and the parenthetical is optional. Both shapes occur —
+#: `Kamil (bubble, provisional id …): "…"` and a bare `Kamil: "…"` (DR-075, DR-079) — and the
+#: emulator pass is what surfaced the second one. Matching any capitalised word before a colon
+#: would have been the tempting generalisation and is wrong: a title like
+#: `Discover: "no results" state is confusing` would lose its subject, and DR-095's
+#: `The immersive discussion canvas itself (#413, merged …): full-bleed …` would lose its. The
+#: name is the safe discriminator — Kamil is the only reporter this ledger has — so widen it
+#: deliberately if that ever changes.
+#: The trailing `\s*` lives INSIDE the optional group deliberately. Moving it out —
+#: `(?:\([^)]*\))?\s*:` — makes the two `\s*` runs adjacent and ambiguous, which is quadratic:
+#: a row with a long whitespace run took over five seconds, and `parse_ledger` runs on every
+#: items and feedback request, so one such row hangs the bubble. This shape is linear.
+_ATTRIBUTION_RE = re.compile(r"^\s*Kamil\s*(?:\([^)]*\)\s*)?:\s*")
+
+#: Within such a row Kamil's own words are the first quoted run; whatever follows is the
+#: triager's annotation (his longer description, "(description empty; his screenshot is …)",
+#: a link to the asset), which belongs in the evidence column and not in a title.
+_QUOTED_TITLE_RE = re.compile(r'^["\u201c](?P<t>[^"\u201d]+)["\u201d]')
+
+#: What may legitimately follow his quoted words: the triager's aside, never more of his own
+#: sentence. Without this the quoted-run pattern stops at the first INNER quote — his phone
+#: emits smart quotes and he quotes UI labels constantly — so
+#: `Kamil (chat): "the "Done" button does nothing"` would have become the single word `the`,
+#: silently, and the row would then be unfindable by the bubble's title search.
+_ANNOTATION_RE = re.compile(
+    r'^\s*(?:$|[\u2014\u2013(\[]|Remarks?\b|Description\b|Screenshot\b)')
+
+#: Straight and smart, opening and closing.
+_QUOTE_CHARS = "\"\u201c\u201d"
+
+
+def _display_title(feedback: str) -> str:
+    """The row's feedback column as it should READ on the phone.
+
+    Deliberately a no-op unless the attribution prefix is actually present: a row that never
+    picked it up is returned byte-identical, so this cannot reword the 100-odd rows that were
+    always fine.
+    """
+    cleaned, found = _ATTRIBUTION_RE.subn("", feedback, count=1)
+    if not found:
+        return feedback.strip()
+    cleaned = cleaned.strip()
+    match = _QUOTED_TITLE_RE.match(cleaned)
+    if match and _ANNOTATION_RE.match(cleaned[match.end():]):
+        return match.group("t").strip() or feedback.strip()
+    # The quote that closed the run was an inner one, not the end of his sentence. Keep the
+    # whole thing rather than the fragment before it — a shorter title is not automatically a
+    # better one, and this function's promise is that no row comes out worse than it went in.
+    # Exactly ONE quote character off each end, never `strip()`: on `"\u201cDone\u201d does nothing"`
+    # a set-strip eats the opening smart quote along with the wrapping one. The trailing quote
+    # goes only if a leading one did, so a title that merely ENDS in a quotation —
+    # `he said "hi"` — is left alone.
+    if cleaned[:1] in _QUOTE_CHARS:
+        cleaned = cleaned[1:]
+        if cleaned[-1:] in _QUOTE_CHARS:
+            cleaned = cleaned[:-1]
+    return cleaned.strip() or feedback.strip()
+
+
 #: States the tester acts on, in the order the app should surface them.
 OPEN_STATES = ("open", "partial", "planned")
 VERIFY_STATE = "implemented — verify"
@@ -116,7 +188,7 @@ def parse_ledger(text: str) -> list[dict]:
         items.append({
             "id": item_id,
             "raised": raised,
-            "title": feedback,
+            "title": _display_title(feedback),
             "state": state,
             # The evidence column is where "what to test and how" lives — verify steps are
             # written there by convention (the ledger's own workflow section says so).
