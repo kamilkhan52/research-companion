@@ -168,6 +168,24 @@ def any_active_for_scopes(scopes: set[str | None]) -> str | None:
     return None
 
 
+def any_active() -> str | None:
+    """The name of any registry with live work, regardless of scope, else None.
+
+    For callers deciding whether it is safe to RESTART the process rather than whether it is
+    safe to delete one scope — the DevTest deploy, which advances the server's own checkout and
+    so trips `--reload`. A reload drops every in-memory registry and kills every in-flight job
+    (DR-083 cost ~50 minutes of a Discover run exactly this way), and unlike scope deletion the
+    blast radius is everything, so this deliberately takes no scope argument.
+    """
+    for reg in _ALL_REGISTRIES:
+        with reg.lock:
+            if reg._admitting:
+                return reg.name
+            if any(_worker_is_active(job) for job in reg.jobs.values()):
+                return reg.name
+    return None
+
+
 #: After this long, a still-active worker stops counting toward an account's CONCURRENCY ceiling.
 #: Not a timeout and not a cancellation — the worker keeps running and its spend is still metered.
 #: This exists because cancellation is cooperative (`cancel` only sets a flag the worker must

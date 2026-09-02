@@ -230,13 +230,24 @@ way they did. This is an index, not a substitute for reading them.
   2. `.claude/worktrees/dispatch` (branch `rc-dispatch-base`) is where dispatched sessions
      work — reset to `origin/main` at every dispatch, `node_modules` kept so a session need not
      `npm ci` before it can run the client suites;
-  3. a **third worktree serves Metro to Kamil's phone** and must be edited by nobody.
+  3. `.claude/worktrees/device-main` (branch `device-main`) **serves Metro to Kamil's phone**
+     and must be edited by nobody — it is a deployment target, not a workspace
+     (`RC_DEVICE_WORKTREE` overrides the path).
   The reason for (3) is the client-side twin of DR-083 and cost 35 minutes on 2026-09-01: the
   dispatch worktree and the Metro worktree were the same directory, so a DR-115 session's
   every save Fast-Refreshed half-written UI onto Kamil's phone while he was using it — and any
   device pass taken then would have been of uncommitted WIP, not of the branch. Check which
   directory Metro is actually serving (`ps aux | grep "expo start"`) before editing `mobile/`;
   it is not always the one the docs name.
+  **Merging is not deploying.** A merged PR moves `origin/main` and NOTHING Kamil can see: (2)
+  and (3) above have to follow it, and because `_LEDGER` is read from the SERVER's checkout, a
+  mobile-only change still leaves its new `DR-…` row invisible until the server checkout moves
+  too. On 2026-09-01 DR-116 sat merged and unreachable for over an hour for exactly this
+  reason, with nothing on the phone to explain why reloading did nothing. The dispatch brief's
+  last step is now `devtest.deploy()`, the bubble shows a "N merged changes not on this phone
+  yet" banner with a one-tap Deploy, and `GET /api/devtest/deploy` reports how far behind each
+  checkout is. Deploying advances the server checkout, which trips `RC_RELOAD` — so it refuses
+  while any background job is live (DR-083).
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects

@@ -23,7 +23,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as api from '@/api/endpoints';
 import { DISPATCH_MODELS } from '@/api/dispatch';
 import type { DispatchModel } from '@/api/dispatch';
-import type { DevTestItem, DevTestFeedbackEntry, DispatchStatus } from '@/api/endpoints';
+import type {
+  DevTestItem, DevTestFeedbackEntry, DispatchStatus, DeployState,
+} from '@/api/endpoints';
 import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
@@ -580,6 +582,7 @@ export function DevTestBubble() {
             />
           </View>
           {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
+          <DeployBanner />
 
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
@@ -764,6 +767,122 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
   }, [visible]);
 
   return status;
+}
+
+/** How long to wait before re-reading state after a deploy: the server checkout moves in a
+ *  detached child a couple of seconds later, so an immediate re-read sees the old answer. */
+const DEPLOY_SETTLE_MS = 4000;
+
+/** The banner for "merged, but not on this phone yet".
+ *
+ *  A merged PR moves `origin/main` and nothing a reader can see. Until the device worktree
+ *  Metro serves and the server checkout follow it, reloading the app gets the old build from
+ *  the old ledger — which on 2026-09-01 left DR-116 merged and invisible for over an hour with
+ *  nothing on the phone to explain why. This says so, and deploys in one tap.
+ *
+ *  Renders nothing when the phone is level with `main`, which is the normal state. */
+export function DeployBanner() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [state, setState] = useState<DeployState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [deployed, setDeployed] = useState(false);
+  const [postDeployNpmCi, setPostDeployNpmCi] = useState(false);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+  }, []);
+
+  const load = useCallback(async () => {
+    try {
+      setDeployed(false);
+      setState((await api.getDeployState()).deploy);
+    } catch {
+      setState(null);   // dev-only ornament; a stale server just means no banner
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const behind = Math.max(state?.device_behind ?? 0, state?.server_behind ?? 0);
+  // `last_error` matters even at zero behind: the deferred half of a deploy can fail after the
+  // response said it was under way, and that failure has nowhere else to surface.
+  if (!state || (behind <= 0 && !state.last_error)) return null;
+
+  const blocker = state.active_job
+    ? `a background job is running (${state.active_job})`
+    : !state.clean ? 'the server checkout has uncommitted changes'
+    : !state.device_present ? 'the worktree Metro serves is missing'
+    : !state.deployable ? 'this is the public tunnel; use the tailnet address'
+    : null;
+
+  return (
+    <View style={[styles.dispatchBanner, { backgroundColor: t.amberWash, borderColor: t.amber }]}
+          testID="devtest-deploy-banner">
+      <View style={styles.dispatchBannerHead}>
+        <Icon name="upload-cloud" size={14} color={t.amber} />
+        <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>
+          {behind <= 0 ? 'Last deploy did not finish'
+            : behind === 1 ? '1 merged change not on this phone yet'
+            : `${behind} merged changes not on this phone yet`}
+        </Text>
+      </View>
+      {state.target_subject ? (
+        <Text variant="caption" color={t.muted} numberOfLines={2}>{state.target_subject}</Text>
+      ) : null}
+      {state.last_error ? (
+        <Text variant="caption" color={t.danger} numberOfLines={2}>
+          Last deploy failed: {state.last_error}
+        </Text>
+      ) : null}
+      {state.needs_npm_ci || postDeployNpmCi ? (
+        <Text variant="caption" color={t.muted}>
+          Touches mobile’s lockfile — run `npm ci` in the device worktree before reloading.
+        </Text>
+      ) : null}
+      {deployed ? (
+        <Text variant="caption" color={t.muted}>
+          Deploying… {postDeployNpmCi ? 'run `npm ci`, then reload' : 'reload the app in a moment'}.
+        </Text>
+      ) : blocker ? (
+        <Text variant="caption" color={t.muted}>Cannot deploy: {blocker}.</Text>
+      ) : (
+        <Button
+          title="Deploy and reload"
+          variant="ghost"
+          icon="upload-cloud"
+          loading={busy}
+          disabled={busy}
+          testID="devtest-deploy-now"
+          onPress={() => {
+            setBusy(true);
+            void api.deployNow()
+              .then((r) => {
+                showToast(r.deploy.needs_npm_ci
+                  // Said HERE and not only before the deploy: afterwards the server recomputes
+                  // this over an empty range, so the warning would vanish at exactly the moment
+                  // it applies — and "reload the app" into a bundle that cannot build.
+                  ? 'Deployed, but mobile deps changed — run `npm ci` in the device worktree '
+                    + 'before reloading.'
+                  : r.deploy.backend_restarting
+                    ? 'Deployed. The server is restarting — reload the app in a moment.'
+                    : 'Deployed. Reload the app to pick it up.');
+                setPostDeployNpmCi(r.deploy.needs_npm_ci);
+                // The deferred half moves the server checkout a couple of seconds from now, so
+                // reloading immediately would re-read the OLD state and leave the banner up
+                // with a live button — a second tap would race a second child.
+                setDeployed(true);
+                if (settleTimer.current) clearTimeout(settleTimer.current);
+                settleTimer.current = setTimeout(() => void load(), DEPLOY_SETTLE_MS);
+              })
+              .catch((e: Error) => showToast(e.message ?? 'Could not deploy.'))
+              .finally(() => setBusy(false));
+          }}
+        />
+      )}
+    </View>
+  );
 }
 
 /** How often the Resume button re-checks whether its window has reopened. Short enough that

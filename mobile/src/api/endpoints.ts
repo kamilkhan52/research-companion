@@ -211,6 +211,50 @@ export const getDispatchStatus = () =>
 export const resumeDispatch = (model: DispatchModel) =>
   apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch', { model, resume: true });
 
+/** How much of what has been MERGED is actually reachable from the phone. A merged PR moves
+ *  `origin/main` and nothing else: until the device worktree Metro serves and the server
+ *  checkout follow it, the app serves the old build from the old ledger, and reloading does
+ *  nothing. `device_behind` is the number that explains "I reloaded and nothing changed". */
+export interface DeployState {
+  target: string;
+  target_subject: string;
+  server: string;
+  server_behind: number;
+  device: string;
+  device_behind: number;
+  /** Null over the public tunnel, where host paths are not returned. */
+  device_worktree: string | null;
+  /** False when Metro's worktree is missing — a deploy could not move the phone's JS. */
+  device_present: boolean;
+  /** The merged range touches mobile's lockfile, so the bundle needs `npm ci` to build. */
+  needs_npm_ci: boolean;
+  /** False when the server checkout has uncommitted changes, which blocks deploying. */
+  clean: boolean;
+  /** Whether POSTing would be accepted at all — false over the public tunnel, which 403s. */
+  deployable: boolean;
+  /** What the deferred server-checkout advance last failed with, so it is not silent. */
+  last_error: string | null;
+  /** Name of a live background job, if any — deploying restarts the server and would kill it. */
+  active_job: string | null;
+}
+
+export interface DeployResult {
+  target: string;
+  target_subject: string;
+  device_was: string;
+  device_now: string;
+  server_was: string;
+  /** The server checkout advances a beat AFTER the response, so its restart cannot truncate it. */
+  server_pending: boolean;
+  server_now: string;
+  needs_app_reload: boolean;
+  backend_restarting: boolean;
+  needs_npm_ci: boolean;
+}
+
+export const getDeployState = () => apiGet<{ deploy: DeployState }>('/api/devtest/deploy');
+export const deployNow = () => apiPost<{ deploy: DeployResult }>('/api/devtest/deploy', {});
+
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');
