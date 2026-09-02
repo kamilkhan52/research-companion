@@ -675,6 +675,11 @@ def deploy_status(fetch: bool = False) -> dict:
         "server": server_head, "server_behind": behind(server_head),
         "device": device_head, "device_behind": behind(device_head),
         "device_worktree": str(device), "device_present": device_present,
+        # The banner exists so he never leaves the app (DR-117). Without the branch it would
+        # keep offering "Deploy and reload" on a checkout that always refuses — a repeatable
+        # dead end with no phone-side recourse, which is the shape the resumable flag already
+        # taught us to avoid.
+        "server_branch": _git_out(root, "rev-parse", "--abbrev-ref", "HEAD"),
         # A change to the lockfile means the deployed JS needs `npm ci` before it will even
         # build — a deploy that ignored it would hand him a broken or unchanged bundle.
         "needs_npm_ci": bool(device_head) and bool(target) and bool(
@@ -776,10 +781,16 @@ def _assert_server_can_fast_forward(root: Path) -> None:
     # Cheap for the normal case (it sits on main) and loud for the case that used to hurt.
     branch = _git_out(root, "rev-parse", "--abbrev-ref", "HEAD")
     if branch != "main":
+        # `HEAD` means detached — CLAUDE.md's DR-083 text describes re-detaching the live
+        # checkout as a thing that happens — and "" means the read itself failed. Neither reads
+        # as a branch name, so neither should be quoted as one.
+        where = ("a detached HEAD" if branch == "HEAD"
+                 else "an unreadable state" if not branch
+                 else f"'{branch}'")
         raise DeployError(
-            f"the server checkout is on '{branch}', not main, so deploying would switch the "
-            "tree someone is working in. Do that work in a git worktree and leave this "
-            "checkout on main, or park the branch first")
+            f"the server checkout is on {where}, not main, so deploying would switch the tree "
+            "someone is working in. Do that work in a git worktree and leave this checkout on "
+            "main, or park the branch first")
     ok, _ = _git_try(root, "rev-parse", "--verify", "refs/heads/main")
     if ok:
         # Local `main` carrying commits that are not on origin/main: the fast-forward refuses,
@@ -1691,8 +1702,10 @@ def _dispatch_prompt(item_id: str | None, resuming: bool = False) -> str:
         "device worktree Metro serves and the server checkout both have to follow, and the "
         "ledger the bubble reads comes from the server checkout, so even a mobile-only change "
         "leaves your new DR row invisible until this runs. It refuses by itself if a "
-        "background job is live (deploying restarts the server and would kill it), so if it "
-        "raises, say so in your reply rather than working around it.\n"
+        "background job is live, or if the server checkout has been left on a branch other "
+        "than main (deploying restarts the server, and switching that checkout would yank the "
+        "tree out from under whoever is working in it). If it raises, say so in your reply — "
+        "do NOT work around it by checking out main there yourself.\n"
         "8. Reply to Kamil in the bubble via devtest.append_response — diagnosis, what "
         "changed, what to test on the device, and whether it merged. This session was "
         "dispatched FROM the phone's DevTest bubble (DR-092), so that reply is the "

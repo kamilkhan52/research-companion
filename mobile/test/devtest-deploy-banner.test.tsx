@@ -29,6 +29,7 @@ const LEVEL: DeployState = {
   target: 'abc', target_subject: 'DR-116: the newest merged thing',
   server: 'abc', server_behind: 0, device: 'abc', device_behind: 0,
   device_worktree: '/w/device-main', device_present: true, needs_npm_ci: false,
+  server_branch: 'main',
   clean: true, deployable: true, last_error: null, active_job: null,
 };
 
@@ -169,4 +170,28 @@ test('a failed deferred half is not headed "0 merged changes"', async () => {
   const { findByText, queryByText } = render(<DeployBanner />);
   await findByText('Last deploy did not finish');
   expect(queryByText(/0 merged changes/)).toBeNull();
+});
+
+test('a server checkout left on a branch is named, not offered a Deploy that fails', async () => {
+  // Deploy only advances that checkout FROM main — switching a tree someone is working in is
+  // the thing it exists to stop. Offering the button anyway was a repeatable dead end: a 409
+  // into a transient toast, with the state unchanged and nothing on the phone explaining it.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, server_behind: 1, device: 'old', server: 'old',
+                    server_branch: 'devtest-bubble-readability' }),
+  });
+  const { findByText, queryByTestId } = render(<DeployBanner />);
+  await findByText(/server checkout is on devtest-bubble-readability, not main/);
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
+});
+
+test('a branch that is already level does not block the banner', async () => {
+  // The guard only fires when the server checkout would actually MOVE, so a stale branch name
+  // must not turn into a phantom blocker.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', server_behind: 0,
+                    server_branch: 'some-branch' }),
+  });
+  const { findByTestId } = render(<DeployBanner />);
+  await findByTestId('devtest-deploy-now');
 });

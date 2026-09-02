@@ -964,6 +964,12 @@ export function DeployBanner() {
     ? `a background job is running (${state.active_job})`
     : !state.clean ? 'the server checkout has uncommitted changes'
     : !state.device_present ? 'the worktree Metro serves is missing'
+    // Deploy only advances the server checkout FROM main; on any other branch it refuses,
+    // because switching a tree someone is working in is the thing it exists to stop. Without
+    // this clause the banner offered "Deploy and reload" into a guaranteed 409 — a repeatable
+    // dead end with nothing on the phone to explain it.
+    : state.server_behind > 0 && state.server_branch && state.server_branch !== 'main'
+      ? `the server checkout is on ${state.server_branch}, not main`
     : !state.deployable ? 'this is the public tunnel; use the tailnet address'
     : null;
 
