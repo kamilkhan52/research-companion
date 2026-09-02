@@ -16,7 +16,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View, type LayoutChangeEvent } from 'react-native';
 import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -188,10 +188,16 @@ export async function loadAllVerdicts(): Promise<Record<string, VerdictInfo>> {
 
 /** A Chip driven by its own Pressable rather than Chip's built-in `onPress` (same reasoning as
  *  the member chips in authors.tsx): gives it a real accessibilityRole/State as a toggle. */
-function ToggleChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function ToggleChip({ label, active, onPress, onLayout }: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+  onLayout?: (e: LayoutChangeEvent) => void;
+}) {
   return (
     <Pressable
       onPress={onPress}
+      onLayout={onLayout}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
       accessibilityLabel={label}
@@ -200,6 +206,24 @@ function ToggleChip({ label, active, onPress }: { label: string; active: boolean
       <Chip label={label} dot={false} selected={active} />
     </Pressable>
   );
+}
+
+/** DR-116 — Kamil: "Dev test bubble shows 11 of 117. I don't know how to view the rest. The
+ *  Filter is set to All". Nothing was truncated: DR-077's search and filter persist across app
+ *  launches, so a choice made days ago was still narrowing the list, and the sheet said only
+ *  how MANY were hidden — never by what, and never offering a way back. This names each active
+ *  narrowing in the tester's own vocabulary (the chip labels he tapped) for the caption and the
+ *  reset button below it.
+ *
+ *  Sort is deliberately excluded: "A–Z"/"Recently reviewed" reorder the matched set, they never
+ *  hide a row, so resetting them would undo a choice that is not part of the complaint. */
+export function narrowingReasons(query: string, filter: ReviewFilter): string[] {
+  const reasons: string[] = [];
+  if (filter !== 'all') {
+    reasons.push(`filter “${REVIEW_FILTERS.find((f) => f.key === filter)?.label ?? filter}”`);
+  }
+  if (query.trim()) reasons.push(`search “${query.trim()}”`);
+  return reasons;
 }
 
 export function DevTestBubble() {
@@ -251,9 +275,64 @@ export function DevTestBubble() {
     draftKey('devtest-toolbar'), { query: '', filter: 'all', sort: 'default' },
   );
   const { query, filter, sort } = toolbar.value;
+  // DR-116: what is currently hiding rows, named rather than merely counted. Empty ⇒ the list
+  // is complete and no caption/reset is warranted.
+  const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
+  const narrowed = narrowedBy.length > 0;
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
-  const setFilter = (next: ReviewFilter) => toolbar.setValue((v) => ({ ...v, filter: next }));
   const setSort = (next: SortMode) => toolbar.setValue((v) => ({ ...v, sort: next }));
+
+  // DR-116: the filter chips live in a horizontal ScrollView that always opens at offset 0, so
+  // on a phone-width screen an active "Passed"/"Failed" chip sits off-screen and every chip the
+  // tester CAN see looks unselected — visually indistinguishable from "All" being on, which is
+  // exactly how he read it. The RESTORED selection is scrolled into view once per sheet open.
+  //
+  // Two paths, because neither alone is sufficient (Opus review, PR #469): a chip's `x` is only
+  // known once it has laid out, and the persisted filter is only known once AsyncStorage answers
+  // — either can land first. The layout callback covers "selection known, chip measured later";
+  // the effect covers "chip measured, selection hydrated later". Neither spends the once-per-open
+  // token while `x` is still unknown, or a sheet that lays out before hydration would silently
+  // never scroll at all.
+  const filterScrollRef = useRef<ScrollView>(null);
+  const filterChipX = useRef<Partial<Record<ReviewFilter, number>>>({});
+  const filterRevealedRef = useRef(false);
+  const revealSelectedChip = useCallback(() => {
+    // "All" is already the leftmost chip, so revealing it would be motion for nothing.
+    if (!toolbar.ready || filterRevealedRef.current || filter === 'all') return;
+    const x = filterChipX.current[filter];
+    if (x == null) return;
+    filterRevealedRef.current = true;
+    filterScrollRef.current?.scrollTo({ x: Math.max(0, x - space.md), animated: false });
+  }, [filter, toolbar.ready]);
+  const rememberChipX = (key: ReviewFilter, e: LayoutChangeEvent) => {
+    filterChipX.current[key] = e.nativeEvent.layout.x;
+    revealSelectedChip();
+  };
+  useEffect(() => {
+    if (visible) revealSelectedChip();
+  }, [visible, revealSelectedChip]);
+
+  // A tap is not a restore, so it spends the token even though the tester's own choice must never
+  // move the row (Opus review, PR #469: selecting a chip switches its label to semibold, which
+  // changes its measured width and re-fires `onLayout` for the whole row — without this the first
+  // filter tap of each open snapped the chip row sideways, unanimated, under the finger).
+  const setFilter = (next: ReviewFilter) => {
+    filterRevealedRef.current = true;
+    toolbar.setValue((v) => ({ ...v, filter: next }));
+  };
+  // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
+  const showEverything = () => {
+    setFilter('all');
+    setQuery('');
+  };
+  // "Everything else" is force-open while narrowed, so LEAVING that state must not re-collapse it:
+  // the closed rows a filter had put on screen would vanish a frame later, which is a miniature of
+  // the very complaint DR-116 is about. Bound to the narrowed state rather than to the "Show all"
+  // button (Opus review, PR #469 — the button was only one of three ways out; tapping the All chip
+  // and clearing the search box both reproduced the vanish). The cost is that the section stays
+  // expanded after a filtered session until the tester collapses it again, which is the right side
+  // to err on for a complaint that begins "I don't know how to view the rest".
+  useEffect(() => { if (narrowed) setShowRest(true); }, [narrowed]);
 
   // Seeded in bulk on open (covers items whose card has never mounted — DR-077's whole point is
   // finding those), then kept live by each mounted ItemCard reporting its own verdict as it
@@ -346,7 +425,19 @@ export function DevTestBubble() {
   // DR-074: restore once per open, after the list has real content to scroll to — not on every
   // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
   useEffect(() => {
-    if (!visible) { restoredScrollRef.current = false; return; }
+    // DR-116's chip reveal is "once per open" too, and RN's Modal returns null while hidden, so
+    // its children unmount and every chip lays out again on the next open. The MEASUREMENTS go
+    // with the token (Opus review, PR #469): kept, they would let the next open scroll from the
+    // effect path using last open's cache — before this open's ScrollView has been laid out
+    // natively, which on Android clamps to 0 — and then spend the token, so the real measurement
+    // arriving a moment later is discarded and the chip stays off-screen. Same class of bug the
+    // `requestAnimationFrame` three lines below already exists for.
+    if (!visible) {
+      restoredScrollRef.current = false;
+      filterRevealedRef.current = false;
+      filterChipX.current = {};
+      return;
+    }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
     restoredScrollRef.current = true;
     const y = scrollDraft.value;
@@ -428,9 +519,20 @@ export function DevTestBubble() {
               `flexGrow: 0`, so each row hugs its content height. */}
           <View style={styles.toolbarRow} testID="devtest-filter-toolbar">
             <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            <ScrollView
+              ref={filterScrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+            >
               {REVIEW_FILTERS.map((f) => (
-                <ToggleChip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
+                <ToggleChip
+                  key={f.key}
+                  label={f.label}
+                  active={filter === f.key}
+                  onPress={() => setFilter(f.key)}
+                  onLayout={(e) => rememberChipX(f.key, e)}
+                />
               ))}
             </ScrollView>
           </View>
@@ -442,10 +544,25 @@ export function DevTestBubble() {
               ))}
             </ScrollView>
           </View>
-          {query.trim() || filter !== 'all' ? (
-            <Text variant="caption" color={t.muted} style={styles.matchCount}>
-              {filteredItems.length} of {items.length} shown
-            </Text>
+          {/* DR-116 — "shows 11 of 117. I don't know how to view the rest." The old caption said
+              only how many were hidden; it never said BY WHAT, and the only escape was finding
+              the responsible chip (possibly scrolled off-screen) or the search field's small ×.
+              Name the narrowing and put the way out next to the number. */}
+          {narrowed ? (
+            <View style={styles.matchRow} testID="devtest-match-row">
+              <Text variant="caption" color={t.muted} style={styles.matchCount}>
+                {filteredItems.length} of {items.length} shown · narrowed by {narrowedBy.join(' and ')}
+              </Text>
+              <Button
+                title={`Show all ${items.length}`}
+                variant="ghost"
+                icon="rotate-ccw"
+                // Says what it DOES, not what it is — this is the escape hatch the whole row
+                // exists for, and "Show all 117" alone does not say the filter goes with it.
+                accessibilityLabel={`Show all ${items.length} items — clears the filter and search`}
+                onPress={showEverything}
+              />
+            </View>
           ) : null}
 
           {/* DR-092: hand the whole pending queue to one Claude session (Kamil's batch pick).
@@ -530,11 +647,29 @@ export function DevTestBubble() {
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                   ))}
-                  <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
+                  {/* DR-116: while a search or filter is narrowing the list, this section is
+                      never collapsed. Collapsed, it hides rows the caption above has already
+                      COUNTED as shown — the same "where did the rest go?" confusion one level
+                      down, and the reason a filter could leave fewer cards on screen than the
+                      number he was reading. Unnarrowed it stays a toggle: closed/deferred rows
+                      are noise when browsing the whole ledger.
+
+                      `|| narrowed` below is deliberately redundant with the `narrowed` effect
+                      above, which is what actually keeps the section open on the way OUT of a
+                      narrowed state: it covers only the single commit between narrowing and that
+                      effect flushing, so the section cannot flicker shut. Being redundant, it is
+                      the one guard here with no test of its own — while narrowed there is no
+                      toggle to turn `showRest` back off, so the two can never disagree in a
+                      settled render. */}
+                  {narrowed ? (
                     <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
-                    <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
-                  </Pressable>
-                  {showRest
+                  ) : (
+                    <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
+                      <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
+                      <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
+                    </Pressable>
+                  )}
+                  {showRest || narrowed
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
                       ))
@@ -1186,5 +1321,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // aligned at 1x and lets the label take more room instead of wrapping when scaled.
   chipRowLabel: { minWidth: 44 },
   filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
-  matchCount: { marginTop: 2 },
+  // DR-116: the caption takes the spare width so a long reason wraps rather than squeezing the
+  // "Show all" button that is the whole point of the row. `flexWrap` because that button's height
+  // is fixed while its padding scales with accessibility text size — at large scales it takes the
+  // next line rather than crushing the caption to its min-content width.
+  matchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, flexWrap: 'wrap' },
+  matchCount: { marginTop: 2, flex: 1 },
 });
