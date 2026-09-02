@@ -1,9 +1,11 @@
 // DR-116 — Kamil: "Dev test bubble shows 11 of 117. I don't know how to view the rest. The Filter
 // is set to All". Nothing was truncated: DR-077's search/filter persist across app launches, so a
 // choice made days ago kept narrowing the list while the sheet reported only a NUMBER — never the
-// reason, and with no way back. These tests pin the three parts of the fix: the caption names each
-// narrowing, one tap restores the whole list, and no matched item stays hidden behind the
-// collapsed "Everything else" section while a filter is on.
+// reason, and with no way back. These tests pin the six guards the fix rests on: the caption names
+// each narrowing; one tap restores the whole list without touching sort; no matched item stays
+// hidden behind the collapsed "Everything else" section, and leaving a narrowed state by ANY of
+// its three doors does not re-hide what was on screen; and the selected filter chip is revealed
+// once per open — from that open's own measurement, and never in response to the tester's own tap.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
@@ -106,16 +108,34 @@ test('"Show all" leaves the sort mode alone', async () => {
   expect(screen.getByText(/^Results \(3\)/)).toBeTruthy();
 });
 
-// Opus review, PR #469: "Everything else" is force-open while narrowed, so clearing the filter
-// without also opening it makes cards that were on screen a frame ago disappear — a miniature of
-// the reported confusion, produced by the button that exists to end it.
-test('"Show all" does not hide the closed items the filter had just put on screen', async () => {
-  await seedVerdict('DR-C', 'fail');
+// Opus review, PR #469: "Everything else" is force-open while narrowed, so LEAVING that state must
+// not re-collapse it — the closed cards the filter had put on screen would disappear a frame later,
+// a miniature of the reported confusion. All three ways out are covered, because the first pass
+// special-cased the button and both other doors still reproduced it (and the All chip is the more
+// likely one here — Kamil's complaint is literally about the filter chips).
+describe.each([
+  ['the "Show all" button', (s: ReturnType<typeof render>) => fireEvent.press(s.getByText('Show all 3'))],
+  ['the "All" chip', (s: ReturnType<typeof render>) => fireEvent.press(s.getByLabelText('All'))],
+])('leaving a filter via %s', (_label, leave) => {
+  test('does not hide the closed items the filter had just put on screen', async () => {
+    await seedVerdict('DR-C', 'fail');
+    const screen = await openBubble();
+    fireEvent.press(screen.getByLabelText('Failed'));
+    await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+
+    leave(screen);
+
+    await waitFor(() => expect(screen.getByText('Zulu widget')).toBeTruthy());
+    expect(screen.getByText('Alpha thing')).toBeTruthy();
+  });
+});
+
+test('clearing the search box does not hide the closed items the search had put on screen', async () => {
   const screen = await openBubble();
-  fireEvent.press(screen.getByLabelText('Failed'));
+  fireEvent.changeText(screen.getByPlaceholderText('Search by id or title'), 'alpha');
   await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
 
-  fireEvent.press(screen.getByText('Show all 3'));
+  fireEvent.press(screen.getByLabelText('Clear search'));
 
   await waitFor(() => expect(screen.getByText('Zulu widget')).toBeTruthy());
   expect(screen.getByText('Alpha thing')).toBeTruthy();
@@ -245,7 +265,14 @@ test('tapping a filter chip never scrolls the chip row', async () => {
 
 // The "once per OPEN" reset is the whole mechanism, and it is load-bearing because RN's Modal
 // returns null while hidden — children unmount and every chip lays out again on the next open.
-test('reopening the sheet reveals the still-active filter chip again', async () => {
+//
+// The reopen deliberately reports a DIFFERENT x (Opus review, PR #469). Keeping the previous
+// open's measurements would let the effect path fire from that cache the instant the sheet
+// reopens — before this open's ScrollView has been laid out natively, which on Android clamps the
+// scroll to 0 — and spend the token, so the real measurement arriving a moment later is thrown
+// away and the chip stays off-screen. Asserting "nothing yet, then the FRESH offset" is what tells
+// a live measurement from a stale one; RNTL computes no layout, so an equal x could not.
+test('reopening the sheet reveals the still-active filter chip from a fresh measurement', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openWithPersistedFilter('failed');
   fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
@@ -255,9 +282,10 @@ test('reopening the sheet reveals the still-active filter chip again', async () 
   scrollTo.mockClear();
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
   await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
-  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
+  expect(scrollTo).not.toHaveBeenCalled();               // nothing has been measured THIS open yet
 
-  expectScrolledFilterRow(scrollTo, 320 - space.md);
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 400, y: 0, width: 70, height: 28 } } });
+  expectScrolledFilterRow(scrollTo, 400 - space.md);
   scrollTo.mockRestore();
 });
 

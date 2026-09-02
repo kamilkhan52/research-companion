@@ -321,14 +321,18 @@ export function DevTestBubble() {
     toolbar.setValue((v) => ({ ...v, filter: next }));
   };
   // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
-  // "Everything else" is force-open while narrowed, so clearing the filter without opening it
-  // would make cards that were on screen a frame ago vanish — a miniature of the reported
-  // confusion, from the button that exists to end it (Opus review, PR #469).
   const showEverything = () => {
-    setShowRest(true);
     setFilter('all');
     setQuery('');
   };
+  // "Everything else" is force-open while narrowed, so LEAVING that state must not re-collapse it:
+  // the closed rows a filter had put on screen would vanish a frame later, which is a miniature of
+  // the very complaint DR-116 is about. Bound to the narrowed state rather than to the "Show all"
+  // button (Opus review, PR #469 — the button was only one of three ways out; tapping the All chip
+  // and clearing the search box both reproduced the vanish). The cost is that the section stays
+  // expanded after a filtered session until the tester collapses it again, which is the right side
+  // to err on for a complaint that begins "I don't know how to view the rest".
+  useEffect(() => { if (narrowed) setShowRest(true); }, [narrowed]);
 
   // Seeded in bulk on open (covers items whose card has never mounted — DR-077's whole point is
   // finding those), then kept live by each mounted ItemCard reporting its own verdict as it
@@ -422,8 +426,18 @@ export function DevTestBubble() {
   // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
   useEffect(() => {
     // DR-116's chip reveal is "once per open" too, and RN's Modal returns null while hidden, so
-    // its children unmount and every chip lays out again on the next open.
-    if (!visible) { restoredScrollRef.current = false; filterRevealedRef.current = false; return; }
+    // its children unmount and every chip lays out again on the next open. The MEASUREMENTS go
+    // with the token (Opus review, PR #469): kept, they would let the next open scroll from the
+    // effect path using last open's cache — before this open's ScrollView has been laid out
+    // natively, which on Android clamps to 0 — and then spend the token, so the real measurement
+    // arriving a moment later is discarded and the chip stays off-screen. Same class of bug the
+    // `requestAnimationFrame` three lines below already exists for.
+    if (!visible) {
+      restoredScrollRef.current = false;
+      filterRevealedRef.current = false;
+      filterChipX.current = {};
+      return;
+    }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
     restoredScrollRef.current = true;
     const y = scrollDraft.value;
@@ -638,7 +652,15 @@ export function DevTestBubble() {
                       COUNTED as shown — the same "where did the rest go?" confusion one level
                       down, and the reason a filter could leave fewer cards on screen than the
                       number he was reading. Unnarrowed it stays a toggle: closed/deferred rows
-                      are noise when browsing the whole ledger. */}
+                      are noise when browsing the whole ledger.
+
+                      `|| narrowed` below is deliberately redundant with the `narrowed` effect
+                      above, which is what actually keeps the section open on the way OUT of a
+                      narrowed state: it covers only the single commit between narrowing and that
+                      effect flushing, so the section cannot flicker shut. Being redundant, it is
+                      the one guard here with no test of its own — while narrowed there is no
+                      toggle to turn `showRest` back off, so the two can never disagree in a
+                      settled render. */}
                   {narrowed ? (
                     <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
                   ) : (
