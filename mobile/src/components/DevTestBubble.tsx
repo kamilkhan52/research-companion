@@ -366,6 +366,21 @@ export function DevTestBubble() {
   // scroll frame. Track the live offset in a ref (no re-render) and only commit it to the
   // persisted draft at the natural pause points, one re-render per gesture instead of per frame.
   const scrollOffsetRef = useRef(0);
+  // Where the list was standing when a card was opened, so closing it can put us back. Keyed by
+  // id: opening a second card while the first is open must not overwrite the first's anchor.
+  const expandAnchors = useRef<Record<string, number>>({});
+  const onExpandChange = useCallback((expanded: boolean, id: string) => {
+    if (expanded) {
+      expandAnchors.current[id] = scrollOffsetRef.current;
+      return;
+    }
+    const anchor = expandAnchors.current[id];
+    delete expandAnchors.current[id];
+    // Only ever scroll BACK. If he has since scrolled above the anchor under his own steam,
+    // yanking him down to it would be the same complaint in the other direction.
+    if (anchor === undefined || scrollOffsetRef.current <= anchor) return;
+    requestAnimationFrame(() => scrollRef.current?.scrollTo({ y: anchor, animated: true }));
+  }, []);
   const commitScrollOffset = useCallback(() => {
     scrollDraft.setValue(scrollOffsetRef.current);
   }, [scrollDraft]);
@@ -740,6 +755,7 @@ export function DevTestBubble() {
                     shot={shot}
                     route={pathname}
                     startExpanded
+                    onExpandChange={onExpandChange}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -766,11 +782,13 @@ export function DevTestBubble() {
                 <>
                   <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
                   {sections.verify.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
+                      onExpandChange={onExpandChange} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
+                      onExpandChange={onExpandChange} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -796,7 +814,8 @@ export function DevTestBubble() {
                   )}
                   {showRest || narrowed
                     ? sections.rest.map((i) => (
-                        <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value} />
+                        <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
+                      onExpandChange={onExpandChange} />
                       ))
                     : null}
                 </>
@@ -890,6 +909,10 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
 
   return status;
 }
+
+/** How much of a description shows before "Show details". Enough to tell items apart, short
+ *  enough that the verdict row stays on screen. */
+const DETAIL_PREVIEW_LINES = 3;
 
 /** How long to wait before re-reading state after a deploy: the server checkout moves in a
  *  detached child a couple of seconds later, so an immediate re-read sees the old answer. */
@@ -1274,8 +1297,11 @@ interface ItemCardDraft {
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
 export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
-                          dispatchModel, activity }: {
+                          dispatchModel, activity, onExpandChange }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
+  /** Told when this card opens or closes, so the list can restore the reading position it
+   *  had before all that content appeared. */
+  onExpandChange?: (expanded: boolean, id: string) => void;
   /** DR-118: "You opened it · 2h ago" and friends — what the "Last activity" sort ordered this
    *  card by. Undefined under every other sort, where it would be noise. */
   activity?: string;
@@ -1301,6 +1327,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   const { expanded, comment, attach, verdict: lastVerdict, verdictAt } = draft.value;
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<DevTestFeedbackEntry[] | null>(null);
+  // Not persisted: "collapsed" is the right state to come back to every time, and remembering
+  // per item would recreate the wall of text on exactly the cards he reads most.
+  const [details, setDetails] = useState(false);
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
   // (undefined) value during the one render before `ready` flips would transiently clobber a
@@ -1312,9 +1341,17 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
 
   // DR-118: expanding stamps the visit; collapsing leaves the stamp alone, so "when did I last
   // open this" is not overwritten by the tap that closes it a second later.
-  const setExpanded = (next: boolean) => draft.setValue((v) => (
-    next ? { ...v, expanded: true, openedAt: Date.now() } : { ...v, expanded: false }
-  ));
+  const setExpanded = (next: boolean) => {
+    // Kamil, 2026-09-02: "when I collapse the issue, I have to scroll up." Expanding adds
+    // screens of content BELOW the header, so the reading position drifts far down; collapsing
+    // then removes it again and leaves the list scrolled past where he started. Hand the
+    // offset he was at to the list, which puts him back there when this card closes.
+    onExpandChange?.(next, item.id);
+    if (!next) setDetails(false);   // reopening starts collapsed again
+    draft.setValue((v) => (
+      next ? { ...v, expanded: true, openedAt: Date.now() } : { ...v, expanded: false }
+    ));
+  };
   const setComment = (next: string) => draft.setValue((v) => ({ ...v, comment: next }));
   const setAttach = (next: boolean) => draft.setValue((v) => ({ ...v, attach: next }));
 
@@ -1421,10 +1458,26 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       </Pressable>
       {expanded ? (
         <>
+          {/* Kamil, 2026-09-02: "the description, after it is fixed, should start collapsed."
+              These run to whole screens of triage prose — the thing he opens a card FOR is the
+              verdict row and the notes, and the description was pushing both below the fold. */}
           {item.how_to_test ? (
-            <Text variant="caption" color={t.muted} style={styles.how}>
-              {item.how_to_test}
-            </Text>
+            <Pressable
+              onPress={() => setDetails(!details)}
+              accessibilityRole="button"
+              accessibilityLabel={details ? 'Hide the details' : 'Show the details'}
+              testID="devtest-item-details">
+              <Text
+                variant="caption"
+                color={t.muted}
+                style={styles.how}
+                numberOfLines={details ? undefined : DETAIL_PREVIEW_LINES}>
+                {item.how_to_test}
+              </Text>
+              <Text variant="caption" color={t.violet} style={styles.how}>
+                {details ? 'Hide details' : 'Show details'}
+              </Text>
+            </Pressable>
           ) : null}
           {history === null ? (
             <Button

@@ -90,3 +90,36 @@ test('a failed history fetch does not lose the remark that already succeeded', a
   // pattern — the test agreed with itself rather than with the guarantee.
   expect(showToast).toHaveBeenCalledTimes(1);
 });
+
+// Kamil, 2026-09-02: "the description, after it is fixed, should start collapsed" and "when I
+// collapse the issue, I have to scroll up… I should end up where I was when I expanded it."
+
+test('the description starts collapsed and opens on request', async () => {
+  const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
+  // The prose is present but clipped, with an affordance rather than a wall of text.
+  await view.findByText('Show details');
+  fireEvent.press(view.getByTestId('devtest-item-details'));
+  await view.findByText('Hide details');
+});
+
+test('reopening a card starts its description collapsed again', async () => {
+  const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
+  fireEvent.press(view.getByTestId('devtest-item-details'));
+  await view.findByText('Hide details');
+
+  fireEvent.press(view.getByLabelText(/Tap to collapse/i));   // close the card
+  fireEvent.press(await view.findByLabelText(/Tap to leave a pass/i));
+  // Collapsed is the right state to come back to: remembering it would recreate the wall of
+  // text on exactly the cards he reads most.
+  await view.findByText('Show details');
+});
+
+test('the list is told when a card opens and closes, so it can restore the position', () => {
+  const seen: Array<[boolean, string]> = [];
+  const view = render(
+    <ItemCard item={ITEM} shot={null} route="/discover"
+              onExpandChange={(e, id) => seen.push([e, id])} />);
+  fireEvent.press(view.getByLabelText(/Tap to leave a pass/i));
+  fireEvent.press(view.getByLabelText(/Tap to collapse/i));
+  expect(seen).toEqual([[true, 'DR-118'], [false, 'DR-118']]);
+});
