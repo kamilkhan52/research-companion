@@ -84,22 +84,20 @@ test('a clear button appears once search text is entered, and empties the field'
 });
 
 test('the "Not reviewed" filter excludes a verdict recorded on an item whose card never mounted', async () => {
-  // DR-C sits in the collapsed "Everything else" section, which stays collapsed the whole test —
-  // its ItemCard never mounts, so this can only pass if verdict knowledge comes from the bulk
-  // storage read on open, not from a mounted card reporting itself (DR-A/DR-B, which always
-  // mount, would pass this same assertion either way — the match count is what actually pins it
-  // on DR-C specifically).
+  // DR-C sits in the "Everything else" section, whose card would only mount once that section is
+  // open — so this can only pass if verdict knowledge comes from the bulk storage read on open,
+  // not from a mounted card reporting itself (DR-A/DR-B, which always mount, would pass this same
+  // assertion either way — the match count is what actually pins it on DR-C specifically).
+  // Since DR-116 that section is EXPANDED while a filter is active, which strengthens the test
+  // rather than weakening it: DR-C is now absent from a rendered section, not from a hidden one,
+  // so a parent that had failed to learn its verdict would show the card here.
   await seedVerdict('DR-C', 'pass', 1000);
   const screen = await openBubble();
   fireEvent.press(screen.getByLabelText('Not reviewed'));
-  await waitFor(() => expect(screen.getByText('2 of 3 shown')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/2 of 3 shown/)).toBeTruthy());
   expect(screen.getByText('Zulu widget')).toBeTruthy();
   expect(screen.getByText('Beta gadget')).toBeTruthy();
-
-  // Expanding the collapsed section confirms it structurally, not just by count: DR-C is gone
-  // from "Everything else" too, because the bulk read already knew about its verdict before its
-  // card ever mounted.
-  fireEvent.press(screen.getByText(/Everything else/));
+  expect(screen.getByText(/Everything else/)).toBeTruthy();
   expect(screen.queryByText('Alpha thing')).toBeNull();
 });
 
