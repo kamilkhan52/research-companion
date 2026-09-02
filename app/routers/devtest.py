@@ -107,6 +107,10 @@ _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 #: `The immersive discussion canvas itself (#413, merged …): full-bleed …` would lose its. The
 #: name is the safe discriminator — Kamil is the only reporter this ledger has — so widen it
 #: deliberately if that ever changes.
+#: The trailing `\s*` lives INSIDE the optional group deliberately. Moving it out —
+#: `(?:\([^)]*\))?\s*:` — makes the two `\s*` runs adjacent and ambiguous, which is quadratic:
+#: a row with a long whitespace run took over five seconds, and `parse_ledger` runs on every
+#: items and feedback request, so one such row hangs the bubble. This shape is linear.
 _ATTRIBUTION_RE = re.compile(r"^\s*Kamil\s*(?:\([^)]*\)\s*)?:\s*")
 
 #: Within such a row Kamil's own words are the first quoted run; whatever follows is the

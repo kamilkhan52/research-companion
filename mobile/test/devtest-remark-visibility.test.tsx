@@ -154,3 +154,11 @@ test('the description is clamped until it is asked for', async () => {
   await waitFor(() => expect(
     view.getByText(ITEM.how_to_test).props.numberOfLines).toBeUndefined());
 });
+
+test('the details toggle still announces the description it hides', async () => {
+  // An explicit accessibilityLabel on a Pressable REPLACES what its children would have read
+  // out, which this component documents at the card header — so the prose has to be carried
+  // in the label or a screen reader loses the description entirely.
+  const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
+  await view.findByLabelText(new RegExp(`Show details\\. ${ITEM.how_to_test}`));
+});

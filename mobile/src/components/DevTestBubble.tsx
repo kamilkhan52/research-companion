@@ -550,6 +550,11 @@ export function DevTestBubble() {
     // and everything is measured afresh on the next open).
     if (!visible) {
       restoredScrollRef.current = false;
+      // The list is re-sorted and re-filtered between opens, so an offset recorded in one
+      // session means nothing in the next. A card left EXPANDED when the sheet closes keeps
+      // its anchor otherwise, and collapsing it later scrolls to a position measured against
+      // a list that no longer exists.
+      expandAnchors.current = {};
       return;
     }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;

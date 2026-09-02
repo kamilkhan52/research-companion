@@ -2129,6 +2129,7 @@ def test_a_title_is_never_emptied():
 def test_the_quoted_run_is_only_taken_when_an_ASIDE_follows_it():
     """What may follow his words is the triager's annotation, never more of his sentence."""
     for tail, expected in ((' — "his longer description"', "His words"),
+                           (' Description: "and the rest of it"', "His words"),
                            (' (description empty; screenshot below)', "His words"),
                            (' [screenshot](assets/x.jpg)', "His words"),
                            ('', "His words")):
