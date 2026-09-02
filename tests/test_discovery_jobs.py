@@ -245,7 +245,22 @@ def test_cancel_racing_final_persistence_observes_completed_result(temp_project,
     release_save.set()
     cancel_thread.join(5)
     assert not cancel_thread.is_alive()
-    assert stopped[0] is not None and stopped[0].status == "done"
+
+    # What the lock actually guarantees is that Stop cannot CLAIM a completed run was
+    # cancelled. It does not guarantee Stop sees `done`: the worker commits the outcome under
+    # the lock but deliberately does not publish it until its spend reservation settles
+    # (`set_outcome_locked`, and `cancel`'s `outcome_pending` branch), so a Stop that takes the
+    # lock inside that window correctly reports the job as still running.
+    #
+    # Asserting `done` here read as the stronger claim but was really a race on which thread
+    # reached the lock first, and it failed about one run in six — on `main`, with nothing to
+    # distinguish it from a real regression. Assert the invariant, then wait for the publish.
+    assert stopped[0] is not None and stopped[0].status != "cancelled"
+    deadline = time.monotonic() + 5
+    while discovery_jobs.get_job(temp_project).status == "running":
+        assert time.monotonic() < deadline, "the completed run never published its outcome"
+        time.sleep(0.01)
+    assert discovery_jobs.get_job(temp_project).status == "done"
     assert discovery.load_result()["goals"] == "goals"
 
 

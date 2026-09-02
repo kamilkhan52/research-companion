@@ -234,6 +234,9 @@ export interface DeployState {
   device_worktree: string | null;
   /** False when Metro's worktree is missing — a deploy could not move the phone's JS. */
   device_present: boolean;
+  /** The branch the SERVER checkout sits on. Deploy only advances it from `main`: switching a
+   *  checkout someone is working in would yank the tree out from under them. */
+  server_branch: string;
   /** The merged range touches mobile's lockfile, so the bundle needs `npm ci` to build. */
   needs_npm_ci: boolean;
   /** False when the server checkout has uncommitted changes, which blocks deploying. */

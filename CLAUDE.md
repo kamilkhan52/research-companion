@@ -226,7 +226,11 @@ way they did. This is an index, not a substitute for reading them.
   worktree: the uncommitted half of the interrupted session is exactly what it is resuming.
   **Three checkouts, three jobs — do not collapse them:**
   1. the **main checkout** runs the backend server (an `app/` edit here restarts it under
-     `RC_RELOAD` and kills in-flight jobs — DR-083);
+     `RC_RELOAD` and kills in-flight jobs — DR-083). **Leave it on `main` and do your own work
+     in a worktree.** Deploy refuses to advance it when it is on another branch, because
+     switching it would yank the tree out from under whoever is using it; one worktree per
+     ROLE, never develop in the tree you deploy to, is the same rule (2) and (3) already
+     follow;
   2. `.claude/worktrees/dispatch` (branch `rc-dispatch-base`) is where dispatched sessions
      work — reset to `origin/main` at every dispatch, `node_modules` kept so a session need not
      `npm ci` before it can run the client suites;

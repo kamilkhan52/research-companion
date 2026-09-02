@@ -1465,6 +1465,8 @@ def _fake_git(monkeypatch, *, server="aaa", device="bbb", target="ccc", dirty=""
     ran: list[tuple] = []
 
     def out(cwd, *args):
+        if args[:2] == ("rev-parse", "--abbrev-ref"):
+            return "main"          # the deploy target's normal, and required, state
         if args[:2] == ("rev-parse", "origin/main"):
             return target
         if args[:2] == ("rev-parse", "HEAD"):
@@ -1787,6 +1789,8 @@ def test_the_status_route_redacts_host_paths_over_the_tunnel(client, monkeypatch
     d = client.get("/api/devtest/deploy", headers={"cf-ray": "8a1b-LHR"}).json()["deploy"]
     assert d["deployable"] is False
     assert d["device_worktree"] is None and d["target_subject"] is None
+    # Names unmerged work on the dev Mac, same class as the host path beside it.
+    assert d["server_branch"] == ""
     assert d["device_behind"] > 0        # state still crosses, so the banner still works
 
 
@@ -1928,6 +1932,7 @@ def test_local_main_ahead_of_origin_is_refused_before_anything_moves(monkeypatch
         return True, ""
 
     monkeypatch.setattr(dt, "_git_try", try_git)
+    monkeypatch.setattr(dt, "_git_out", lambda cwd, *a: "main")   # already the deploy target
     with pytest.raises(dt.DeployError, match="cannot be fast-forwarded"):
         dt._assert_server_can_fast_forward(tmp_path)
 
@@ -1948,6 +1953,7 @@ def test_main_held_by_another_worktree_is_refused(monkeypatch, tmp_path):
         return True, ""
 
     monkeypatch.setattr(dt, "_git_try", try_git)
+    monkeypatch.setattr(dt, "_git_out", lambda cwd, *a: "main")
     with pytest.raises(dt.DeployError, match="another worktree"):
         dt._assert_server_can_fast_forward(tmp_path)
 
@@ -2023,6 +2029,7 @@ def test_a_sibling_worktree_on_a_main_prefixed_branch_does_not_block_deploying(m
             return True, ""
         return try_git
 
+    monkeypatch.setattr(dt, "_git_out", lambda cwd, *a: "main")
     for benign in ("mainline", "main-backup", "device-main", "feature/main"):
         monkeypatch.setattr(dt, "_git_try", make(benign))
         dt._assert_server_can_fast_forward(tmp_path)      # must not raise
@@ -2135,3 +2142,82 @@ def test_the_quoted_run_is_only_taken_when_an_ASIDE_follows_it():
                            ('', "His words")):
         row = f'| DR-906 | 2026-09-02 | Kamil (chat): "His words"{tail} | `open` | E. |'
         assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == expected, tail
+
+def test_deploy_refuses_to_switch_a_checkout_someone_is_working_in(monkeypatch, tmp_path):
+    """The first cut ran `git checkout main` to move the server checkout onto main, which yanked
+    the working tree out from under whoever was using it. It refused on a DIRTY tree, but a
+    committed feature branch is clean, so the common case — a session mid-PR — sailed straight
+    through and lost its checkout.
+
+    The settled pattern in agent-parallel tooling is one worktree per ROLE: never develop in the
+    tree you deploy to. This repo already does that for Metro and for dispatched sessions."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_git_out",
+                        lambda cwd, *a: "some-feature-branch" if a[:2] == ("rev-parse",
+                                                                           "--abbrev-ref") else "")
+    with pytest.raises(dt.DeployError, match="not main"):
+        dt._assert_server_can_fast_forward(tmp_path)
+
+
+def test_the_branch_guard_does_not_raise_on_main(monkeypatch, tmp_path):
+    """The normal state, and it must stay cheap: refusing here would make every dispatch's
+    deploy step fail."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_git_out",
+                        lambda cwd, *a: "main" if a[:2] == ("rev-parse", "--abbrev-ref") else "")
+    monkeypatch.setattr(dt, "_git_try", lambda cwd, *a: (False, "") if a[:2] == (
+        "rev-parse", "--verify") else (True, ""))
+    dt._assert_server_can_fast_forward(tmp_path)     # must not raise
+
+
+def test_nothing_moves_when_the_server_checkout_is_off_main(monkeypatch, tmp_path):
+    """The ordering property, which the direct-call tests cannot see. An earlier round of this
+    series shipped a refusal that fired only AFTER the device worktree had been advanced,
+    leaving the phone on new main and the server on old — so the guard has to be proved to
+    happen before anything moves, not merely to happen."""
+    from app.routers import devtest as dt
+
+    device = _device_wt(dt, tmp_path)
+    ran = _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: device)
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    real_out = dt._git_out
+    monkeypatch.setattr(dt, "_git_out",
+                        lambda cwd, *a: ("some-feature-branch"
+                                         if a[:2] == ("rev-parse", "--abbrev-ref")
+                                         else real_out(cwd, *a)))
+    ran.clear()
+    with pytest.raises(dt.DeployError, match="not main"):
+        dt.deploy()
+    assert not [a for _cwd, a in ran if a[0] in ("checkout", "merge", "reset", "stash")], (
+        "the refusal must happen before anything is moved")
+
+
+def test_the_refusal_names_a_detached_head_as_one(monkeypatch, tmp_path):
+    """`'HEAD'` is not a branch, and CLAUDE.md describes re-detaching the live checkout as a
+    thing that happens; quoting it as a branch name reads as nonsense."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_git_out", lambda cwd, *a: "HEAD")
+    with pytest.raises(dt.DeployError, match="a detached HEAD"):
+        dt._assert_server_can_fast_forward(tmp_path)
+
+    monkeypatch.setattr(dt, "_git_out", lambda cwd, *a: "")
+    with pytest.raises(dt.DeployError, match="unreadable"):
+        dt._assert_server_can_fast_forward(tmp_path)
+
+
+def test_the_status_route_reports_which_branch_the_server_checkout_is_on(client, monkeypatch,
+                                                                         tmp_path):
+    """So the banner can say "cannot deploy" instead of offering a button that always 409s."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    assert client.get("/api/devtest/deploy").json()["deploy"]["server_branch"] == "main"
