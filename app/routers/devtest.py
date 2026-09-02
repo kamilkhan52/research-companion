@@ -1477,8 +1477,14 @@ def _continuable_dispatch(item_id: str | None) -> tuple[dict, str, str] | None:
         try:
             started = float(info.get("started_ts") or 0)
         except (TypeError, ValueError):
-            continue
-        if started and time.time() - started > DISPATCH_CONTINUE_MAX_AGE_S:
+            started = 0.0
+        # `_dispatch_activity` reads the same files and falls back to the ISO field; do the
+        # same, then REQUIRE a start time. A zero start slipped past the age bound entirely,
+        # and it also made any feedback look newer than the run — so such a record came back
+        # `follow_up` and its session was told about feedback that predates it, which is the
+        # false claim the retry split exists to remove.
+        started = started or _entry_epoch(info.get("started_at")) or 0.0
+        if not started or time.time() - started > DISPATCH_CONTINUE_MAX_AGE_S:
             continue
         info["_started"] = started
         candidates.append(info)

@@ -85,9 +85,10 @@ test('the toast says when a session was picked back up, rather than guessing', a
 test('the two dispatch buttons share one busy flag', async () => {
   // Separate flags left "fresh" enabled while the ordinary dispatch was in flight, so a second
   // tap earned a raw single-flight 409 toast instead of doing nothing.
-  let release: (v: unknown) => void = () => {};
+  type Reply = Awaited<ReturnType<typeof api.dispatchToClaude>>;
+  let release: (v: Reply) => void = () => {};
   jest.mocked(api.dispatchToClaude).mockReturnValue(
-    new Promise((res) => { release = res; }) as ReturnType<typeof api.dispatchToClaude>);
+    new Promise<Reply>((res) => { release = res; }));
   const view = render(
     <ItemCard item={ITEM} shot={null} route="/discover" startExpanded dispatchModel="opus" />,
   );

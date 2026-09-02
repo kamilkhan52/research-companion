@@ -853,7 +853,7 @@ async function fireDispatch(model: DispatchModel, itemId: string | undefined,
     // The server decides whether this continued a session or started one, and says so — the
     // client cannot know, and guessing here would eventually disagree with what actually ran.
     showToast(dispatch.continued_session
-      ? `Claude (${dispatch.model}) is picking ${itemId} back up where it left off.`
+      ? `Claude (${dispatch.model}) is picking ${itemId} back up. Replies land here.`
       : `Claude (${model}) is on ${itemId ?? 'all pending issues'}. Replies land here.`);
     refreshDispatchStatus?.();     // pull the banner forward instead of waiting for the tick
     return dispatch;

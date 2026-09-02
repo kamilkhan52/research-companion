@@ -2492,18 +2492,50 @@ def test_an_agent_reply_is_not_mistaken_for_his_feedback(client, monkeypatch, tm
     assert found is not None and found[2] == "unfinished"
 
 
-def test_a_malformed_dispatch_record_does_not_block_every_dispatch(monkeypatch, tmp_path):
+def test_a_malformed_dispatch_record_does_not_block_every_dispatch(client, tmp_path):
     """A 500 here can only be cleared by deleting a file by hand — impossible from the phone,
     which is the only place dispatches come from. Its sibling scan over these same files is
-    already this tolerant."""
+    already this tolerant.
+
+    Takes `client` so RC_DEVTEST_DIR is the directory these records are written to. Without it
+    the writes went to `tmp_path/inbox` while the lookup read conftest's autouse app-state dir,
+    and the assertion passed because that directory was simply empty — agreeing with the bug
+    rather than with the fix."""
+    import time as _time
+
     from app.routers import devtest as dt
 
-    d = tmp_path / "inbox" / "dispatch"
-    d.mkdir(parents=True, exist_ok=True)
+    d = dt._dispatch_dir()
     (d / "dispatch-bad-a.json").write_text("[1, 2, 3]")
     (d / "dispatch-bad-b.json").write_text(json.dumps({"item_id": "DR-504",
                                                        "started_ts": "soon"}))
     assert dt._continuable_dispatch("DR-504") is None
+
+    # The positive half, without which `is None` above stays true for any reason at all: a
+    # sound record BEHIND the malformed ones is still found.
+    (d / "dispatch-good.log").write_text(
+        _stream_log({"type": "system", "subtype": "init", "session_id": "sess-good"}))
+    (d / "dispatch-good.json").write_text(json.dumps({
+        "id": "dispatch-good", "item_id": "DR-504", "model": "opus",
+        "log": str(d / "dispatch-good.log"), "started_ts": _time.time() - 300}))
+    found = dt._continuable_dispatch("DR-504")
+    assert found is not None and found[1] == "sess-good"
+
+
+def test_a_record_with_no_usable_timestamp_is_not_continued(client, tmp_path):
+    """Without a start time the age bound cannot be applied, and — worse — a zero start makes
+    ANY feedback look newer, so the record is classified `follow_up` and the session is told
+    about feedback that predates it. That is the false claim the retry split removed, reachable
+    through a different door."""
+    from app.routers import devtest as dt
+
+    d = dt._dispatch_dir()
+    (d / "dispatch-nots.log").write_text(
+        _stream_log({"type": "system", "subtype": "init", "session_id": "sess-nots"}))
+    (d / "dispatch-nots.json").write_text(json.dumps({
+        "id": "dispatch-nots", "item_id": "DR-506", "model": "opus",
+        "log": str(d / "dispatch-nots.log")}))          # no started_ts, no started_at
+    assert dt._continuable_dispatch("DR-506") is None
 
 
 def test_a_retired_model_on_an_old_record_is_not_spawned(client, monkeypatch, tmp_path):
