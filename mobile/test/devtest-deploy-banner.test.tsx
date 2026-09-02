@@ -195,3 +195,18 @@ test('a branch that is already level does not block the banner', async () => {
   const { findByTestId } = render(<DeployBanner />);
   await findByTestId('devtest-deploy-now');
 });
+
+test('a rebased branch — zero behind but still different — is still a blocker', async () => {
+  // The shape the first cut missed. `server_behind` is `rev-list --count HEAD..origin/main`, so
+  // a feature branch that already CONTAINS origin/main counts zero behind while still differing
+  // from it — the ordinary state of a rebased branch. Deploy refuses on `server !== target`, so
+  // gating the banner on the behind-count offered a button that always 409s. The server code
+  // says exactly this about `backend_restarting`, one field over.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', server_behind: 0,
+                    server: 'rebased-sha', target: 'abc', server_branch: 'my-feature' }),
+  });
+  const { findByText, queryByTestId } = render(<DeployBanner />);
+  await findByText(/server checkout is on my-feature, not main/);
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
+});

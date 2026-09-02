@@ -1741,8 +1741,12 @@ def deploy_state(request: Request, fetch: bool = True):
         # Same asymmetry the dispatch status route settles: state still crosses so the banner
         # works off-tailnet, but host paths and commit subjects do not, and the button is not
         # offered for a POST that will always 403.
+        # `server_branch` names unmerged in-progress work on the dev Mac — the same class of
+        # detail as the host path beside it. Blanking it also lets the client's branch clause
+        # short-circuit, so an off-tailnet reader gets the actionable "use the tailnet address"
+        # rather than a branch name they can do nothing with.
         status = {**status, "device_worktree": None, "target_subject": None,
-                  "last_error": None, "deployable": False}
+                  "last_error": None, "server_branch": "", "deployable": False}
     else:
         status["deployable"] = True
     return {"deploy": {**status, "active_job": jobs.any_active()}}

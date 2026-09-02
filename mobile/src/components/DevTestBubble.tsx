@@ -968,7 +968,12 @@ export function DeployBanner() {
     // because switching a tree someone is working in is the thing it exists to stop. Without
     // this clause the banner offered "Deploy and reload" into a guaranteed 409 — a repeatable
     // dead end with nothing on the phone to explain it.
-    : state.server_behind > 0 && state.server_branch && state.server_branch !== 'main'
+    //
+    // Keyed on server !== target, NOT on `server_behind`, for the reason `backend_restarting`
+    // spells out on the server side: a feature branch that already CONTAINS origin/main is zero
+    // behind while still differing from it, which is the ordinary shape of a rebased branch —
+    // and precisely the case where deploy refuses and the button must not be offered.
+    : state.server !== state.target && state.server_branch && state.server_branch !== 'main'
       ? `the server checkout is on ${state.server_branch}, not main`
     : !state.deployable ? 'this is the public tunnel; use the tailnet address'
     : null;

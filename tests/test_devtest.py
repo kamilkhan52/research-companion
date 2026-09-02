@@ -1789,6 +1789,8 @@ def test_the_status_route_redacts_host_paths_over_the_tunnel(client, monkeypatch
     d = client.get("/api/devtest/deploy", headers={"cf-ray": "8a1b-LHR"}).json()["deploy"]
     assert d["deployable"] is False
     assert d["device_worktree"] is None and d["target_subject"] is None
+    # Names unmerged work on the dev Mac, same class as the host path beside it.
+    assert d["server_branch"] == ""
     assert d["device_behind"] > 0        # state still crosses, so the banner still works
 
 
