@@ -764,6 +764,22 @@ def _assert_server_can_fast_forward(root: Path) -> None:
 
     Two ways it cannot complete, both cheap to know in advance.
     """
+    # The server checkout must already BE on main. The first cut ran `git checkout main` to put
+    # it there, which quietly yanked the working tree out from under whoever was using it — and
+    # in an agent-parallel setup that is routinely a session mid-PR. It refused on a DIRTY tree,
+    # but a committed feature branch is clean, so the common case sailed straight through.
+    #
+    # The settled answer in agent-parallel tooling is one worktree per ROLE: you never develop
+    # in the tree you deploy to. This repo already does that for Metro (`device-main`) and for
+    # dispatched sessions (`.claude/worktrees/dispatch`); refusing here makes the server's
+    # checkout the same kind of thing rather than a shared workspace that deploy fights over.
+    # Cheap for the normal case (it sits on main) and loud for the case that used to hurt.
+    branch = _git_out(root, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch != "main":
+        raise DeployError(
+            f"the server checkout is on '{branch}', not main, so deploying would switch the "
+            "tree someone is working in. Do that work in a git worktree and leave this "
+            "checkout on main, or park the branch first")
     ok, _ = _git_try(root, "rev-parse", "--verify", "refs/heads/main")
     if ok:
         # Local `main` carrying commits that are not on origin/main: the fast-forward refuses,
