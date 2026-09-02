@@ -109,6 +109,14 @@ export interface DevTestItem {
   feedback_count: number;
   /** DR-080: agent replies recorded by triage — the card flags their presence. */
   response_count?: number;
+  /** DR-118: epoch SECONDS of the newest server-side thing that happened to this item — an
+   *  agent reply, a dispatch, or the tester's own verdict/remark. Null when nothing has. The
+   *  bubble maxes it against its device-local "when I last opened this card". */
+  last_activity?: number | null;
+  /** What that timestamp refers to: the tester raising the item (`raised`) or leaving a
+   *  verdict/remark on it (`you`), an agent reply (`claude`), or a dispatched session
+   *  (`dispatch`). */
+  last_activity_kind?: 'raised' | 'you' | 'claude' | 'dispatch' | null;
 }
 export interface DevTestFeedbackEntry {
   ts: string;

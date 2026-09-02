@@ -297,6 +297,203 @@ def test_untriaged_new_item_still_lists(client, monkeypatch, tmp_path):
     assert next(i for i in items if i["id"] == "NEW-1")["state"] == "new — untriaged"
 
 
+# --- last activity per item (DR-118) ----------------------------------------------------------
+#
+# Kamil: "I usually want to just find the last item I opened or dispatched or was last worked on
+# by Claude." Two of those three are server-side facts; the third is device-local, so the client
+# maxes this against its own draft state.
+
+def _epoch(ts: str) -> float:
+    from datetime import datetime
+
+    return datetime.fromisoformat(ts).timestamp()
+
+
+def _ledger(tmp_path, monkeypatch, text=LEDGER_SAMPLE):
+    path = tmp_path / "ledger.md"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(devtest, "_LEDGER", path)
+    return path
+
+
+def _plant_dispatch_record(tmp_path, name, **info):
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.json").write_text(json.dumps(info), encoding="utf-8")
+
+
+def _by_id(client):
+    return {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+
+
+def test_last_activity_reports_the_newest_event_and_what_kind_it_was(client, tmp_path, monkeypatch):
+    """The kind belongs to the WINNING event, not to whichever source is checked last. BOTH
+    directions are needed (Opus review, PR #471): with only "a dispatch after a reply", a
+    dispatch loop that overwrote the kind unconditionally would pass. DR-002 is the mirror —
+    a dispatch first, then the reply that must win."""
+    _ledger(tmp_path, monkeypatch, LEDGER_SAMPLE + (
+        "| DR-002 | 2026-07-21 | Dispatched, then answered. | `open` | — |\n"))
+    devtest._append_feedback({"ts": "2026-09-01T09:00:00+00:00", "kind": "response",
+                              "item_id": "DR-001", "text": "shipped"})
+    _plant_dispatch_record(tmp_path, "dispatch-20260901-100000-aaaaaa",
+                           item_id="DR-001", started_ts=_epoch("2026-09-01T10:00:00+00:00"))
+    devtest._append_feedback({"ts": "2026-09-01T08:00:00+00:00", "kind": "feedback",
+                              "item_id": "DR-058", "verdict": "fail", "comment": "no"})
+    devtest._append_feedback({"ts": "2026-09-01T11:00:00+00:00", "kind": "response",
+                              "item_id": "DR-058", "text": "looking"})
+    _plant_dispatch_record(tmp_path, "dispatch-20260901-090000-bbbbbb",
+                           item_id="DR-002", started_ts=_epoch("2026-09-01T09:00:00+00:00"))
+    devtest._append_feedback({"ts": "2026-09-01T12:00:00+00:00", "kind": "response",
+                              "item_id": "DR-002", "text": "done"})
+
+    items = _by_id(client)
+    assert items["DR-001"]["last_activity"] == _epoch("2026-09-01T10:00:00+00:00")
+    assert items["DR-001"]["last_activity_kind"] == "dispatch"
+    assert items["DR-058"]["last_activity"] == _epoch("2026-09-01T11:00:00+00:00")
+    assert items["DR-058"]["last_activity_kind"] == "claude"
+    assert items["DR-002"]["last_activity"] == _epoch("2026-09-01T12:00:00+00:00")
+    assert items["DR-002"]["last_activity_kind"] == "claude"
+    # An item nothing has ever happened to says so, rather than reporting 0 (which would sort as
+    # 1970 in one direction and as "just now" in a client that treats falsy as missing).
+    assert items["DR-013"]["last_activity"] is None
+    assert items["DR-013"]["last_activity_kind"] is None
+
+
+def test_activity_recorded_under_a_provisional_id_counts_toward_its_ledger_row(
+        client, tmp_path, monkeypatch):
+    """The DR-097 aliasing again: a dispatch fired from the phone names the NEW id, and the row
+    it was triaged into is the only card that will ever be on screen for it."""
+    _ledger(tmp_path, monkeypatch, LEDGER_WITH_ALIAS)
+    _plant_dispatch_record(tmp_path, "dispatch-20260901-120000-bbbbbb",
+                     item_id="NEW-1787325358", started_ts=_epoch("2026-09-01T12:00:00+00:00"))
+    row = _by_id(client)["DR-091"]
+    assert row["last_activity"] == _epoch("2026-09-01T12:00:00+00:00")
+    assert row["last_activity_kind"] == "dispatch"
+
+
+def test_raising_an_untriaged_item_is_itself_activity(client, tmp_path, monkeypatch):
+    """It is the ONLY activity a brand-new item has, and it is the item most likely to be the
+    one being looked for — without this it sorts as though nothing ever happened to it."""
+    _ledger(tmp_path, monkeypatch)
+    devtest._append_feedback({"ts": "2026-09-01T13:00:00+00:00", "kind": "new_item",
+                              "id": "NEW-9", "title": "t", "description": ""})
+    row = _by_id(client)["NEW-9"]
+    assert row["last_activity"] == _epoch("2026-09-01T13:00:00+00:00")
+    assert row["last_activity_kind"] == "raised"
+
+
+def test_a_batch_dispatch_is_not_credited_to_any_item(client, tmp_path, monkeypatch):
+    """`item_id: null` means "all pending issues". Crediting it to every open row would give
+    them all one identical timestamp and flatten the ordering this field exists to produce."""
+    _ledger(tmp_path, monkeypatch)
+    _plant_dispatch_record(tmp_path, "dispatch-20260901-140000-cccccc",
+                           item_id=None, started_ts=_epoch("2026-09-01T14:00:00+00:00"))
+    assert all(i["last_activity"] is None for i in _by_id(client).values())
+    # The route assertion above is double-guarded (a `None` target is also dropped when the
+    # activity is recorded), so it stays green with the skip deleted — assert on the scan itself,
+    # which is where the decision actually lives (Opus review, PR #471).
+    assert devtest._dispatch_activity({}) == {}
+
+
+@pytest.fixture
+def non_utc_timezone():
+    """Run a test in a zone with a real UTC offset.
+
+    Both timestamp tests below are TAUTOLOGIES on a UTC machine — reading a naive local value as
+    if it were UTC gives the same number — and GitHub's runners are UTC while the dev Mac is not.
+    Since merges are gated on CI, the blind spot was on exactly the side that matters (Opus
+    review, PR #471).
+
+    It takes its OWN `MonkeyPatch` rather than the shared per-test one: `undo()` on that would
+    also unwind whatever the `client` fixture had patched (`RC_DEVTEST_DIR`, `dev_mode`) for any
+    test using both. Harmless today given LIFO finalization, latent otherwise (Opus review,
+    PR #471, round 2).
+    """
+    import time as _time
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TZ", "America/New_York")
+        _time.tzset()
+        yield
+    _time.tzset()       # after the context restored the previous TZ
+
+
+def test_one_instant_spelled_three_ways_reads_as_one_timestamp(non_utc_timezone):
+    """The inbox is append-only and still holds pre-UTC NAIVE local timestamps beside today's
+    UTC-aware ones, so the two are compared against each other constantly. The property that
+    makes that safe is this one, and it is what a text comparison (or reading a naive value as
+    UTC) breaks: one instant, however spelled, is one number.
+
+    Pinned to a non-UTC zone by the fixture, because in UTC the two implementations agree and
+    the assertion proves nothing.
+    """
+    from datetime import UTC, datetime
+
+    naive_local = datetime.now().replace(microsecond=0)
+    # The property has teeth only if the two spellings really differ here.
+    assert naive_local.isoformat() != naive_local.astimezone(UTC).isoformat()
+    assert devtest._entry_epoch(naive_local.isoformat()) == naive_local.timestamp()
+    assert devtest._entry_epoch(naive_local.astimezone().isoformat()) == naive_local.timestamp()
+    assert devtest._entry_epoch(
+        naive_local.astimezone(UTC).isoformat()) == naive_local.timestamp()
+    # Unreadable input contributes nothing rather than raising through the route.
+    assert devtest._entry_epoch("not a timestamp") is None
+    assert devtest._entry_epoch(None) is None and devtest._entry_epoch(17) is None
+
+
+def test_naive_and_aware_inbox_timestamps_are_ordered_against_each_other(
+        client, tmp_path, monkeypatch, non_utc_timezone):
+    """The same property through the route: a mixed-format history still orders by instant."""
+    from datetime import datetime, timedelta
+
+    older = datetime.now().replace(microsecond=0) - timedelta(hours=1)
+    newer = older.astimezone() + timedelta(minutes=30)   # 30 min later, and AWARE
+    _ledger(tmp_path, monkeypatch)
+    devtest._append_feedback({"ts": older.isoformat(), "kind": "feedback",   # naive, local
+                              "item_id": "DR-001", "verdict": "fail", "comment": "old"})
+    devtest._append_feedback({"ts": newer.isoformat(), "kind": "response",   # aware
+                              "item_id": "DR-001", "text": "new"})
+    row = _by_id(client)["DR-001"]
+    assert row["last_activity_kind"] == "claude"
+    assert row["last_activity"] == pytest.approx(newer.timestamp())
+
+
+def test_a_corrupt_dispatch_record_loses_only_itself(client, tmp_path, monkeypatch):
+    _ledger(tmp_path, monkeypatch)
+    (tmp_path / "inbox" / "dispatch").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "inbox" / "dispatch" / "dispatch-20260901-150000-dddddd.json").write_text(
+        "{not json", encoding="utf-8")
+    _plant_dispatch_record(tmp_path, "dispatch-20260901-160000-eeeeee",
+                           item_id="DR-058", started_ts=_epoch("2026-09-01T16:00:00+00:00"))
+    items = _by_id(client)
+    assert items["DR-058"]["last_activity"] == _epoch("2026-09-01T16:00:00+00:00")
+
+
+def test_the_dispatch_scan_is_bounded_to_the_newest_records(client, tmp_path, monkeypatch):
+    """The directory only grows and this runs on every bubble open. The bound is safe only
+    because the filenames sort by spawn time — the newest record must survive it.
+
+    DR-001 is what makes this discriminating (Opus review, PR #471): the filler records ascend in
+    step with their names, so a max over all of them equals a max over the tail, and the earlier
+    version of this test stayed green with the bound deleted. DR-001's record is the OLDEST by
+    name and therefore outside the tail, while carrying the NEWEST timestamp of the lot — so it
+    is visible if and only if the bound is gone."""
+    _ledger(tmp_path, monkeypatch)
+    _plant_dispatch_record(tmp_path, "dispatch-20260701-000000-000000",
+                           item_id="DR-001", started_ts=_epoch("2026-09-03T00:00:00+00:00"))
+    for n in range(devtest.DISPATCH_ACTIVITY_SCAN + 5):
+        _plant_dispatch_record(tmp_path, f"dispatch-20260801-{n:06d}-aaaaaa",
+                               item_id="DR-013", started_ts=1.0 + n)
+    _plant_dispatch_record(tmp_path, "dispatch-20260902-000000-ffffff",
+                           item_id="DR-058", started_ts=_epoch("2026-09-02T00:00:00+00:00"))
+    items = _by_id(client)
+    assert items["DR-058"]["last_activity"] == _epoch("2026-09-02T00:00:00+00:00")
+    # Off the tail entirely, however new its timestamp — the bound's real cost, stated.
+    assert items["DR-001"]["last_activity"] is None
+    # Records inside the tail still count.
+    assert items["DR-013"]["last_activity"] == 1.0 + devtest.DISPATCH_ACTIVITY_SCAN + 4
+
+
 # --- dispatch to Claude (DR-092) -------------------------------------------------------------
 
 def test_dispatch_spawns_a_detached_session_and_records_it(client, tmp_path, monkeypatch):

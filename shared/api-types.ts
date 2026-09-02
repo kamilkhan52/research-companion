@@ -532,6 +532,14 @@ export interface paths {
          * List Items
          * @description Every ledger row plus app-created items not yet triaged into the ledger, with the
          *     tester-facing ordering hint (open → verify → the rest) left to the client.
+         *
+         *     DR-118: each item also carries `last_activity` (epoch seconds) and `last_activity_kind`, the
+         *     server's half of the bubble's "Last activity" sort. Kamil: "I usually want to just find the
+         *     last item I opened or dispatched or was last worked on by Claude." Two of those three live
+         *     here — an agent reply (`kind: response`) and a dispatch record — and the third (which card he
+         *     last expanded) is device-local, so the client maxes this against its own draft state. What is
+         *     NOT counted: a ledger EDIT. Rows are rewritten in bulk by a triage pass and the file carries no
+         *     per-row mtime, so "Claude touched this row" is only legible through the reply it filed.
          */
         get: operations["list_items_api_devtest_items_get"];
         put?: never;
