@@ -99,8 +99,15 @@ _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 #: "chat", "on DR-091's fail, filed under its provisional id"). Requiring the quote is what
 #: keeps this off ordinary prose that happens to open with a capitalised word and a bracket,
 #: like DR-072's "Toast notifications (`mobile/src/ui/Toast.tsx`) are absolutely positioned…".
-_ATTRIBUTION_RE = re.compile(
-    "^\\s*[A-Z][\\w.'-]*\\s*\\([^)]*\\)\\s*:\\s*(?=[\"\\u201c])")
+#: Named rather than generic, and the parenthetical is optional. Both shapes occur —
+#: `Kamil (bubble, provisional id …): "…"` and a bare `Kamil: "…"` (DR-075, DR-079) — and the
+#: emulator pass is what surfaced the second one. Matching any capitalised word before a colon
+#: would have been the tempting generalisation and is wrong: a title like
+#: `Discover: "no results" state is confusing` would lose its subject, and DR-095's
+#: `The immersive discussion canvas itself (#413, merged …): full-bleed …` would lose its. The
+#: name is the safe discriminator — Kamil is the only reporter this ledger has — so widen it
+#: deliberately if that ever changes.
+_ATTRIBUTION_RE = re.compile("^\\s*Kamil\\s*(?:\\([^)]*\\))?\\s*:\\s*")
 
 #: Within such a row Kamil's own words are the first quoted run; whatever follows is the
 #: triager's annotation (his longer description, "(description empty; his screenshot is …)",

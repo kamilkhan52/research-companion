@@ -2058,13 +2058,33 @@ def test_the_annotation_after_his_words_is_not_part_of_the_title():
     assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "Dev test bubble shows 11 of 117"
 
 
-def test_the_attribution_is_recognised_by_its_shape_not_its_wording():
-    """The parenthetical varies — "bubble, provisional id …", "chat", "on DR-091's fail" — so
-    the pattern keys on name-paren-colon-QUOTE instead."""
+def test_the_attribution_is_recognised_in_every_shape_the_ledger_uses():
+    """The parenthetical varies — "bubble, provisional id …", "chat", "on DR-091's fail" — and
+    is sometimes absent entirely (DR-075, DR-079), which the EMULATOR pass is what caught: the
+    unit tests only had the bracketed shape because that was the one I had gone looking for."""
     for lead in ("Kamil (chat): ", "Kamil (bubble, provisional id `NEW-1`, `/x`): ",
-                 "Kamil (on DR-091's fail, filed under its provisional id): "):
+                 "Kamil (on DR-091's fail, filed under its provisional id): ", "Kamil: "):
         row = f"| DR-900 | 2026-09-01 | {lead}\"The actual thing\" | `open` | E. |"
         assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "The actual thing", lead
+
+
+def test_attribution_followed_by_prose_loses_the_prefix_and_keeps_the_prose():
+    """DR-093 is `Kamil: the paper's "Reference graph" option loaded the full Map…` — the quote
+    is mid-sentence, so taking the first quoted run would leave two words. Strip the prefix,
+    keep everything after it."""
+    row = ("| DR-093 | 2026-08-01 | Kamil: the paper's \"Reference graph\" option loaded the "
+           "full Map. | `open` | E. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == (
+        "the paper's \"Reference graph\" option loaded the full Map.")
+
+
+def test_a_title_that_merely_has_a_colon_keeps_its_subject():
+    """The tempting generalisation — strip any capitalised word before a colon — would eat the
+    subject of a perfectly good title. The reporter's NAME is the discriminator."""
+    for text in ('Discover: "no results" state is confusing',
+                 "The immersive discussion canvas itself (#413, merged 2026-08-21): full-bleed."):
+        row = f"| DR-901 | 2026-08-01 | {text} | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == text
 
 
 def test_ordinary_prose_rows_are_returned_untouched():
