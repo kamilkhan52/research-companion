@@ -90,7 +90,7 @@ _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 #: provisional id `NEW-…`, `/route`): ". The skill only ever meant his title to go there, but it
 #: did not say where the provisional id belonged, so the id, the source and the route were all
 #: written in front of the title. On the phone that renders as a wall of leading syntax,
-#: backticks and all, and 16 of 118 rows carry it (Kamil, 2026-09-02: "they start with what
+#: backticks and all, and 37 of 119 rows carry it (Kamil, 2026-09-02: "they start with what
 #: appears like some formatting or syntax of some sort. I want it clean like the rest").
 #: Stripped for DISPLAY only — the raw text still feeds `aliases`, which is the DR-097 link
 #: between a `NEW-…` item and the row it became.
@@ -112,7 +112,17 @@ _ATTRIBUTION_RE = re.compile("^\\s*Kamil\\s*(?:\\([^)]*\\))?\\s*:\\s*")
 #: Within such a row Kamil's own words are the first quoted run; whatever follows is the
 #: triager's annotation (his longer description, "(description empty; his screenshot is …)",
 #: a link to the asset), which belongs in the evidence column and not in a title.
-_QUOTED_TITLE_RE = re.compile(r'^["\u201c](?P<t>[^"\u201d]+)["\u201d]', re.S)
+_QUOTED_TITLE_RE = re.compile(r'^["\u201c](?P<t>[^"\u201d]+)["\u201d]')
+
+#: What may legitimately follow his quoted words: the triager's aside, never more of his own
+#: sentence. Without this the quoted-run pattern stops at the first INNER quote — his phone
+#: emits smart quotes and he quotes UI labels constantly — so
+#: `Kamil (chat): "the "Done" button does nothing"` would have become the single word `the`,
+#: silently, and the row would then be unfindable by the bubble's title search.
+_ANNOTATION_RE = re.compile(r'^\s*(?:$|[\u2014\u2013(\[/]|-\s|Remarks?\b|Screenshot\b)')
+
+#: Straight and smart, opening and closing.
+_QUOTE_CHARS = "\"\u201c\u201d"
 
 
 def _display_title(feedback: str) -> str:
@@ -127,9 +137,20 @@ def _display_title(feedback: str) -> str:
         return feedback.strip()
     cleaned = cleaned.strip()
     match = _QUOTED_TITLE_RE.match(cleaned)
-    if match:
-        return match.group("t").strip()
-    return cleaned.lstrip('"\u201c').strip() or feedback.strip()
+    if match and _ANNOTATION_RE.match(cleaned[match.end():]):
+        return match.group("t").strip() or feedback.strip()
+    # The quote that closed the run was an inner one, not the end of his sentence. Keep the
+    # whole thing rather than the fragment before it — a shorter title is not automatically a
+    # better one, and this function's promise is that no row comes out worse than it went in.
+    # Exactly ONE quote character off each end, never `strip()`: on `"\u201cDone\u201d does nothing"`
+    # a set-strip eats the opening smart quote along with the wrapping one. The trailing quote
+    # goes only if a leading one did, so a title that merely ENDS in a quotation —
+    # `he said "hi"` — is left alone.
+    if cleaned[:1] in _QUOTE_CHARS:
+        cleaned = cleaned[1:]
+        if cleaned[-1:] in _QUOTE_CHARS:
+            cleaned = cleaned[:-1]
+    return cleaned.strip() or feedback.strip()
 
 
 #: States the tester acts on, in the order the app should surface them.

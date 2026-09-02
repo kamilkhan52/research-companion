@@ -2102,3 +2102,35 @@ def test_an_unterminated_quote_still_loses_the_attribution():
     """A row someone hand-edited into a broken shape should still read better, not blow up."""
     row = ("| DR-902 | 2026-09-01 | Kamil (chat): \"a thought he never closed | `open` | E. |")
     assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "a thought he never closed"
+
+
+def test_an_inner_quote_never_truncates_the_title():
+    """The quoted-run pattern stops at the first closing quote, and his own words routinely
+    contain one — his keyboard emits smart quotes and he quotes UI labels constantly. Cutting
+    there produced a one-word title, silently, and made the row unfindable by title search."""
+    row = ('| DR-903 | 2026-09-02 | Kamil (chat): "the "Done" button does nothing" '
+           '| `open` | E. |')
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == 'the "Done" button does nothing'
+
+
+def test_a_smart_quoted_label_keeps_both_of_its_quotes():
+    """Set-stripping the wrapper ate the opening smart quote with it, so only ONE character
+    comes off each end."""
+    row = '| DR-904 | 2026-09-02 | Kamil (chat): "“Done” does nothing" | `open` | E. |'
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "“Done” does nothing"
+
+
+def test_a_title_is_never_emptied():
+    """A blank title is a card with no subject and an accessibility label reading "DR-9xx: ."."""
+    row = '| DR-905 | 2026-09-02 | Kamil (chat): "   " | `open` | E. |'
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"].strip()
+
+
+def test_the_quoted_run_is_only_taken_when_an_ASIDE_follows_it():
+    """What may follow his words is the triager's annotation, never more of his sentence."""
+    for tail, expected in ((' — "his longer description"', "His words"),
+                           (' (description empty; screenshot below)', "His words"),
+                           (' [screenshot](assets/x.jpg)', "His words"),
+                           ('', "His words")):
+        row = f'| DR-906 | 2026-09-02 | Kamil (chat): "His words"{tail} | `open` | E. |'
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == expected, tail

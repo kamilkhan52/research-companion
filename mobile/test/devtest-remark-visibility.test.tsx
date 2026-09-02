@@ -85,5 +85,8 @@ test('a failed history fetch does not lose the remark that already succeeded', a
   // tell him the exact opposite of what happened — the remark IS saved.
   await waitFor(() => expect(showToast).toHaveBeenCalledWith(
     expect.stringMatching(/recorded/i)));
-  expect(showToast).not.toHaveBeenCalledWith(expect.stringMatching(/could not/i));
+  // Exactly one toast. Asserting only "no /could not/" passed even with the try/catch removed,
+  // because the rejection then surfaced as its own message ("offline") that matched neither
+  // pattern — the test agreed with itself rather than with the guarantee.
+  expect(showToast).toHaveBeenCalledTimes(1);
 });
