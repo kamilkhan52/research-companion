@@ -244,7 +244,10 @@ test('a fail verdict, then a separate remark, keeps the Failed indication', asyn
 
   // A later remark on the same item is a note, not a new verdict — it must not clear or
   // overwrite the Failed marker.
-  fireEvent.press(screen.getByText(item.title));
+  //
+  // No reopening tap here: a fail now LEAVES the card open on its dispatch prompt (DR-122), so
+  // tapping the header would close it and take the composer with it. The invariant this test
+  // exists for is unchanged; only the gesture that reaches it is.
   const input = await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
   fireEvent.changeText(input, 'Adding more context.');
   fireEvent.press(screen.getByText('Remark'));

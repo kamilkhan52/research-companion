@@ -219,6 +219,10 @@ way they did. This is an index, not a substitute for reading them.
   stalled on him twice in one day). It may merge ONLY after that review approves and CI is
   green at the head sha. Poll `GET /api/devtest/dispatch` for its heartbeat; its log is
   `stream-json`, one record per line, under `.dev-feedback/dispatch/`.
+  **A Fail prompts to dispatch** (DR-122): recording a fail and acting on it used to be two
+  gestures a screen apart, and the gap is where a fail sits — one waited ten hours because
+  nothing carried it anywhere. A fail leaves the card open on an offer to hand it over; a pass
+  still closes, and a remark stays open on its note rather than burying it under a prompt.
   **A dispatch on an item a session already worked CONTINUES that session** (Kamil,
   2026-09-02): it holds the diagnosis and the code it already read, and a fresh one pays for
   all of it again and then answers his follow-up without knowing what it is a follow-up to. The

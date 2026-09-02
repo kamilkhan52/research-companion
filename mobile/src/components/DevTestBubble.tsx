@@ -1421,6 +1421,10 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // ordinary dispatch was in flight, and the second tap earned a raw single-flight 409 toast
   // rather than doing nothing.
   const [dispatching, setDispatching] = useState<'item' | 'fresh' | null>(null);
+  // Shown only just after a fail is recorded. Deliberately not persisted: it is a prompt about
+  // the thing he just did, not a state of the item — coming back tomorrow to a card still
+  // asking "send this to Claude?" would be noise on an item already dealt with.
+  const [failPrompt, setFailPrompt] = useState(false);
   // DR-065: "which item was opened, any unfinished message... full resumption of previous
   // state" — closing the sheet (or the app dying) used to lose whichever card was expanded and
   // whatever remark was half-typed, since it was plain useState inside a Modal. Keyed per item
@@ -1495,8 +1499,16 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
       // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
       // (which actually persists) instead, resetting only the ephemeral fields.
-      // A verdict closes the card, and it must close it the same way a header tap does.
-      if (verdict !== 'remark') setExpanded(false);
+      // A FAIL is the one verdict that asks for work, so it does not just close: the card
+      // stays open on a prompt to hand it to Claude. Kamil, 2026-09-02: "Let's prompt for
+      // dispatch on Fail." Before this, recording a fail and dispatching on it were two
+      // unrelated gestures a screen apart, and the gap is where a fail sat all morning — the
+      // DR-009 fail waited ten hours because nothing carried it anywhere.
+      //
+      // A PASS still closes. It finishes with the item and DR-077's queue wants it gone.
+      const prompting = verdict === 'fail' && !!dispatchModel;
+      if (verdict === 'pass') setExpanded(false);
+      setFailPrompt(prompting);
       draft.setValue((v) => ({
         // A remark is a COMMENT, and the card used to collapse on submit with the history list
         // untouched — so the note you had just written vanished and nothing said it had landed.
@@ -1506,7 +1518,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
         // out of the way.
         // `setExpanded(false)` above already wrote the collapse for a verdict; this literal
         // replaces the whole draft, so it has to carry the same value rather than contradict it.
-        expanded: verdict === 'remark', comment: '', attach: false,
+        expanded: verdict !== 'pass', comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
         verdictAt: verdict === 'remark' ? v.verdictAt : Date.now(),
         // Carried, not reset: this literal replaces the whole draft, and DR-118's visit stamp is
@@ -1688,6 +1700,45 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             <Button title="Remark" icon="message-circle" variant="ghost" disabled={busy}
               onPress={() => void send('remark')} />
           </View>
+          {/* The prompt a fail raises. It sits ABOVE the ordinary dispatch controls and states
+              what it will do, because the point is that recording the fail and acting on it
+              stop being two separate gestures a screen apart. */}
+          {failPrompt ? (
+            <View style={styles.failPrompt} testID="devtest-fail-prompt">
+              <Text variant="caption" color={t.text}>
+                Fail recorded. Hand it to Claude now?
+              </Text>
+              <Text variant="caption" color={t.muted}>
+                It continues the session that already worked this item when there is one, so it
+                starts from your comment rather than from scratch.
+              </Text>
+              <View style={styles.failPromptRow}>
+                <Button
+                  title={`Dispatch (${dispatchModel})`}
+                  icon="zap"
+                  loading={dispatching === 'item'}
+                  disabled={dispatching !== null}
+                  testID="devtest-fail-prompt-dispatch"
+                  onPress={() => {
+                    void fireDispatch(
+                      dispatchModel as DispatchModel, item.id,
+                      (b) => setDispatching(b ? 'item' : null),
+                    ).then(() => {
+                      setFailPrompt(false);
+                      setExpanded(false);   // handed off; the queue wants it out of the way
+                    });
+                  }}
+                />
+                <Button
+                  title="Not now"
+                  variant="ghost"
+                  disabled={dispatching !== null}
+                  testID="devtest-fail-prompt-dismiss"
+                  onPress={() => { setFailPrompt(false); setExpanded(false); }}
+                />
+              </View>
+            </View>
+          ) : null}
           {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
               Fire-on-tap; the toast and its eventual bubble reply confirm. */}
           {/* Two buttons, not a toggle: continuing is the default and the common case, so it
@@ -1803,6 +1854,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
   dispatchRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.sm },
+  failPrompt: {
+    marginTop: space.sm,
+    padding: space.sm,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.amber,
+    backgroundColor: t.amberWash,
+    gap: space.xs,
+  },
+  failPromptRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   dispatchBanner: {
     marginTop: space.xs,
     paddingVertical: space.xs,
