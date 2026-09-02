@@ -1261,8 +1261,8 @@ def test_a_still_dirty_tree_after_stashing_refuses_rather_than_resetting_over_it
 # --- deploying what a dispatch built (Kamil, 2026-09-01) --------------------------------------
 
 def _fake_git(monkeypatch, *, server="aaa", device="bbb", target="ccc", dirty="",
-              behind=("2", "3")):
-    """Stub the two git helpers. Returns the list of MUTATING calls made."""
+              server_behind="2", device_behind="3", lockfile=""):
+    """Stub the git helpers. Returns the list of MUTATING calls made."""
     from app.routers import devtest as dt
 
     ran: list[tuple] = []
@@ -1273,17 +1273,37 @@ def _fake_git(monkeypatch, *, server="aaa", device="bbb", target="ccc", dirty=""
         if args[:2] == ("rev-parse", "HEAD"):
             return device if "device" in str(cwd) else server
         if args[0] == "rev-list":
-            return behind[0] if "device" not in args[-1] else behind[1]
+            # The range is "<head>..<target>", so which checkout is being asked about is read
+            # from the HEAD it starts at — not from the cwd, which is always the main root.
+            return device_behind if args[-1].startswith(device) else server_behind
+        if args[0] == "diff":
+            return lockfile
         if args[:2] == ("status", "--porcelain"):
             return dirty
         if args[0] == "log":
             return "DR-116: the newest merged thing"
         return ""
 
+    def tried(cwd, *args):
+        # `_git_try` carries the MUTATING calls too (the device advance, the fast-forward), so
+        # record here as well or a test asserting "it moved the worktree" sees an empty list.
+        ran.append((str(cwd), args))
+        return True, out(cwd, *args)
+
     monkeypatch.setattr(dt, "_git_out", out)
+    monkeypatch.setattr(dt, "_git_try", tried)
     monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append((str(cwd), a)))
     monkeypatch.setattr(dt, "_preserve_worktree", lambda wt, label: None)
+    monkeypatch.setattr(dt, "_active_job", lambda force: None)
     return ran
+
+
+def _device_wt(dt, tmp_path):
+    """A stand-in device worktree. Idempotent: `_device_worktree` is called several times per
+    deploy, so this runs more than once per test."""
+    device = tmp_path / "device-wt"
+    (device / ".git").mkdir(parents=True, exist_ok=True)
+    return device
 
 
 def test_deploy_status_says_how_far_the_phone_is_behind_what_merged(client, monkeypatch,
@@ -1292,15 +1312,47 @@ def test_deploy_status_says_how_far_the_phone_is_behind_what_merged(client, monk
     and NOTHING the reader can see until the checkouts follow."""
     from app.routers import devtest as dt
 
-    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc",
+              server_behind="2", device_behind="3")
     monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
-    (tmp_path / dt.DEVICE_WORKTREE / ".git").mkdir(parents=True)   # Metro's worktree exists
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
     monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
     d = client.get("/api/devtest/deploy").json()["deploy"]
     assert d["target"] == "ccc" and d["server"] == "aaa" and d["device"] == "bbb"
-    assert d["server_behind"] > 0 and d["device_behind"] > 0
+    # Each checkout gets its OWN count — the first cut's stub could not tell them apart.
+    assert d["server_behind"] == 2 and d["device_behind"] == 3
     assert d["target_subject"].startswith("DR-116")
     assert d["active_job"] is None
+
+
+def test_the_status_route_fetches_or_the_banner_is_blind(client, monkeypatch, tmp_path):
+    """`origin/main` is a LOCAL ref: merging a PR on GitHub does not move it. Without a fetch
+    every checkout looks level with a commit that predates the merge, the banner never renders,
+    and the reader gets the DR-116 experience from the feature built to end it."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    fetched: list = []
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: fetched.append(str(root)))
+    client.get("/api/devtest/deploy")
+    assert fetched, "the status route must refresh origin/main before comparing against it"
+
+
+def test_deploy_fetches_before_it_decides_anything(monkeypatch, tmp_path):
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    order: list[str] = []
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: order.append("fetch"))
+    monkeypatch.setattr(dt, "_advance_server_checkout",
+                        lambda root, defer: order.append("server"))
+    dt.deploy()
+    assert order[0] == "fetch"          # before anything is compared or moved
 
 
 def test_deploy_advances_the_worktree_metro_serves_and_the_server_checkout(monkeypatch,
@@ -1310,44 +1362,73 @@ def test_deploy_advances_the_worktree_metro_serves_and_the_server_checkout(monke
     mobile-only change still leaves its new DR row invisible without it."""
     from app.routers import devtest as dt
 
-    device = tmp_path / "device-wt"
-    (device / ".git").mkdir(parents=True)
+    device = _device_wt(dt, tmp_path)
     ran = _fake_git(monkeypatch)
     monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
     monkeypatch.setattr(dt, "_device_worktree", lambda: device)
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    moved: list = []
+    monkeypatch.setattr(dt, "_advance_server_checkout",
+                        lambda root, defer: moved.append(defer))
 
-    result = dt.deploy(defer_server=False)
-    verbs = [a for _cwd, a in ran]
-    assert ("checkout", "-B", dt.DEVICE_BRANCH, "origin/main") in verbs   # the phone's JS
-    assert ("checkout", "main") in verbs and ("reset", "--hard", "origin/main") in verbs
+    result = dt.deploy()
+    # The worktree Metro serves is advanced onto the branch it parks on.
+    assert (str(device), ("checkout", "-B", dt.DEVICE_BRANCH, "origin/main")) in ran
+    assert moved == [False]             # synchronous off the HTTP path, so failures can raise
     assert result["needs_app_reload"] is True and result["backend_restarting"] is True
 
 
-def test_over_http_the_server_checkout_is_deferred_so_its_restart_cannot_truncate_the_reply(
-        monkeypatch, tmp_path):
-    """Advancing the server checkout trips `--reload`, restarting the very process answering
-    you. Inline, that would cut off the response reporting it."""
+def test_the_server_checkout_is_fast_forwarded_never_reset(monkeypatch, tmp_path):
+    """`reset --hard origin/main` silently orphaned unpushed commits on local `main` —
+    recoverable only through the reflog, and invisible to the dirty check, because git calls
+    that tree clean. Fast-forward is non-destructive by construction and fails loudly."""
+    from app.routers import devtest as dt
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(dt, "_git_try", lambda cwd, *a: (calls.append(a), (True, ""))[1])
+    dt._advance_server_checkout(tmp_path, defer=False)
+    assert ("checkout", "main") in calls
+    assert ("merge", "--ff-only", "origin/main") in calls
+    assert not any(a[0] == "reset" for a in calls)
+
+
+def test_a_failed_fast_forward_is_raised_not_swallowed(monkeypatch, tmp_path):
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_git_try",
+                        lambda cwd, *a: (True, "") if a[0] == "checkout"
+                        else (False, "Not possible to fast-forward"))
+    with pytest.raises(dt.DeployError, match="fast-forward"):
+        dt._advance_server_checkout(tmp_path, defer=False)
+
+
+def test_the_deferred_child_is_detached_and_runs_no_shell(monkeypatch, tmp_path):
+    """The first cut interpolated the checkout path into `/bin/sh -c`, which broke on a path
+    with a space and was one careless edit from being injectable."""
     import subprocess
+    import sys
 
     from app.routers import devtest as dt
 
-    device = tmp_path / "device-wt"
-    (device / ".git").mkdir(parents=True)
-    ran = _fake_git(monkeypatch)
-    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
-    monkeypatch.setattr(dt, "_device_worktree", lambda: device)
     spawned: list = []
     monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: spawned.append((argv, k)))
-
-    result = dt.deploy(defer_server=True)
-    verbs = [a for _cwd, a in ran]
-    assert ("checkout", "-B", dt.DEVICE_BRANCH, "origin/main") in verbs   # still done inline
-    assert ("checkout", "main") not in verbs                             # this one is not
-    assert result["server_pending"] is True
+    dt._advance_server_checkout(tmp_path / "a path with spaces", defer=True)
     argv, kwargs = spawned[0]
-    assert "reset --hard origin/main" in " ".join(argv)
-    # Detached: the reload it causes must not be able to kill it mid-checkout.
-    assert kwargs["start_new_session"] is True
+    assert argv[0] == sys.executable and argv[1] == "-c"
+    assert "/bin/sh" not in argv                        # nothing is shell-parsed
+    assert str(tmp_path / "a path with spaces") in argv  # passed as its own argv entry
+    assert kwargs["start_new_session"] is True          # the reload cannot interrupt it
+
+
+def test_the_dirty_check_fails_closed_when_git_cannot_answer(monkeypatch, tmp_path):
+    """The next statement after this check moves the tree. `_git_out` returns "" for a clean
+    tree AND for a timeout or a corrupt index, so reading "" as clean would run a destructive
+    step precisely when the guard was least able to see."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_git_try", lambda cwd, *a: (False, "index.lock exists"))
+    with pytest.raises(dt.DeployError, match="could not determine"):
+        dt._assert_clean(tmp_path, "the server checkout")
 
 
 def test_deploy_refuses_to_discard_uncommitted_work_in_the_server_checkout(monkeypatch,
@@ -1358,8 +1439,108 @@ def test_deploy_refuses_to_discard_uncommitted_work_in_the_server_checkout(monke
 
     _fake_git(monkeypatch, dirty=" M app/routers/devtest.py\n")
     monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
     with pytest.raises(dt.DeployError, match="uncommitted"):
         dt.deploy()
+
+
+def test_a_missing_device_worktree_is_an_error_not_a_silent_success(monkeypatch, tmp_path):
+    """A deploy that cannot move the phone's JS is not the thing the button promises. Reporting
+    success would send him to reload for a build that never changed."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: tmp_path / "not-here")
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    with pytest.raises(dt.DeployError, match="no device worktree"):
+        dt.deploy()
+
+
+def test_the_job_guard_is_on_the_work_not_on_the_route(monkeypatch, tmp_path):
+    """The dispatched session calls `deploy()` from its OWN process, where the job registries
+    are empty — so a guard living on the HTTP route could not protect the default path, and the
+    brief's "skip it if a job is live" was an instruction the session could not follow. DR-083
+    cost ~50 minutes of a Discover run to exactly this restart."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt, "_active_job", lambda force: None if force else "discover")
+    with pytest.raises(dt.DeployError, match="discover"):
+        dt.deploy()                       # the dispatch's path: refused
+    dt.deploy(force=True)                 # the route's path: it already checked
+
+
+def test_the_cross_process_check_asks_the_server_and_treats_silence_as_idle(monkeypatch):
+    """A server that cannot be reached has no jobs to kill, so an unreachable loopback is the
+    one thing here that is safe to read as idle."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert dt._active_job(force=False) is None
+
+
+def test_backend_restarting_is_true_for_a_diverged_checkout_not_just_a_behind_one(monkeypatch,
+                                                                                  tmp_path):
+    """A checkout on a feature branch that already contains origin/main is 0 BEHIND, yet moving
+    it to main still rewrites app/ and still restarts the worker. Reporting otherwise toasts
+    "reload the app" while the backend is coming down."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="feature-sha", target="ccc", server_behind="0")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt, "_advance_server_checkout", lambda root, defer: None)
+    assert dt.deploy()["backend_restarting"] is True
+
+
+def test_a_lockfile_change_warns_that_the_bundle_needs_npm_ci(client, monkeypatch, tmp_path):
+    """Otherwise a deploy hands him a broken or unchanged bundle with no signal."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, lockfile="mobile/package-lock.json\n")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    assert client.get("/api/devtest/deploy").json()["deploy"]["needs_npm_ci"] is True
+
+
+def test_deploy_over_http_reports_what_it_did(client, monkeypatch, tmp_path):
+    """The happy path, which every other route test here only ever refuses."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt, "_advance_server_checkout", lambda root, defer: None)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    r = client.post("/api/devtest/deploy", json={})
+    assert r.status_code == 200
+    body = r.json()["deploy"]
+    assert body["target"] == "ccc" and body["needs_app_reload"] is True
+
+
+def test_a_refusal_reads_as_a_conflict_not_a_crash(client, monkeypatch, tmp_path):
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: tmp_path / "not-here")
+    r = client.post("/api/devtest/deploy", json={})
+    assert r.status_code == 409 and "device worktree" in r.json()["detail"]
 
 
 def test_deploy_refuses_while_a_background_job_is_running(client, monkeypatch, tmp_path):
@@ -1394,6 +1575,22 @@ def test_deploy_is_refused_over_the_public_tunnel(client, monkeypatch, tmp_path)
     monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
     r = client.post("/api/devtest/deploy", json={}, headers={"cf-ray": "8a1b2c3d-LHR"})
     assert r.status_code == 403
+
+
+def test_the_status_route_redacts_host_paths_over_the_tunnel(client, monkeypatch, tmp_path):
+    """And does not offer a button for a POST that will always 403 — the same "offered but
+    refused" shape the resume flag exists to avoid."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    d = client.get("/api/devtest/deploy", headers={"cf-ray": "8a1b-LHR"}).json()["deploy"]
+    assert d["deployable"] is False
+    assert d["device_worktree"] is None and d["target_subject"] is None
+    assert d["device_behind"] > 0        # state still crosses, so the banner still works
 
 
 def test_deploy_routes_are_absent_outside_dev(tmp_path, monkeypatch):

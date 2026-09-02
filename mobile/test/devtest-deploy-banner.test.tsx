@@ -28,7 +28,8 @@ import type { DeployState } from '@/api/endpoints';
 const LEVEL: DeployState = {
   target: 'abc', target_subject: 'DR-116: the newest merged thing',
   server: 'abc', server_behind: 0, device: 'abc', device_behind: 0,
-  device_worktree: '/w/device-main', clean: true, active_job: null,
+  device_worktree: '/w/device-main', device_present: true, needs_npm_ci: false,
+  clean: true, deployable: true, last_error: null, active_job: null,
 };
 
 const state = (over: Partial<DeployState>): DeployState => ({ ...LEVEL, ...over });
@@ -68,12 +69,16 @@ test('deploying tells him the server is restarting when the backend moved', asyn
     deploy: {
       target: 'abc', target_subject: 'x', device_was: 'old', device_now: 'abc',
       server_was: 'old', server_pending: true, server_now: 'old',
-      needs_app_reload: true, backend_restarting: true,
+      needs_app_reload: true, backend_restarting: true, needs_npm_ci: false,
     },
   });
-  const { findByTestId } = render(<DeployBanner />);
+  const { findByTestId, findByText, queryByTestId } = render(<DeployBanner />);
   fireEvent.press(await findByTestId('devtest-deploy-now'));
   await waitFor(() => expect(api.deployNow).toHaveBeenCalled());
+  // The button must not stay live: the server checkout moves a couple of seconds from now, so
+  // re-reading immediately would show the OLD state and a second tap would race a second child.
+  await findByText(/Deploying… reload the app in a moment/);
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
 });
 
 test('a live background job blocks deploying, and says which one', async () => {
@@ -96,8 +101,42 @@ test('uncommitted work in the server checkout blocks deploying', async () => {
 });
 
 test('an unreachable server leaves no banner rather than an error', async () => {
+  // Starts null, so prove the catch is what keeps it null: a resolving call DOES render.
+  jest.mocked(api.getDeployState).mockResolvedValueOnce({
+    deploy: state({ device_behind: 1, device: 'old' }),
+  });
+  const first = render(<DeployBanner />);
+  await first.findByTestId('devtest-deploy-banner');
+
   jest.mocked(api.getDeployState).mockRejectedValue(new Error('offline'));
   const { queryByTestId } = render(<DeployBanner />);
-  await waitFor(() => expect(api.getDeployState).toHaveBeenCalled());
+  await waitFor(() => expect(api.getDeployState).toHaveBeenCalledTimes(2));
   expect(queryByTestId('devtest-deploy-banner')).toBeNull();
+});
+
+test('a failure in the deferred half surfaces even when nothing is behind', async () => {
+  // The server checkout moves after the response, so its failure has nowhere else to be seen —
+  // without this the banner would just say nothing and the phone would stay stale.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ last_error: "Not possible to fast-forward, aborting." }),
+  });
+  const { findByText } = render(<DeployBanner />);
+  await findByText(/Last deploy failed: Not possible to fast-forward/);
+});
+
+test('a lockfile change warns that the bundle needs npm ci', async () => {
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', needs_npm_ci: true }),
+  });
+  const { findByText } = render(<DeployBanner />);
+  await findByText(/run `npm ci` in the device worktree/);
+});
+
+test('a missing device worktree blocks deploying', async () => {
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 2, device: 'old', device_present: false }),
+  });
+  const { findByText, queryByTestId } = render(<DeployBanner />);
+  await findByText(/worktree Metro serves is missing/);
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
 });

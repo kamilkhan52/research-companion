@@ -222,9 +222,18 @@ export interface DeployState {
   server_behind: number;
   device: string;
   device_behind: number;
-  device_worktree: string;
+  /** Null over the public tunnel, where host paths are not returned. */
+  device_worktree: string | null;
+  /** False when Metro's worktree is missing — a deploy could not move the phone's JS. */
+  device_present: boolean;
+  /** The merged range touches mobile's lockfile, so the bundle needs `npm ci` to build. */
+  needs_npm_ci: boolean;
   /** False when the server checkout has uncommitted changes, which blocks deploying. */
   clean: boolean;
+  /** Whether POSTing would be accepted at all — false over the public tunnel, which 403s. */
+  deployable: boolean;
+  /** What the deferred server-checkout advance last failed with, so it is not silent. */
+  last_error: string | null;
   /** Name of a live background job, if any — deploying restarts the server and would kill it. */
   active_job: string | null;
 }
@@ -240,6 +249,7 @@ export interface DeployResult {
   server_now: string;
   needs_app_reload: boolean;
   backend_restarting: boolean;
+  needs_npm_ci: boolean;
 }
 
 export const getDeployState = () => apiGet<{ deploy: DeployState }>('/api/devtest/deploy');

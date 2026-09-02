@@ -769,6 +769,10 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
   return status;
 }
 
+/** How long to wait before re-reading state after a deploy: the server checkout moves in a
+ *  detached child a couple of seconds later, so an immediate re-read sees the old answer. */
+const DEPLOY_SETTLE_MS = 4000;
+
 /** The banner for "merged, but not on this phone yet".
  *
  *  A merged PR moves `origin/main` and nothing a reader can see. Until the device worktree
@@ -782,9 +786,11 @@ export function DeployBanner() {
   const styles = useThemedStyles(makeStyles);
   const [state, setState] = useState<DeployState | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deployed, setDeployed] = useState(false);
 
   const load = useCallback(async () => {
     try {
+      setDeployed(false);
       setState((await api.getDeployState()).deploy);
     } catch {
       setState(null);   // dev-only ornament; a stale server just means no banner
@@ -794,11 +800,16 @@ export function DeployBanner() {
   useEffect(() => { void load(); }, [load]);
 
   const behind = Math.max(state?.device_behind ?? 0, state?.server_behind ?? 0);
-  if (!state || behind <= 0) return null;
+  // `last_error` matters even at zero behind: the deferred half of a deploy can fail after the
+  // response said it was under way, and that failure has nowhere else to surface.
+  if (!state || (behind <= 0 && !state.last_error)) return null;
 
   const blocker = state.active_job
     ? `a background job is running (${state.active_job})`
-    : !state.clean ? 'the server checkout has uncommitted changes' : null;
+    : !state.clean ? 'the server checkout has uncommitted changes'
+    : !state.device_present ? 'the worktree Metro serves is missing'
+    : !state.deployable ? 'this is the public tunnel; use the tailnet address'
+    : null;
 
   return (
     <View style={[styles.dispatchBanner, { backgroundColor: t.amberWash, borderColor: t.amber }]}
@@ -809,8 +820,22 @@ export function DeployBanner() {
           {behind === 1 ? '1 merged change' : `${behind} merged changes`} not on this phone yet
         </Text>
       </View>
-      <Text variant="caption" color={t.muted} numberOfLines={2}>{state.target_subject}</Text>
-      {blocker ? (
+      {state.target_subject ? (
+        <Text variant="caption" color={t.muted} numberOfLines={2}>{state.target_subject}</Text>
+      ) : null}
+      {state.last_error ? (
+        <Text variant="caption" color={t.danger} numberOfLines={2}>
+          Last deploy failed: {state.last_error}
+        </Text>
+      ) : null}
+      {state.needs_npm_ci ? (
+        <Text variant="caption" color={t.muted}>
+          Touches mobile’s lockfile — run `npm ci` in the device worktree before reloading.
+        </Text>
+      ) : null}
+      {deployed ? (
+        <Text variant="caption" color={t.muted}>Deploying… reload the app in a moment.</Text>
+      ) : blocker ? (
         <Text variant="caption" color={t.muted}>Cannot deploy: {blocker}.</Text>
       ) : (
         <Button
@@ -827,7 +852,11 @@ export function DeployBanner() {
                 showToast(r.deploy.backend_restarting
                   ? 'Deployed. The server is restarting — reload the app in a moment.'
                   : 'Deployed. Reload the app to pick it up.');
-                return load();
+                // The deferred half moves the server checkout a couple of seconds from now, so
+                // reloading immediately would re-read the OLD state and leave the banner up
+                // with a live button — a second tap would race a second child.
+                setDeployed(true);
+                setTimeout(() => void load(), DEPLOY_SETTLE_MS);
               })
               .catch((e: Error) => showToast(e.message ?? 'Could not deploy.'))
               .finally(() => setBusy(false));

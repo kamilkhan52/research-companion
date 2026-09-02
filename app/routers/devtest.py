@@ -426,17 +426,64 @@ def append_response(item_id: str, text: str) -> dict:
 # --- deploying what a dispatch built (Kamil, 2026-09-01) --------------------------------------
 
 class DeployError(RuntimeError):
-    """Deployment was refused, with a reason worth showing on the phone."""
+    """Deployment was refused or failed, with a reason worth showing on the phone."""
 
 
-def deploy_status() -> dict:
-    """Where each of the three checkouts stands relative to `origin/main` — i.e. how much of
-    what has been MERGED is actually reachable from the phone."""
+#: Where the deferred server-checkout advance records what happened. Without this the child is
+#: detached, silent, and its failures are invisible while the API has already reported success.
+DEPLOY_LOG = "deploy-last"
+
+
+def _git_try(cwd: Path, *args: str) -> tuple[bool, str]:
+    """`(ok, stdout-or-stderr)`. The distinction `_git_out` throws away.
+
+    Used where "" must not be read as a clean answer: the tree-dirty check guards a
+    `reset`/`merge` and a git failure there would otherwise look exactly like "nothing to
+    protect". Fails CLOSED, the way `quotas.py` argues a ceiling must.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
+                             timeout=DISPATCH_GIT_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return (True, out.stdout.strip()) if out.returncode == 0 else (False, out.stderr.strip())
+
+
+def _fetch_main(root: Path) -> None:
+    """Refresh `origin/main`.
+
+    Not optional, and its absence made the first cut of this feature a no-op: `origin/main` is a
+    LOCAL remote-tracking ref, so merging a PR on GitHub does not move it. Without a fetch,
+    `deploy_status` compares every checkout against a commit they are all already at, reports
+    nothing to deploy, and `deploy` resets to the pre-merge state while reporting success.
+    """
+    ok, err = _git_try(root, "fetch", "origin", "main")
+    if not ok:
+        raise DeployError(f"could not reach the remote to see what has merged: {err}")
+
+
+def _assert_clean(root: Path, label: str) -> None:
+    ok, out = _git_try(root, "status", "--porcelain")
+    if not ok:
+        raise DeployError(f"could not determine whether {label} is clean ({out})")
+    if out:
+        raise DeployError(f"{label} has uncommitted changes; deploying would discard them")
+
+
+def deploy_status(fetch: bool = False) -> dict:
+    """Where each checkout stands relative to `origin/main` — i.e. how much of what has been
+    MERGED is actually reachable from the phone."""
     root = _main_root()
+    if fetch:
+        _fetch_main(root)
     device = _device_worktree()
     target = _git_out(root, "rev-parse", "origin/main")
     server_head = _git_out(root, "rev-parse", "HEAD")
-    device_head = _git_out(device, "rev-parse", "HEAD") if (device / ".git").exists() else ""
+    device_present = (device / ".git").exists()
+    device_head = _git_out(device, "rev-parse", "HEAD") if device_present else ""
+    clean_ok, clean_out = _git_try(root, "status", "--porcelain")
 
     def behind(head: str) -> int:
         if not head or not target or head == target:
@@ -445,16 +492,63 @@ def deploy_status() -> dict:
         return int(count) if count.isdigit() else 0
 
     return {
-        "target": target[:40], "target_subject": _git_out(root, "log", "-1", "--format=%s",
-                                                          "origin/main")[:200],
-        "server": server_head[:40], "server_behind": behind(server_head),
-        "device": device_head[:40], "device_behind": behind(device_head),
-        "device_worktree": str(device),
-        "clean": not _git_out(root, "status", "--porcelain"),
+        "target": target, "target_subject": _git_out(root, "log", "-1", "--format=%s",
+                                                     "origin/main")[:200],
+        "server": server_head, "server_behind": behind(server_head),
+        "device": device_head, "device_behind": behind(device_head),
+        "device_worktree": str(device), "device_present": device_present,
+        # A change to the lockfile means the deployed JS needs `npm ci` before it will even
+        # build — a deploy that ignored it would hand him a broken or unchanged bundle.
+        "needs_npm_ci": bool(device_head) and bool(target) and bool(
+            _git_out(root, "diff", "--name-only", f"{device_head}..{target}",
+                     "--", "mobile/package-lock.json", "mobile/package.json")),
+        "clean": clean_ok and not clean_out,
+        "last_error": _deploy_last_error(),
     }
 
 
-def deploy(defer_server: bool = False) -> dict:
+def _deploy_last_error() -> str | None:
+    """Whatever the deferred child last failed with, so a silent failure stops being silent."""
+    try:
+        record = json.loads((_dispatch_dir() / f"{DEPLOY_LOG}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    detail = record.get("error")
+    return detail[:400] if isinstance(detail, str) and detail.strip() else None
+
+
+def _active_job(force: bool) -> str | None:
+    """A live background job anywhere, INCLUDING from a process that owns no registries.
+
+    Advancing the server checkout trips `--reload`, and a reload kills every in-flight job
+    (DR-083). The first cut put that check on the HTTP route only — but the default path is a
+    dispatched session calling `deploy()` directly, in its own process, where
+    `jobs._ALL_REGISTRIES` is empty and so `any_active()` is unconditionally None. It could not
+    have complied with the instruction to check. Bind the guard to the WORK, not to the call
+    site, which is this repo's own repeatedly-learned lesson.
+
+    A server that cannot be reached has no jobs to kill, so an unreachable loopback is safe to
+    treat as idle — that is failing open toward the only outcome that is actually harmless here.
+    """
+    if force:
+        return None
+    local = jobs.any_active()
+    if local:
+        return local
+    import os
+    import urllib.error
+    import urllib.request
+
+    port = os.environ.get("RC_PORT", "8000")          # run.sh's own default
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/devtest/deploy", timeout=5) as resp:
+            return (json.loads(resp.read()).get("deploy") or {}).get("active_job")
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def deploy(force: bool = False, defer_server: bool = False) -> dict:
     """Make what has been merged actually reachable from Kamil's phone.
 
     A merged PR changes nothing he can see. Three checkouts have to move, and until they do he
@@ -463,67 +557,127 @@ def deploy(defer_server: bool = False) -> dict:
 
     What has to move, and why each one:
 
-    - **The device worktree**, which Metro serves. This is the obvious one: it is where his JS
-      comes from.
-    - **The server checkout**, for backend changes — the running server has `--reload
+    - **The device worktree**, which Metro serves. The obvious one: it is where his JS comes
+      from.
+    - **The server checkout**, for backend changes — the dev server runs with `--reload
       --reload-dir app`, so advancing it restarts the worker by itself.
     - **The server checkout AGAIN, for the LEDGER.** The non-obvious one, and the reason a
-      mobile-only change still needs this: `_LEDGER` is read from the server's checkout, so a
+      mobile-only change still needs it: `_LEDGER` is read from the server's checkout, so a
       dispatch's new `DR-…` row does not appear in the bubble until this moves. A deploy that
       only advanced Metro would ship the feature and hide the row telling him to test it.
 
-    `defer_server` exists because advancing the server checkout restarts the server that is
-    answering you. Over HTTP that would truncate the response, so the route defers it to a
-    detached child that runs a moment later; a caller that is NOT the server — the dispatch
-    session, which is its own process — passes False and gets it done synchronously.
-    """
-    import subprocess
+    Nothing here is allowed to discard work. The server checkout is advanced with
+    `merge --ff-only`, not `reset --hard`: the reset silently orphaned unpushed commits on
+    local `main`, which `git status` reports as clean, so no dirty check could ever have caught
+    it. Fast-forward is non-destructive by construction and fails loudly on divergence.
 
+    `force` is for the HTTP route, which has already refused on a live job; every other caller
+    gets the cross-process check. `defer_server` is likewise the route's: it is the process the
+    restart would kill, so it hands the last step to a detached child. A dispatched session is
+    its own process and takes the synchronous path, where failures can still be raised.
+    """
     root = _main_root()
+    active = _active_job(force)
+    if active:
+        raise DeployError(
+            f"a background job is running ({active}); deploying restarts the server and would "
+            "kill it")
+    _fetch_main(root)
     before = deploy_status()
     if not before["target"]:
-        raise DeployError("could not resolve origin/main; is the remote reachable?")
-    dirty = _git_out(root, "status", "--porcelain")
-    if dirty:
-        # Someone is working in the checkout the server runs from. Advancing it would throw
-        # their changes away, and this is a convenience action, not one worth losing work over.
+        raise DeployError("could not resolve origin/main after fetching")
+    if not before["device_present"]:
         raise DeployError(
-            "the server checkout has uncommitted changes; deploying would discard them")
+            f"there is no device worktree at {before['device_worktree']}, so this cannot move "
+            "what the phone runs (set RC_DEVICE_WORKTREE if it lives elsewhere)")
+    _assert_clean(root, "the server checkout")
 
     device = _device_worktree()
-    if (device / ".git").exists():
-        # Nobody is supposed to edit this one, so anything here is detritus — but stash rather
-        # than discard, for the same reason the dispatch worktree does.
-        _preserve_worktree(device, "deploy")
-        _dispatch_git(device, "checkout", "-B", DEVICE_BRANCH, "origin/main")
-    else:
-        log.warning("no device worktree at %s; Metro is serving something this cannot "
-                    "advance", device)
+    # Nobody is supposed to edit this one, so anything here is detritus — but stash rather than
+    # discard, for the same reason the dispatch worktree does.
+    _preserve_worktree(device, f"deploy-{time.strftime('%Y%m%d-%H%M%S')}")
+    ok, err = _git_try(device, "checkout", "-B", DEVICE_BRANCH, "origin/main")
+    if not ok:
+        raise DeployError(f"could not advance the worktree Metro serves: {err}")
 
-    if defer_server:
-        # The reload triggered by this would cut off the response that reports it. A detached
-        # child, started with a beat's delay, is not something the restart can interrupt.
-        subprocess.Popen(
-            ["/bin/sh", "-c",
-             f"sleep 2; git -C {root!s} checkout main && git -C {root!s} reset --hard origin/main"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-            start_new_session=True)
-    else:
-        _dispatch_git(root, "checkout", "main")
-        _dispatch_git(root, "reset", "--hard", "origin/main")
+    # The server checkout is LAST and, over HTTP, deferred: advancing it restarts the process
+    # answering the request, which would truncate the reply reporting it.
+    server_moved = before["server"] != before["target"]
+    if server_moved:
+        _advance_server_checkout(root, defer=defer_server)
 
     after = deploy_status()
-    log.info("deploy: device %s -> %s, server %s (deferred=%s)",
-             before["device"][:7], after["device"][:7], before["server"][:7], defer_server)
+    log.info("deploy: device %s -> %s, server %s -> %s",
+             before["device"][:7], after["device"][:7], before["server"][:7],
+             before["target"][:7])
     return {
         "target": before["target"], "target_subject": before["target_subject"],
         "device_was": before["device"], "device_now": after["device"],
         "server_was": before["server"],
-        "server_pending": defer_server, "server_now": after["server"],
-        # What actually changed decides what he has to do about it.
-        "needs_app_reload": before["device_behind"] > 0,
-        "backend_restarting": before["server_behind"] > 0,
+        "server_pending": server_moved and after["server"] != before["target"],
+        "server_now": after["server"],
+        "needs_app_reload": before["device"] != before["target"],
+        # From "does the server checkout differ at all", NOT from behind-count: a checkout on a
+        # feature branch that already contains origin/main is 0 behind, yet moving it to main
+        # still rewrites app/ and still restarts the worker.
+        "backend_restarting": server_moved,
+        "needs_npm_ci": before["needs_npm_ci"],
     }
+
+
+#: The deferred half of a deploy, run as `python -c` in a DETACHED child.
+#:
+#: An argv list rather than a shell string on purpose: the first cut interpolated the checkout
+#: path into `/bin/sh -c`, which broke on a path containing a space and was one careless change
+#: away from being injectable. Nothing here is shell-parsed.
+#:
+#: It records its own outcome because it cannot report one any other way — by the time it runs,
+#: the HTTP response is long sent, and the reload it triggers kills the process that would have
+#: watched it. A silent failure here would leave the banner saying "behind" forever with no
+#: explanation, which is the exact experience this whole feature exists to end.
+_DEPLOY_CHILD = """
+import json, subprocess, sys, time
+root, record = sys.argv[1], sys.argv[2]
+time.sleep(2)
+error = None
+for args in (("checkout", "main"), ("merge", "--ff-only", "origin/main")):
+    done = subprocess.run(("git", "-C", root) + args, capture_output=True, text=True)
+    if done.returncode != 0:
+        error = (done.stderr or done.stdout).strip()[-400:]
+        break
+tmp = record + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "error": error}, fh, indent=1)
+import os
+os.replace(tmp, record)
+"""
+
+
+def _advance_server_checkout(root: Path, defer: bool) -> None:
+    """Move the server's own checkout onto `origin/main`.
+
+    Fast-forward only. `reset --hard` was the first cut and it silently discarded unpushed
+    commits on local `main` — recoverable only through the reflog, and invisible to the dirty
+    check because `git status` calls that tree clean.
+    """
+    import subprocess
+    import sys
+
+    record = _dispatch_dir() / f"{DEPLOY_LOG}.json"
+    if not defer:
+        ok, err = _git_try(root, "checkout", "main")
+        if ok:
+            ok, err = _git_try(root, "merge", "--ff-only", "origin/main")
+        atomic_write_text(record, json.dumps(
+            {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "error": None if ok else err}, indent=1))
+        if not ok:
+            raise DeployError(f"could not advance the server checkout: {err}")
+        return
+    record.unlink(missing_ok=True)          # a stale error must not outlive its deploy
+    subprocess.Popen(
+        [sys.executable, "-c", _DEPLOY_CHILD, str(root), str(record)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        start_new_session=True)
 
 
 # --- dispatch to Claude (DR-092) -------------------------------------------------------------
@@ -1262,8 +1416,9 @@ def _dispatch_prompt(item_id: str | None, resuming: bool = False) -> str:
         "print(devtest.deploy())\"`. Merging moves origin/main and NOTHING he can see — the "
         "device worktree Metro serves and the server checkout both have to follow, and the "
         "ledger the bubble reads comes from the server checkout, so even a mobile-only change "
-        "leaves your new DR row invisible until this runs. Skip it only if a background job is "
-        "live (it restarts the server), and say so in your reply if you do.\n"
+        "leaves your new DR row invisible until this runs. It refuses by itself if a "
+        "background job is live (deploying restarts the server and would kill it), so if it "
+        "raises, say so in your reply rather than working around it.\n"
         "8. Reply to Kamil in the bubble via devtest.append_response — diagnosis, what "
         "changed, what to test on the device, and whether it merged. This session was "
         "dispatched FROM the phone's DevTest bubble (DR-092), so that reply is the "
@@ -1278,7 +1433,7 @@ def _dispatch_prompt(item_id: str | None, resuming: bool = False) -> str:
 
 
 @router.get("/api/devtest/deploy")
-def deploy_state():
+def deploy_state(request: Request):
     """How much of what has been MERGED is actually reachable from the phone.
 
     The bubble shows this so "nothing changed after I reloaded" stops being a mystery: a merged
@@ -1286,7 +1441,22 @@ def deploy_state():
     serving the old build from the old ledger.
     """
     _require_dev()
-    status = deploy_status()
+    public = _via_public_tunnel(request)
+    try:
+        # Fetching here is the point: `origin/main` is a local ref, so without it every
+        # checkout looks level with a commit that predates the merge and the banner never
+        # appears — which is the failure this feature exists to end.
+        status = deploy_status(fetch=True)
+    except DeployError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if public:
+        # Same asymmetry the dispatch status route settles: state still crosses so the banner
+        # works off-tailnet, but host paths and commit subjects do not, and the button is not
+        # offered for a POST that will always 403.
+        status = {**status, "device_worktree": None, "target_subject": None,
+                  "last_error": None, "deployable": False}
+    else:
+        status["deployable"] = True
     return {"deploy": {**status, "active_job": jobs.any_active()}}
 
 
@@ -1316,8 +1486,9 @@ def deploy_now(request: Request):
             detail=f"A background job is running ({active}); deploying restarts the server and "
                    "would kill it. Try again when it finishes.")
     try:
-        return {"deploy": deploy(defer_server=True)}
-    except DeployError as exc:
+        # force: the job check above already ran, in the process that owns the registries.
+        return {"deploy": deploy(force=True, defer_server=True)}
+    except (DeployError, DispatchPrepError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Deploy failed: {exc}") from exc
