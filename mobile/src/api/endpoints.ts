@@ -211,6 +211,40 @@ export const getDispatchStatus = () =>
 export const resumeDispatch = (model: DispatchModel) =>
   apiPost<{ dispatch: DevTestDispatch }>('/api/devtest/dispatch', { model, resume: true });
 
+/** How much of what has been MERGED is actually reachable from the phone. A merged PR moves
+ *  `origin/main` and nothing else: until the device worktree Metro serves and the server
+ *  checkout follow it, the app serves the old build from the old ledger, and reloading does
+ *  nothing. `device_behind` is the number that explains "I reloaded and nothing changed". */
+export interface DeployState {
+  target: string;
+  target_subject: string;
+  server: string;
+  server_behind: number;
+  device: string;
+  device_behind: number;
+  device_worktree: string;
+  /** False when the server checkout has uncommitted changes, which blocks deploying. */
+  clean: boolean;
+  /** Name of a live background job, if any — deploying restarts the server and would kill it. */
+  active_job: string | null;
+}
+
+export interface DeployResult {
+  target: string;
+  target_subject: string;
+  device_was: string;
+  device_now: string;
+  server_was: string;
+  /** The server checkout advances a beat AFTER the response, so its restart cannot truncate it. */
+  server_pending: boolean;
+  server_now: string;
+  needs_app_reload: boolean;
+  backend_restarting: boolean;
+}
+
+export const getDeployState = () => apiGet<{ deploy: DeployState }>('/api/devtest/deploy');
+export const deployNow = () => apiPost<{ deploy: DeployResult }>('/api/devtest/deploy', {});
+
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');

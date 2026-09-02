@@ -1256,3 +1256,159 @@ def test_a_still_dirty_tree_after_stashing_refuses_rather_than_resetting_over_it
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: StillDirty())
     with pytest.raises(dt.DispatchPrepError, match="still dirty"):
         dt._dispatch_cwd()
+
+
+# --- deploying what a dispatch built (Kamil, 2026-09-01) --------------------------------------
+
+def _fake_git(monkeypatch, *, server="aaa", device="bbb", target="ccc", dirty="",
+              behind=("2", "3")):
+    """Stub the two git helpers. Returns the list of MUTATING calls made."""
+    from app.routers import devtest as dt
+
+    ran: list[tuple] = []
+
+    def out(cwd, *args):
+        if args[:2] == ("rev-parse", "origin/main"):
+            return target
+        if args[:2] == ("rev-parse", "HEAD"):
+            return device if "device" in str(cwd) else server
+        if args[0] == "rev-list":
+            return behind[0] if "device" not in args[-1] else behind[1]
+        if args[:2] == ("status", "--porcelain"):
+            return dirty
+        if args[0] == "log":
+            return "DR-116: the newest merged thing"
+        return ""
+
+    monkeypatch.setattr(dt, "_git_out", out)
+    monkeypatch.setattr(dt, "_dispatch_git", lambda cwd, *a: ran.append((str(cwd), a)))
+    monkeypatch.setattr(dt, "_preserve_worktree", lambda wt, label: None)
+    return ran
+
+
+def test_deploy_status_says_how_far_the_phone_is_behind_what_merged(client, monkeypatch,
+                                                                    tmp_path):
+    """The number that explains "I reloaded and nothing changed": a merged PR moves origin/main
+    and NOTHING the reader can see until the checkouts follow."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    (tmp_path / dt.DEVICE_WORKTREE / ".git").mkdir(parents=True)   # Metro's worktree exists
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    d = client.get("/api/devtest/deploy").json()["deploy"]
+    assert d["target"] == "ccc" and d["server"] == "aaa" and d["device"] == "bbb"
+    assert d["server_behind"] > 0 and d["device_behind"] > 0
+    assert d["target_subject"].startswith("DR-116")
+    assert d["active_job"] is None
+
+
+def test_deploy_advances_the_worktree_metro_serves_and_the_server_checkout(monkeypatch,
+                                                                           tmp_path):
+    """Both, not one. The device worktree is where his JS comes from; the server checkout is
+    where the BACKEND and — the non-obvious half — the LEDGER the bubble reads come from, so a
+    mobile-only change still leaves its new DR row invisible without it."""
+    from app.routers import devtest as dt
+
+    device = tmp_path / "device-wt"
+    (device / ".git").mkdir(parents=True)
+    ran = _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: device)
+
+    result = dt.deploy(defer_server=False)
+    verbs = [a for _cwd, a in ran]
+    assert ("checkout", "-B", dt.DEVICE_BRANCH, "origin/main") in verbs   # the phone's JS
+    assert ("checkout", "main") in verbs and ("reset", "--hard", "origin/main") in verbs
+    assert result["needs_app_reload"] is True and result["backend_restarting"] is True
+
+
+def test_over_http_the_server_checkout_is_deferred_so_its_restart_cannot_truncate_the_reply(
+        monkeypatch, tmp_path):
+    """Advancing the server checkout trips `--reload`, restarting the very process answering
+    you. Inline, that would cut off the response reporting it."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    device = tmp_path / "device-wt"
+    (device / ".git").mkdir(parents=True)
+    ran = _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: device)
+    spawned: list = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **k: spawned.append((argv, k)))
+
+    result = dt.deploy(defer_server=True)
+    verbs = [a for _cwd, a in ran]
+    assert ("checkout", "-B", dt.DEVICE_BRANCH, "origin/main") in verbs   # still done inline
+    assert ("checkout", "main") not in verbs                             # this one is not
+    assert result["server_pending"] is True
+    argv, kwargs = spawned[0]
+    assert "reset --hard origin/main" in " ".join(argv)
+    # Detached: the reload it causes must not be able to kill it mid-checkout.
+    assert kwargs["start_new_session"] is True
+
+
+def test_deploy_refuses_to_discard_uncommitted_work_in_the_server_checkout(monkeypatch,
+                                                                          tmp_path):
+    """Someone is working in the checkout the server runs from. This is a convenience action;
+    it is not worth losing their changes over."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, dirty=" M app/routers/devtest.py\n")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    with pytest.raises(dt.DeployError, match="uncommitted"):
+        dt.deploy()
+
+
+def test_deploy_refuses_while_a_background_job_is_running(client, monkeypatch, tmp_path):
+    """Advancing the server checkout trips `--reload`, and a reload kills every in-flight job —
+    DR-083 cost ~50 minutes of a Discover run exactly that way."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: "discover")
+    r = client.post("/api/devtest/deploy", json={})
+    assert r.status_code == 409
+    assert "discover" in r.json()["detail"]
+
+
+def test_deploy_refuses_while_a_dispatch_is_still_running(client, monkeypatch, tmp_path):
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    monkeypatch.setattr(dt, "_dispatch_running", lambda: {"id": "dispatch-1"})
+    assert client.post("/api/devtest/deploy", json={}).status_code == 409
+
+
+def test_deploy_is_refused_over_the_public_tunnel(client, monkeypatch, tmp_path):
+    """It runs git in the checkout the server serves from — not something a stranger who found
+    the tunnel URL should be able to trigger."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    r = client.post("/api/devtest/deploy", json={}, headers={"cf-ray": "8a1b2c3d-LHR"})
+    assert r.status_code == 403
+
+
+def test_deploy_routes_are_absent_outside_dev(tmp_path, monkeypatch):
+    monkeypatch.setenv("RC_DEV", "0")
+    monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    from app.main import app
+    c = TestClient(app)
+    assert c.get("/api/devtest/deploy").status_code == 404
+    assert c.post("/api/devtest/deploy", json={}).status_code == 404
+
+
+def test_the_dispatch_brief_ends_on_the_phone_not_at_merged(client, monkeypatch):
+    """The loop used to stop at a merged PR, which changes nothing Kamil can see."""
+    prompt = next(a for a in _spawn_argv(client, monkeypatch) if "device-feedback" in a)
+    assert "DEPLOY it" in prompt and "devtest.deploy()" in prompt
+    # The reason a mobile-only change still needs the server checkout moved.
+    assert "ledger the bubble reads comes from the server checkout" in prompt
+    assert "whether he needs to reload the app" in prompt

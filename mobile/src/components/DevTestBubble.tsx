@@ -23,7 +23,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as api from '@/api/endpoints';
 import { DISPATCH_MODELS } from '@/api/dispatch';
 import type { DispatchModel } from '@/api/dispatch';
-import type { DevTestItem, DevTestFeedbackEntry, DispatchStatus } from '@/api/endpoints';
+import type {
+  DevTestItem, DevTestFeedbackEntry, DispatchStatus, DeployState,
+} from '@/api/endpoints';
 import { Markdown } from '@/components/Markdown';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
@@ -580,6 +582,7 @@ export function DevTestBubble() {
             />
           </View>
           {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
+          <DeployBanner />
 
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
@@ -764,6 +767,75 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
   }, [visible]);
 
   return status;
+}
+
+/** The banner for "merged, but not on this phone yet".
+ *
+ *  A merged PR moves `origin/main` and nothing a reader can see. Until the device worktree
+ *  Metro serves and the server checkout follow it, reloading the app gets the old build from
+ *  the old ledger — which on 2026-09-01 left DR-116 merged and invisible for over an hour with
+ *  nothing on the phone to explain why. This says so, and deploys in one tap.
+ *
+ *  Renders nothing when the phone is level with `main`, which is the normal state. */
+export function DeployBanner() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [state, setState] = useState<DeployState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setState((await api.getDeployState()).deploy);
+    } catch {
+      setState(null);   // dev-only ornament; a stale server just means no banner
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const behind = Math.max(state?.device_behind ?? 0, state?.server_behind ?? 0);
+  if (!state || behind <= 0) return null;
+
+  const blocker = state.active_job
+    ? `a background job is running (${state.active_job})`
+    : !state.clean ? 'the server checkout has uncommitted changes' : null;
+
+  return (
+    <View style={[styles.dispatchBanner, { backgroundColor: t.amberWash, borderColor: t.amber }]}
+          testID="devtest-deploy-banner">
+      <View style={styles.dispatchBannerHead}>
+        <Icon name="upload-cloud" size={14} color={t.amber} />
+        <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>
+          {behind === 1 ? '1 merged change' : `${behind} merged changes`} not on this phone yet
+        </Text>
+      </View>
+      <Text variant="caption" color={t.muted} numberOfLines={2}>{state.target_subject}</Text>
+      {blocker ? (
+        <Text variant="caption" color={t.muted}>Cannot deploy: {blocker}.</Text>
+      ) : (
+        <Button
+          title="Deploy and reload"
+          variant="ghost"
+          icon="upload-cloud"
+          loading={busy}
+          disabled={busy}
+          testID="devtest-deploy-now"
+          onPress={() => {
+            setBusy(true);
+            void api.deployNow()
+              .then((r) => {
+                showToast(r.deploy.backend_restarting
+                  ? 'Deployed. The server is restarting — reload the app in a moment.'
+                  : 'Deployed. Reload the app to pick it up.');
+                return load();
+              })
+              .catch((e: Error) => showToast(e.message ?? 'Could not deploy.'))
+              .finally(() => setBusy(false));
+          }}
+        />
+      )}
+    </View>
+  );
 }
 
 /** How often the Resume button re-checks whether its window has reopened. Short enough that

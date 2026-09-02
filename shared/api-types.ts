@@ -591,6 +591,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/devtest/deploy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deploy State
+         * @description How much of what has been MERGED is actually reachable from the phone.
+         *
+         *     The bubble shows this so "nothing changed after I reloaded" stops being a mystery: a merged
+         *     PR moves `origin/main` and nothing else, and until the two checkouts follow it the app is
+         *     serving the old build from the old ledger.
+         */
+        get: operations["deploy_state_api_devtest_deploy_get"];
+        put?: never;
+        /**
+         * Deploy Now
+         * @description Advance the device worktree and the server checkout to `origin/main`.
+         *
+         *     Gated like dispatch and for the same reason — it runs git in the checkout the server is
+         *     serving from, so it is not something a stranger who found the tunnel URL should be able to
+         *     trigger. It additionally refuses while any background job is live: advancing the server
+         *     checkout trips `--reload`, and a reload kills every in-flight job (DR-083).
+         */
+        post: operations["deploy_now_api_devtest_deploy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/devtest/dispatch": {
         parameters: {
             query?: never;
@@ -3464,6 +3497,46 @@ export interface operations {
         };
     };
     status_api_devtest_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    deploy_state_api_devtest_deploy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    deploy_now_api_devtest_deploy_post: {
         parameters: {
             query?: never;
             header?: never;
