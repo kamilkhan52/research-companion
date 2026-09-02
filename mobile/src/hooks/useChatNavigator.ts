@@ -33,6 +33,13 @@
 //  • Appending a message shifts every older index by one, so a landmark recorded against the
 //    previous array names a different message afterwards. It is dropped on any length change
 //    rather than silently aimed somewhere arbitrary.
+//
+//  • The viewport's top edge is NOT where the reader can start reading. The discussion header
+//    floats OVER the transcript, so a row aligned flush with the top edge has its first lines
+//    behind the title (Kamil, 2026-09-02: "while the top of the message is technically on
+//    screen, it is hidden by the title"). Every index landing therefore clears `topClearance`
+//    px — the same distance the list's own visual-top padding already gives the oldest
+//    message. `viewOffset` carries it, and its sign is inverted here: see `landingViewOffset`.
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { ViewToken } from 'react-native';
@@ -51,7 +58,12 @@ const MAX_RETRIES = 2;
 /** The subset of FlatList's imperative surface this hook uses. Typed structurally so the
  *  library's own ref (a gesture-handler FlatList) satisfies it without a cast. */
 export interface ScrollableMessageList {
-  scrollToIndex(params: { index: number; animated?: boolean; viewPosition?: number }): void;
+  scrollToIndex(params: {
+    index: number;
+    animated?: boolean;
+    viewPosition?: number;
+    viewOffset?: number;
+  }): void;
   scrollToOffset(params: { offset: number; animated?: boolean }): void;
   scrollToEnd(params?: { animated?: boolean }): void;
 }
@@ -61,15 +73,44 @@ export interface ScrollToIndexFailedInfo {
   averageItemLength: number;
 }
 
+/** What to pass as `viewOffset` to leave `topClearance` px of chrome above the landing.
+ *
+ *  The sign is the trap. VirtualizedList computes `offset = max(0, cellOffset - viewPosition *
+ *  (visibleLength - frame.length)) - viewOffset`, so a POSITIVE viewOffset scrolls to a SMALLER
+ *  offset — and under `inverted` (a scaleY(-1)) a smaller offset moves content UP the screen,
+ *  i.e. further behind the header. Clearing chrome at the visual top therefore needs a NEGATIVE
+ *  viewOffset, the opposite of the same request on an upright list.
+ *
+ *  `|| 0` keeps a bare zero out of the `-0` the negation would otherwise produce: it reads
+ *  identically but is not `Object.is`-equal, which quietly costs an afternoon in a test. */
+export function landingViewOffset(topClearance: number) {
+  return -topClearance || 0;
+}
+
+/** Does a viewability report naming `top` as the topmost row describe a landing on `index`?
+ *
+ *  Not just equality, once chrome is being cleared: the landing deliberately leaves
+ *  `topClearance` px above the target, and that band is filled by the FOOT of the message
+ *  above, which `itemVisiblePercentThreshold: 1` duly reports as viewable. So the honest
+ *  answer after a cleared landing is "the target, or its older neighbour". Demanding equality
+ *  would mean no jump ever registered as having arrived — which would silently disable the
+ *  retirement below and bring back the stale-landmark teleport it exists to prevent. */
+function describesLanding(top: number, index: number, topClearance: number) {
+  return top === index || (topClearance > 0 && top === index + 1);
+}
+
 export function useChatNavigator({
   listRef,
   count,
   animated = true,
+  topClearance = 0,
 }: {
   listRef: { current: ScrollableMessageList | null };
   count: number;
   /** False under the OS reduce-motion preference: the jump still happens, without the travel. */
   animated?: boolean;
+  /** Px of overlay chrome at the top of the viewport that a landing must sit clear of. */
+  topClearance?: number;
 }) {
   const landmarkRef = useRef<number | null>(null);
   const topIndexRef = useRef<number | null>(null);
@@ -79,6 +120,11 @@ export function useChatNavigator({
   const oldestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The top row a jump of ours is travelling toward, or null once it has arrived. */
   const pendingTopRef = useRef<number | null>(null);
+  // Held in a ref, not a dependency. The header is measured after first paint, so this value
+  // changes once, early — and `onViewableItemsChanged` may never change identity (FlatList's
+  // requirement) while the rest travel in `listProps`, which is cheapest left alone.
+  const clearanceRef = useRef(topClearance);
+  clearanceRef.current = topClearance;
 
   // Adjusting a ref during render (rather than in an effect) so a press in the same commit as
   // a new message cannot read a landmark that no longer names the message it was recorded for.
@@ -117,7 +163,14 @@ export function useChatNavigator({
       }
       if (target.kind === 'live') list.scrollToOffset({ offset: 0, animated });
       else if (target.kind === 'oldest') list.scrollToEnd({ animated });
-      else list.scrollToIndex({ index: target.index, viewPosition: CHAT_NAV_VIEW_POSITION, animated });
+      else {
+        list.scrollToIndex({
+          index: target.index,
+          viewPosition: CHAT_NAV_VIEW_POSITION,
+          viewOffset: landingViewOffset(clearanceRef.current),
+          animated,
+        });
+      }
       landmarkRef.current = landmarkAfter(target, countRef.current);
       // What the viewport's top row should become once this scroll lands. Until a report
       // matches it, incoming reports are this scroll TRAVELLING, not evidence the reader moved
@@ -174,7 +227,9 @@ export function useChatNavigator({
     if (pendingTopRef.current !== null) {
       // A jump of ours is still travelling. Reports along the way name rows we are passing,
       // not where the reader chose to be, so nothing is concluded from them until one matches.
-      if (top === pendingTopRef.current) pendingTopRef.current = null;
+      if (describesLanding(top, pendingTopRef.current, clearanceRef.current)) {
+        pendingTopRef.current = null;
+      }
       return;
     }
     // Settled, and the top row is not the one the landmark claims. Something moved the reader
@@ -185,7 +240,7 @@ export function useChatNavigator({
     // LIVE_EDGE is exempt: it is the one landmark that makes no claim about the top row, since
     // parked at the newest message whichever row fits above it is at the visual top.
     if (landmarkRef.current !== null && landmarkRef.current !== LIVE_EDGE
-        && top !== landmarkRef.current) {
+        && !describesLanding(top, landmarkRef.current, clearanceRef.current)) {
       landmarkRef.current = null;
       if (oldestTimer.current) {   // as with a drag: they are no longer where we put them
         clearTimeout(oldestTimer.current);
@@ -214,7 +269,13 @@ export function useChatNavigator({
     (info: ScrollToIndexFailedInfo) => {
       const list = listRef.current;
       if (!list) return;
-      list.scrollToOffset({ offset: Math.max(0, info.averageItemLength * info.index), animated });
+      // Inverted list ⇒ a larger offset moves content DOWN, so the chrome clearance is ADDED
+      // here where the exact landing SUBTRACTS it as a viewOffset. Both put the target's top
+      // the same distance below the header; this one only gets there approximately.
+      list.scrollToOffset({
+        offset: Math.max(0, info.averageItemLength * info.index + clearanceRef.current),
+        animated,
+      });
       const state = retryRef.current?.index === info.index
         ? retryRef.current
         : { index: info.index, attempts: 0 };
@@ -238,6 +299,7 @@ export function useChatNavigator({
         listRef.current?.scrollToIndex({
           index: info.index,
           viewPosition: CHAT_NAV_VIEW_POSITION,
+          viewOffset: landingViewOffset(clearanceRef.current),
           animated,
         });
       }, RETRY_DELAY_MS);

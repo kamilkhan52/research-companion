@@ -29,6 +29,12 @@ export function discussionComposerPadding(bottomInset: number) {
  * In the chat library's inverted list, paddingTop is the visual bottom and paddingBottom is the
  * visual top. Keeping all three consumers in one calculation prevents a chrome change from
  * clearing the composer while accidentally hiding the oldest message (or vice versa).
+ *
+ * `topClearance` is the fourth consumer (DR-115 round 2): how far below the viewport's top edge
+ * a message's top must sit to be clear of the floating header. It is the SAME distance the
+ * list's own visual-top padding already gives the oldest message, so a landmark jump lands the
+ * way "start of thread" does rather than tucking the line the reader wants under the title.
+ * Zero when the header is in flow, because then the list starts below it already.
  */
 export function discussionChromeLayout({
   topInset,
@@ -40,14 +46,16 @@ export function discussionChromeLayout({
 }: DiscussionChromeLayoutInput) {
   const composerClearance = composerHeight + listGap;
   const bottomFadeHeight = composerHeight + DISCUSSION_BOTTOM_FADE_EXTENSION;
+  const topClearance = headerOverlays ? headerHeight + headerGap : 0;
   return {
+    topClearance,
     // KeyboardAvoidingView measures its frame relative to its parent. With overlay chrome the
     // Chat frame begins at the screen origin, so adding the status inset would over-translate it.
     // The ordinary in-flow screen starts below both the safe area and header, so it needs both.
     keyboardVerticalOffset: headerOverlays ? 0 : topInset + headerHeight,
     listContentPadding: {
       paddingTop: composerClearance,
-      paddingBottom: headerOverlays ? headerHeight + headerGap : listGap,
+      paddingBottom: headerOverlays ? topClearance : listGap,
     },
     scrollButtonBottom: composerClearance,
     bottomFadeHeight,

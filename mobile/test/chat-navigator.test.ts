@@ -7,9 +7,13 @@ import { act, renderHook } from '@testing-library/react-native';
 
 import {
   CHAT_NAV_VIEW_POSITION,
+  landingViewOffset,
   useChatNavigator,
   type ScrollableMessageList,
 } from '@/hooks/useChatNavigator';
+
+/** A header tall enough to hide the first lines of whatever lands under it. */
+const CHROME = 96;
 
 function fakeList() {
   return {
@@ -46,6 +50,7 @@ test('an index landing passes the inverted-list viewPosition through unchanged',
   expect(list.scrollToIndex).toHaveBeenCalledWith({
     index: 2,
     viewPosition: 1,
+    viewOffset: 0,   // no overlay chrome in this fixture; see the topClearance tests below
     animated: true,
   });
 });
@@ -60,6 +65,7 @@ test('the top of the viewport is the LARGEST viewable index, not the first repor
   expect(list.scrollToIndex).toHaveBeenCalledWith({
     index: 4,
     viewPosition: 1,
+    viewOffset: 0,   // no overlay chrome in this fixture; see the topClearance tests below
     animated: true,
   });
 });
@@ -89,6 +95,7 @@ test('a finger drag retires the landmark, so the next step re-aims at where the 
   expect(list.scrollToIndex).toHaveBeenLastCalledWith({
     index: 6,
     viewPosition: 1,
+    viewOffset: 0,   // no overlay chrome in this fixture; see the topClearance tests below
     animated: true,
   });
 });
@@ -108,6 +115,7 @@ test('a new message retires the landmark, because every older index has shifted'
   expect(list.scrollToIndex).toHaveBeenLastCalledWith({
     index: 3,
     viewPosition: 1,
+    viewOffset: 0,   // no overlay chrome in this fixture; see the topClearance tests below
     animated: true,
   });
 });
@@ -134,6 +142,7 @@ test('stepping up from the live edge shows the newest message rather than skippi
   expect(list.scrollToIndex).toHaveBeenCalledWith({
     index: 0,
     viewPosition: 1,
+    viewOffset: 0,   // no overlay chrome in this fixture; see the topClearance tests below
     animated: true,
   });
 });
@@ -333,6 +342,87 @@ test('taking over the scroll cancels the start-of-thread correction', () => {
   act(() => result.current.onScrollBeginDrag());
   act(() => jest.advanceTimersByTime(500));
   expect(list.scrollToEnd).toHaveBeenCalledTimes(1);     // no unasked-for second jump
+});
+
+// --- landing clear of the floating header (Kamil's 2026-09-02 remark on DR-115) ---------------
+
+test('the chrome clearance is applied as a NEGATIVE viewOffset, because the list is inverted', () => {
+  // The sign is the whole finding. VirtualizedList SUBTRACTS viewOffset from the offset it
+  // computes; `inverted` is a scaleY(-1), so a smaller offset moves content UP — further behind
+  // the header, i.e. exactly the direction Kamil reported ("the top of the message is hidden by
+  // the title"). Positive would have made his report worse rather than fixing it.
+  expect(landingViewOffset(CHROME)).toBe(-CHROME);
+  // …and no chrome means a plain 0, not the -0 that negation gives, which is not Object.is-equal.
+  expect(Object.is(landingViewOffset(0), 0)).toBe(true);
+
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());
+  expect(list.scrollToIndex).toHaveBeenCalledWith({
+    index: 2,
+    viewPosition: CHAT_NAV_VIEW_POSITION,
+    viewOffset: -CHROME,
+    animated: true,
+  });
+});
+
+test('the re-aim after an unmeasured target clears the same chrome, both times', () => {
+  // Two landings, one target: the approximate offset (which cannot use viewOffset at all, so it
+  // ADDS the clearance — inverted, larger offset moves content down) and the exact correction.
+  // If only one of them carried it, a far jump would settle under the header for the very rows
+  // this feature exists to reach.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40, topClearance: CHROME }),
+  );
+  act(() => result.current.onScrollToIndexFailed({ index: 30, averageItemLength: 400 }));
+  expect(list.scrollToOffset).toHaveBeenCalledWith({ offset: 12000 + CHROME, animated: true });
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToIndex).toHaveBeenCalledWith(
+    expect.objectContaining({ index: 30, viewOffset: -CHROME }));
+});
+
+test('a cleared landing still counts as arriving, though the message above shows its foot', () => {
+  // The band held clear of the header is filled by the FOOT of the message above the target,
+  // and `itemVisiblePercentThreshold: 1` reports a sliver as viewable — so the top row after a
+  // cleared landing is legitimately target+1. Demanding equality would leave every jump
+  // permanently "in flight", which silently disables the retirement below: the landmark would
+  // survive a scroll-to-latest tap again, the P1 this hook already paid for once.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());                                    // aims at 2
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // arrives; 3's foot shows
+
+  // Now the library's own scroll-to-latest button fires: no drag, no length change.
+  act(() => result.current.onViewableItemsChanged(viewable([0])));
+  list.scrollToIndex.mockClear();
+  act(() => result.current.goDown());
+  expect(list.scrollToIndex).not.toHaveBeenCalled();                   // not the stale 2 - 1 = 1
+  expect(list.scrollToOffset).toHaveBeenCalledWith(
+    expect.objectContaining({ offset: 0 }));
+});
+
+test('the neighbour showing its foot does not retire the landmark it belongs to', () => {
+  // The other half of the same tolerance, and the half that needs a DOWN press to prove: from
+  // landmark 2 the next step down is 1, whereas a landmark wrongly retired would count from the
+  // reported top row (3) and go to 2 — back to the message the reader is already reading.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());                                    // lands on 2
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // 3's foot under the header
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // and again, settled
+  act(() => result.current.goDown());
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 1 }));
 });
 
 test('a target that exhausts its corrections stops claiming the reader is on it', () => {
