@@ -115,3 +115,54 @@ test('a remark raises nothing — it would bury the note DR-119 exists to show',
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
   expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull();
 });
+
+test('the prompt works under a non-default sort, not just the default one', async () => {
+  // The branch that renders under `sort !== 'default'` was missing the callback entirely, so
+  // the feature was inert under "Last activity" — the sort Kamil asked for precisely so he
+  // could work the queue ("find the last item I opened or dispatched or was last worked on").
+  // That made the queue-working sort the first place a fail went nowhere.
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+
+  fireEvent.press(screen.getByLabelText('Last activity'));
+  fireEvent.press(screen.getByText('Alpha thing'));
+  fireEvent.press(await screen.findByText('Fail'));
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  await screen.findByTestId('devtest-fail-prompt');
+});
+
+test('a second fail queues behind the first instead of replacing it', async () => {
+  // A single slot dropped the first item's prompt silently — "recorded and carried nowhere",
+  // one level up from the gap this feature exists to close.
+  const two = [...ITEMS, { id: 'DR-B', state: 'open', raised: '2026-09-01',
+                           title: 'Beta gadget', how_to_test: 'open it', feedback_count: 0 }];
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: two });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Beta gadget')).toBeTruthy());
+
+  fireEvent.press(screen.getByText('Alpha thing'));
+  fireEvent.press(await screen.findByText('Fail'));
+  await screen.findByText('DR-A failed. Hand it to Claude now?');
+
+  fireEvent.press(screen.getByText('Beta gadget'));
+  fireEvent.press(await screen.findByText('Fail'));
+  // Still showing the FIRST one; the second is behind it, not instead of it.
+  await screen.findByText('DR-A failed. Hand it to Claude now?');
+
+  fireEvent.press(screen.getByTestId('devtest-fail-prompt-dismiss'));
+  await screen.findByText('DR-B failed. Hand it to Claude now?');
+});
+
+test('an unanswered prompt does not outlive the sitting that raised it', async () => {
+  // DevTestBubble stays mounted to render the floating trigger, so without an explicit reset
+  // the prompt greeted him on the next open, about a fail from a previous session.
+  const screen = await failTheItem();
+  await screen.findByTestId('devtest-fail-prompt');
+  fireEvent.press(screen.getByLabelText('Close'));
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull();
+});

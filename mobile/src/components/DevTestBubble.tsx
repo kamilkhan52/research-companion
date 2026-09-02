@@ -391,10 +391,15 @@ export function DevTestBubble() {
   // DR-092: the model a bubble dispatch uses, persisted so it survives reopen like the toolbar.
   const modelDraft = usePersistedDraft<DispatchModel>(draftKey('devtest-dispatch-model'), 'sonnet');
   const [dispatchingAll, setDispatchingAll] = useState(false);
-  // The item whose fail is waiting to be handed over, or null. Sheet-level so it survives the
-  // re-filter that recording a verdict triggers, which under "Not reviewed" unmounts the card
-  // that raised it in the same commit.
-  const [failPrompt, setFailPrompt] = useState<string | null>(null);
+  // Fails waiting to be handed over, oldest first — a QUEUE, not a slot. A single slot meant
+  // failing a second item silently discarded the first one's prompt, which is the same
+  // "recorded and carried nowhere" gap this feature exists to close, one level up. Only the
+  // head is shown, since dispatch is single-flight and a stack of prompts would be worse.
+  const [failQueue, setFailQueue] = useState<string[]>([]);
+  const queueFailPrompt = useCallback((id: string) => {
+    setFailQueue((q) => (q.includes(id) ? q : [...q, id]));
+  }, []);
+  const failPrompt = failQueue[0] ?? null;
   // The heartbeat behind the banner below: what a dispatched session is doing, and how the last
   // one ended. Polls only while this sheet is open.
   const dispatchStatus = useDispatchHeartbeat(visible);
@@ -562,6 +567,10 @@ export function DevTestBubble() {
       // its anchor otherwise, and collapsing it later scrolls to a position measured against
       // a list that no longer exists.
       expandAnchors.current = {};
+      // Same "this sitting is over" reset. `DevTestBubble` stays mounted to render the floating
+      // trigger, so without this an unanswered prompt greeted him on the next open, about a
+      // fail from a session he had already walked away from.
+      setFailQueue([]);
       return;
     }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
@@ -726,7 +735,7 @@ export function DevTestBubble() {
             <FailPrompt
               itemId={failPrompt}
               model={modelDraft.value}
-              onDone={() => setFailPrompt(null)}
+              onDone={() => setFailQueue((q) => q.slice(1))}
             />
           ) : null}
 
@@ -775,7 +784,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onExpandChange={onExpandChange}
-                    onFailRecorded={setFailPrompt}
+                    onFailRecorded={queueFailPrompt}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -795,6 +804,13 @@ export function DevTestBubble() {
                       // DR-118: only under the sort it explains. Elsewhere it is one more line
                       // of chrome on a card that already carries four chips.
                       activity={sort === 'activity' ? activityNote(i, localState[i.id]) : undefined}
+                      // This branch renders whenever `sort !== 'default'`, and both of these
+                      // were missing from it — so the fail prompt never appeared and no scroll
+                      // anchor was recorded under "Last activity", "Recently reviewed" or
+                      // "A–Z". "Last activity" is the sort Kamil asked for to work the queue,
+                      // which made it the first place the fail prompt was silently dead.
+                      onExpandChange={onExpandChange}
+                      onFailRecorded={queueFailPrompt}
                     />
                   ))}
                 </>
@@ -804,13 +820,13 @@ export function DevTestBubble() {
                   {sections.verify.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={setFailPrompt} />
+                    onFailRecorded={queueFailPrompt} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={setFailPrompt} />
+                    onFailRecorded={queueFailPrompt} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -838,7 +854,7 @@ export function DevTestBubble() {
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={setFailPrompt} />
+                    onFailRecorded={queueFailPrompt} />
                       ))
                     : null}
                 </>
