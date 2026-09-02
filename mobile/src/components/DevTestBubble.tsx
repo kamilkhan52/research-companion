@@ -1343,7 +1343,13 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
       // (which actually persists) instead, resetting only the ephemeral fields.
       draft.setValue((v) => ({
-        expanded: false, comment: '', attach: false,
+        // A remark is a COMMENT, and the card used to collapse on submit with the history list
+        // untouched — so the note you had just written vanished and nothing said it had landed.
+        // Kamil, 2026-09-02: "I can't be sure if my comments are actually being placed. I don't
+        // see them after remarking." They were being placed; the card just closed over them.
+        // A pass/fail still collapses: that finishes with the item, and DR-077's queue wants it
+        // out of the way.
+        expanded: verdict === 'remark', comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
         verdictAt: verdict === 'remark' ? v.verdictAt : Date.now(),
         // Carried, not reset: this literal replaces the whole draft, and DR-118's visit stamp is
@@ -1356,6 +1362,16 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // keep. `markSubmitted` writes `valueRef.current` (already updated by `setValue` above,
       // synchronously) to AsyncStorage immediately, so there's nothing left for an unmount to cancel.
       await draft.markSubmitted();
+      // Show it. Always after a remark (the card stays open, so the note must appear in it),
+      // and otherwise only when the history is already on screen — loading it unasked for a
+      // pass would spend a request per card on something nobody is looking at.
+      if (verdict === 'remark' || history !== null) {
+        try {
+          setHistory((await api.getDevTestFeedback(item.id)).entries);
+        } catch {
+          // Recording is what mattered and it succeeded; the list can wait for a reopen.
+        }
+      }
     } catch (e) {
       showToast((e as Error).message ?? 'Could not record feedback.');
     } finally {

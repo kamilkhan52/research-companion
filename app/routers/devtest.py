@@ -86,6 +86,45 @@ _ROW_RE = re.compile(
 #: opened.
 _PROVISIONAL_RE = re.compile(r"NEW-\d+")
 
+#: The attribution a triaged phone item picked up in the FEEDBACK column — "Kamil (bubble,
+#: provisional id `NEW-…`, `/route`): ". The skill only ever meant his title to go there, but it
+#: did not say where the provisional id belonged, so the id, the source and the route were all
+#: written in front of the title. On the phone that renders as a wall of leading syntax,
+#: backticks and all, and 16 of 118 rows carry it (Kamil, 2026-09-02: "they start with what
+#: appears like some formatting or syntax of some sort. I want it clean like the rest").
+#: Stripped for DISPLAY only — the raw text still feeds `aliases`, which is the DR-097 link
+#: between a `NEW-…` item and the row it became.
+#: The discriminator is the SHAPE — a name, a parenthetical, a colon, and then his words in
+#: quotes — not the words inside the parenthetical, which vary ("bubble, provisional id …",
+#: "chat", "on DR-091's fail, filed under its provisional id"). Requiring the quote is what
+#: keeps this off ordinary prose that happens to open with a capitalised word and a bracket,
+#: like DR-072's "Toast notifications (`mobile/src/ui/Toast.tsx`) are absolutely positioned…".
+_ATTRIBUTION_RE = re.compile(
+    "^\\s*[A-Z][\\w.'-]*\\s*\\([^)]*\\)\\s*:\\s*(?=[\"\\u201c])")
+
+#: Within such a row Kamil's own words are the first quoted run; whatever follows is the
+#: triager's annotation (his longer description, "(description empty; his screenshot is …)",
+#: a link to the asset), which belongs in the evidence column and not in a title.
+_QUOTED_TITLE_RE = re.compile(r'^["\u201c](?P<t>[^"\u201d]+)["\u201d]', re.S)
+
+
+def _display_title(feedback: str) -> str:
+    """The row's feedback column as it should READ on the phone.
+
+    Deliberately a no-op unless the attribution prefix is actually present: a row that never
+    picked it up is returned byte-identical, so this cannot reword the 100-odd rows that were
+    always fine.
+    """
+    cleaned, found = _ATTRIBUTION_RE.subn("", feedback, count=1)
+    if not found:
+        return feedback.strip()
+    cleaned = cleaned.strip()
+    match = _QUOTED_TITLE_RE.match(cleaned)
+    if match:
+        return match.group("t").strip()
+    return cleaned.lstrip('"\u201c').strip() or feedback.strip()
+
+
 #: States the tester acts on, in the order the app should surface them.
 OPEN_STATES = ("open", "partial", "planned")
 VERIFY_STATE = "implemented — verify"
@@ -116,7 +155,7 @@ def parse_ledger(text: str) -> list[dict]:
         items.append({
             "id": item_id,
             "raised": raised,
-            "title": feedback,
+            "title": _display_title(feedback),
             "state": state,
             # The evidence column is where "what to test and how" lives — verify steps are
             # written there by convention (the ledger's own workflow section says so).

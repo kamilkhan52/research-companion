@@ -2030,3 +2030,55 @@ def test_a_sibling_worktree_on_a_main_prefixed_branch_does_not_block_deploying(m
     monkeypatch.setattr(dt, "_git_try", make("main"))
     with pytest.raises(dt.DeployError, match="another worktree"):
         dt._assert_server_can_fast_forward(tmp_path)
+
+
+# --- readable titles and visible comments (Kamil, 2026-09-02) ---------------------------------
+
+def test_a_triaged_phone_item_shows_his_words_not_the_attribution_around_them():
+    """Kamil: "the title for the last few dev test items … start with what appears like some
+    formatting or syntax of some sort. I want it clean like the rest." The triage step had been
+    writing the source, the provisional id and the route in front of his title, backticks and
+    all, so the card led with metadata instead of the issue."""
+    row = ("| DR-115 | 2026-09-01 | Kamil (bubble, provisional id `NEW-1788274884`, "
+           "`/paper/chime`): \"Advanced chat navigation controls\" — \"I would like an option "
+           "in settings\" | `open` | Evidence. |")
+    item = devtest.parse_ledger(f"|---|\n{row}")[0]
+    assert item["title"] == "Advanced chat navigation controls"
+    # DR-097's link between the phone item and the row it became is read from the RAW text, so
+    # cleaning the display must not cost the alias.
+    assert item["aliases"] == ["NEW-1788274884"]
+
+
+def test_the_annotation_after_his_words_is_not_part_of_the_title():
+    """Rows carry a triager's aside after the quote — "(description empty; his screenshot is …)"
+    — which belongs in the evidence column, not in front of him on a card."""
+    row = ("| DR-116 | 2026-09-01 | Kamil (bubble, provisional id `NEW-1788308416`, route `/`): "
+           "\"Dev test bubble shows 11 of 117\" (description empty; his screenshot is the "
+           "Library screen) | `open` | Evidence. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "Dev test bubble shows 11 of 117"
+
+
+def test_the_attribution_is_recognised_by_its_shape_not_its_wording():
+    """The parenthetical varies — "bubble, provisional id …", "chat", "on DR-091's fail" — so
+    the pattern keys on name-paren-colon-QUOTE instead."""
+    for lead in ("Kamil (chat): ", "Kamil (bubble, provisional id `NEW-1`, `/x`): ",
+                 "Kamil (on DR-091's fail, filed under its provisional id): "):
+        row = f"| DR-900 | 2026-09-01 | {lead}\"The actual thing\" | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "The actual thing", lead
+
+
+def test_ordinary_prose_rows_are_returned_untouched():
+    """Most of the ledger was always fine, and a title cleaner that rewords those is worse than
+    the problem. Anything without the attribution shape comes back byte-identical — including
+    prose that merely opens with a capitalised word and a bracket."""
+    for text in ("Toast notifications (`mobile/src/ui/Toast.tsx`) are absolutely positioned.",
+                 "The immersive discussion canvas itself (#413, merged 2026-08-21): full-bleed.",
+                 "Opening the keyboard hides the mini player (comment mode enabled)."):
+        row = f"| DR-901 | 2026-08-01 | {text} | `open` | E. |"
+        assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == text
+
+
+def test_an_unterminated_quote_still_loses_the_attribution():
+    """A row someone hand-edited into a broken shape should still read better, not blow up."""
+    row = ("| DR-902 | 2026-09-01 | Kamil (chat): \"a thought he never closed | `open` | E. |")
+    assert devtest.parse_ledger(f"|---|\n{row}")[0]["title"] == "a thought he never closed"
