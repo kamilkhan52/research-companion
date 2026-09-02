@@ -552,6 +552,11 @@ def _active_job(force: bool) -> str | None:
                 f"http://127.0.0.1:{port}/api/devtest/deploy?fetch=0",
                 timeout=PROBE_TIMEOUT_S) as resp:
             body = json.loads(resp.read())
+    # Clause ORDER is load-bearing and would regress silently with every test still green:
+    # `TimeoutError` is an `OSError` but NOT a `URLError`, and a slow READ raises it bare
+    # (CPython only wraps the request, not `getresponse`). HTTPError → URLError → TimeoutError →
+    # OSError routes a 4xx/5xx, a connect timeout, a read timeout and a refusal each to the
+    # right answer. Moving the OSError clause up restores the fail-open this exists to close.
     except urllib.error.HTTPError as exc:
         raise DeployError(f"{blind} (HTTP {exc.code})") from exc
     except urllib.error.URLError as exc:
@@ -597,7 +602,10 @@ def _assert_server_can_fast_forward(root: Path) -> None:
     # habitually runs several.
     holder = None
     for block in listing.split("\n\n"):
-        if "branch refs/heads/main" not in block:
+        # Exact line, not a substring: `branch refs/heads/mainline` and `main-backup` both
+        # contain the shorter string, and matching them would refuse every deploy on a repo
+        # that happens to keep such a branch checked out somewhere.
+        if not any(line == "branch refs/heads/main" for line in block.splitlines()):
             continue
         for line in block.splitlines():
             if line.startswith("worktree "):

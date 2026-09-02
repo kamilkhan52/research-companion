@@ -1804,3 +1804,32 @@ def test_the_deferred_child_records_a_failure_instead_of_vanishing(tmp_path):
         capture_output=True, text=True, timeout=60)
     assert done.returncode == 0                 # it reports, rather than crashing
     assert json.loads(record.read_text())["error"]
+
+
+def test_a_sibling_worktree_on_a_main_prefixed_branch_does_not_block_deploying(monkeypatch,
+                                                                               tmp_path):
+    """The holder test is an exact line, not a substring: `mainline` and `main-backup` both
+    contain "refs/heads/main", and matching them would refuse every deploy on a repo that keeps
+    such a branch checked out somewhere."""
+    from app.routers import devtest as dt
+
+    def listing_for(branch: str) -> str:
+        return (f"worktree {tmp_path}\nHEAD abc\nbranch refs/heads/feature\n\n"
+                f"worktree /elsewhere/wt\nHEAD def\nbranch refs/heads/{branch}\n")
+
+    def make(branch):
+        def try_git(cwd, *args):
+            if args[:2] == ("rev-parse", "--verify"):
+                return False, ""
+            if args[0] == "worktree":
+                return True, listing_for(branch)
+            return True, ""
+        return try_git
+
+    for benign in ("mainline", "main-backup", "device-main", "feature/main"):
+        monkeypatch.setattr(dt, "_git_try", make(benign))
+        dt._assert_server_can_fast_forward(tmp_path)      # must not raise
+
+    monkeypatch.setattr(dt, "_git_try", make("main"))
+    with pytest.raises(dt.DeployError, match="another worktree"):
+        dt._assert_server_can_fast_forward(tmp_path)
