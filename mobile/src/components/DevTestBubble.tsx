@@ -846,11 +846,15 @@ function Section({ label, tone }: { label: string; tone: string }) {
  *  whole pending batch when omitted. Shared by the header's "Dispatch all" and each item card
  *  so both report the same way and hit the same single-flight guard. */
 async function fireDispatch(model: DispatchModel, itemId: string | undefined,
-                           setBusy: (b: boolean) => void) {
+                           setBusy: (b: boolean) => void, fresh = false) {
   setBusy(true);
   try {
-    const { dispatch } = await api.dispatchToClaude(model, itemId);
-    showToast(`Claude (${model}) is on ${itemId ?? 'all pending issues'}. Replies land here.`);
+    const { dispatch } = await api.dispatchToClaude(model, itemId, fresh);
+    // The server decides whether this continued a session or started one, and says so — the
+    // client cannot know, and guessing here would eventually disagree with what actually ran.
+    showToast(dispatch.continued_session
+      ? `Claude (${dispatch.model}) is picking ${itemId} back up. Replies land here.`
+      : `Claude (${model}) is on ${itemId ?? 'all pending issues'}. Replies land here.`);
     refreshDispatchStatus?.();     // pull the banner forward instead of waiting for the tick
     return dispatch;
   } catch (e) {
@@ -1330,7 +1334,10 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [dispatching, setDispatching] = useState(false);
+  // ONE flag across both dispatch buttons. Separate flags left "fresh" enabled while the
+  // ordinary dispatch was in flight, and the second tap earned a raw single-flight 409 toast
+  // rather than doing nothing.
+  const [dispatching, setDispatching] = useState<'item' | 'fresh' | null>(null);
   // DR-065: "which item was opened, any unfinished message... full resumption of previous
   // state" — closing the sheet (or the app dying) used to lose whichever card was expanded and
   // whatever remark was half-typed, since it was plain useState inside a Modal. Keyed per item
@@ -1573,15 +1580,33 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
           </View>
           {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
               Fire-on-tap; the toast and its eventual bubble reply confirm. */}
+          {/* Two buttons, not a toggle: continuing is the default and the common case, so it
+              stays one tap. "Fresh session" is the deliberate act — for when the accumulated
+              context is the problem rather than the point — and reads as one. */}
           {dispatchModel ? (
             <Button
               title={`Dispatch to Claude (${dispatchModel})`}
               icon="zap"
               variant="ghost"
-              loading={dispatching}
-              disabled={dispatching}
-              onPress={() => void fireDispatch(dispatchModel, item.id, setDispatching)}
+              loading={dispatching === 'item'}
+              disabled={dispatching !== null}
+              onPress={() => void fireDispatch(
+                dispatchModel, item.id, (b) => setDispatching(b ? 'item' : null))}
               style={{ marginTop: space.sm }}
+              testID="devtest-dispatch-item"
+            />
+          ) : null}
+          {dispatchModel ? (
+            <Button
+              title="Dispatch a fresh session"
+              icon="refresh-cw"
+              variant="ghost"
+              loading={dispatching === 'fresh'}
+              disabled={dispatching !== null}
+              testID="devtest-dispatch-fresh"
+              style={{ marginTop: space.sm }}
+              onPress={() => void fireDispatch(
+                dispatchModel, item.id, (b) => setDispatching(b ? 'fresh' : null), true)}
             />
           ) : null}
         </>

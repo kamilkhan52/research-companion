@@ -219,6 +219,21 @@ way they did. This is an index, not a substitute for reading them.
   stalled on him twice in one day). It may merge ONLY after that review approves and CI is
   green at the head sha. Poll `GET /api/devtest/dispatch` for its heartbeat; its log is
   `stream-json`, one record per line, under `.dev-feedback/dispatch/`.
+  **A dispatch on an item a session already worked CONTINUES that session** (Kamil,
+  2026-09-02): it holds the diagnosis and the code it already read, and a fresh one pays for
+  all of it again and then answers his follow-up without knowing what it is a follow-up to. The
+  brief it gets depends on whether feedback has arrived SINCE that run: with feedback it is
+  told to judge whether to trust or re-verify its earlier work from what he actually says (the
+  same symptom recurring means the diagnosis was wrong and wants re-doing, not patching);
+  without, it is told plainly that this is a RETRY of a run that did not finish and to work out
+  where it got to — inside the window a retry is the likelier of the two, since device passes
+  land days later while a dead run gets re-tapped in minutes. Only a rate-limit resume keeps
+  the worktree; a follow-up resets it, because there is ONE shared dispatch worktree and the
+  session being continued is generally not the last to have used it. The window is its own
+  `DISPATCH_CONTINUE_MAX_AGE_S` (14 days), not the rate-limit one. `fresh: true` (a second
+  button on the card) forces a new session for when the accumulated context is the problem.
+  Sessions run with `--autocompact 400000`, which matters precisely because they now accumulate
+  context by design.
   **A session stopped by the account's usage limit reports `rate_limited`, not `failed`** —
   nothing is wrong with the work, so it is the one ending that can be RESUMED (`POST
   /api/devtest/dispatch` with `resume: true`) rather than restarted. A resume continues the
