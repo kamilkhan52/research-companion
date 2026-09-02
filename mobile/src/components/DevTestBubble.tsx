@@ -30,6 +30,9 @@ import { Markdown } from '@/components/Markdown';
 // DR-118 reuses the corpus-neighbourhood line's coarse age formatter rather than growing a second
 // one — "2h ago" here means what it means there.
 import { relativeAge } from '@/components/NeighbourhoodLine';
+// DR-120: the collapsed description preview is a single `<Text>` (numberOfLines), so it shows
+// the prose with the markdown syntax removed rather than the raw cell.
+import { markdownToPlain } from '@/lib/markdownPlain';
 import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -1078,7 +1081,23 @@ function formatElapsed(seconds: number | null): string {
  *  This is the whole point of the status route: a dispatched session works for tens of minutes
  *  on a feature-sized item, and until now the bubble said nothing at all after the spawn toast.
  *  It shows what the session is doing (`last_step`), that it is still moving (`steps`), and —
- *  the case that used to be invisible — that it ended, well or badly. */
+ *  the case that used to be invisible — that it ended, well or badly.
+ *
+ *  DR-121 — Kamil: "The dispatch status takes up too much space. It should be hideable.
+ *  Specially the details should collapse. When dispatch is not active, ideally we should be able
+ *  to see no status. When it's active, then the collapsible UI should appear." It lives in the
+ *  sheet's FIXED header, above the scrolling list, so its four-to-six lines were costing a fifth
+ *  of the sheet permanently — including for a session that finished days ago. So:
+ *
+ *  - it collapses to its one-line headline, and opens itself only while the session is ACTIVE
+ *    (running, or rate-limited and waiting to be resumed) — which is his "when it's active, the
+ *    collapsible UI should appear";
+ *  - a finished/failed/gone one can be DISMISSED outright, which is his "see no status", and the
+ *    dismissal persists so closing the sheet does not bring it back. It is keyed on the
+ *    dispatch's id AND state, so the next dispatch — or this one changing state — shows up
+ *    regardless. That is why the terminal case is dismissable rather than auto-hidden: DR-092
+ *    exists because a session that died silently looked identical to one still working, and an
+ *    ending that hides itself before it has been read would re-create exactly that. */
 export function DispatchBanner({ status }: { status: DispatchStatus }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -1107,25 +1126,79 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
     : limited ? `The window reopens ${formatUntil(status.rate_limit?.resets_at)}. Resuming keeps everything it had worked out.`
     : status.result?.text;
 
+  // One dispatch in one state. A resume, or this session ending, produces a different key, so
+  // neither a dismissal nor a manual collapse can outlive the thing it was about.
+  const key = `${status.id}:${status.state}`;
+  // Active = worth watching, so it opens itself; anything ended starts as its one-line headline.
+  const active = running || limited;
+  const [override, setOverride] = useState<{ key: string; open: boolean } | null>(null);
+  const open = override?.key === key ? override.open : active;
+  const dismissal = usePersistedDraft<{ key: string | null }>(
+    draftKey('devtest-dispatch-banner-dismissed'), { key: null },
+  );
+  // Only an ENDED dispatch can be dismissed. Dismissing a running one would hide the heartbeat
+  // while the session is still spending, and dismissing a rate-limited one would hide the Resume
+  // button that is the only way to pick it back up.
+  const dismissable = !active;
+  // Render nothing until the stored dismissal has loaded: the fallback is "not dismissed", so
+  // rendering early would flash a banner he has already dismissed onto the sheet every open.
+  if (!dismissal.ready) return null;
+  if (dismissal.value.key === key) return null;
+
   return (
     <View style={[styles.dispatchBanner, { backgroundColor: wash, borderColor: tint }]}
           testID="devtest-dispatch-status">
-      <View style={styles.dispatchBannerHead}>
-        <Icon name={running ? 'zap' : bad ? 'alert-triangle' : 'check'} size={14} color={tint} />
-        <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>{headline}</Text>
-        <Text variant="caption" color={t.muted}>{formatElapsed(status.elapsed_s)}</Text>
-      </View>
-      {detail ? (
-        <Text variant="caption" color={t.muted} numberOfLines={2}>{detail}</Text>
+      <Pressable
+        onPress={() => setOverride({ key, open: !open })}
+        accessibilityRole="button"
+        // An explicit label on a Pressable replaces what its children would have announced, so
+        // the headline has to be repeated here (the same trap as the card header above).
+        accessibilityLabel={`${headline}. ${formatElapsed(status.elapsed_s)}. Tap to ${open ? 'hide' : 'show'} details.`}
+        testID="devtest-dispatch-status-toggle">
+        <View style={styles.dispatchBannerHead}>
+          <Icon name={running ? 'zap' : bad ? 'alert-triangle' : 'check'} size={14} color={tint} />
+          <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>{headline}</Text>
+          <Text variant="caption" color={t.muted}>{formatElapsed(status.elapsed_s)}</Text>
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.muted} />
+          {dismissable ? (
+            // Its own Pressable, not a branch of the row's: dismissing and collapsing are
+            // different intentions and a mis-tap on the wrong one is not recoverable by tapping
+            // again — the banner would be gone.
+            <Pressable
+              // `setValue` alone would be lost: its write is debounced 300ms and dismissing
+              // unmounts this component immediately, which cancels it — the same trap the
+              // verdict draft hit in PR #380. `setValue` updates the ref synchronously, so
+              // `markSubmitted` then flushes the new value to storage at once.
+              onPress={() => {
+                dismissal.setValue({ key });
+                void dismissal.markSubmitted();
+              }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss this dispatch status"
+              testID="devtest-dispatch-status-dismiss">
+              <Icon name="x" size={14} color={t.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+      </Pressable>
+      {open ? (
+        <>
+          {detail ? (
+            <Text variant="caption" color={t.muted} numberOfLines={2}>{detail}</Text>
+          ) : null}
+          <Text variant="caption" color={t.muted}>
+            {status.steps > 0 ? `${status.steps} steps` : 'no step detail'}
+            {status.result?.num_turns ? ` · ${status.result.num_turns} turns` : ''}
+            {/* Refused steps are the DR-092 failure mode: a headless session cannot ask, so a
+                denial is final and the session looks idle rather than blocked. */}
+            {status.result?.denials ? ` · ${status.result.denials} refused` : ''}
+            {running || limited ? '' : ' · check the item below for its reply'}
+          </Text>
+        </>
       ) : null}
-      <Text variant="caption" color={t.muted}>
-        {status.steps > 0 ? `${status.steps} steps` : 'no step detail'}
-        {status.result?.num_turns ? ` · ${status.result.num_turns} turns` : ''}
-        {/* Refused steps are the DR-092 failure mode: a headless session cannot ask, so a
-            denial is final and the session looks idle rather than blocked. */}
-        {status.result?.denials ? ` · ${status.result.denials} refused` : ''}
-        {running || limited ? '' : ' · check the item below for its reply'}
-      </Text>
+      {/* Outside the collapse: Resume is the one ACTION this banner carries, and a collapsed
+          rate-limited session that hid its own way forward would be the DR-092 failure again. */}
       {status.resumable ? <ResumeButton status={status} /> : null}
     </View>
   );
@@ -1353,6 +1426,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // Not persisted: "collapsed" is the right state to come back to every time, and remembering
   // per item would recreate the wall of text on exactly the cards he reads most.
   const [details, setDetails] = useState(false);
+  // DR-120: the collapsed three-line preview, with the markdown syntax taken out. Memoized per
+  // description because the whole list of cards re-renders on every verdict.
+  const detailPreview = useMemo(() => markdownToPlain(item.how_to_test), [item.how_to_test]);
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
   // (undefined) value during the one render before `ready` flips would transiently clobber a
@@ -1495,26 +1571,50 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
           {/* Kamil, 2026-09-02: "the description, after it is fixed, should start collapsed."
               These run to whole screens of triage prose — the thing he opens a card FOR is the
               verdict row and the notes, and the description was pushing both below the fold. */}
+          {/* DR-120 — Kamil, 2026-09-02: "the description seems like an unformatted plain text
+              jumble with links etc not formatted." It is a ledger EVIDENCE cell, which is the
+              densest markdown in the file (bold, PR links, backticked paths), and it was the one
+              body of text in this card rendered as raw `<Text>` while an agent reply three
+              elements below it went through `<Markdown>`. Expanded, it now uses the same
+              renderer — and it sits OUTSIDE the toggle's Pressable, because a Pressable ancestor
+              swallows the taps on the links that renderer just made tappable.
+              The collapsed preview stays a single `<Text>`: `numberOfLines` is what bounds it to
+              three lines and only one Text honours it. Rendering the raw source there would
+              leave the FIRST thing he sees still a jumble, so it gets the prose with the syntax
+              taken out. */}
           {item.how_to_test ? (
-            <Pressable
-              onPress={() => setDetails(!details)}
-              accessibilityRole="button"
-              // This file's own note at the card header: an explicit label on a Pressable
-              // REPLACES whatever its children would have announced, so the prose has to be
-              // carried here or a screen reader loses the description entirely.
-              accessibilityLabel={`${details ? 'Hide' : 'Show'} details. ${item.how_to_test}`}
-              testID="devtest-item-details">
-              <Text
-                variant="caption"
-                color={t.muted}
-                style={styles.how}
-                numberOfLines={details ? undefined : DETAIL_PREVIEW_LINES}>
-                {item.how_to_test}
-              </Text>
-              <Text variant="caption" color={t.violet} style={styles.how}>
-                {details ? 'Hide details' : 'Show details'}
-              </Text>
-            </Pressable>
+            details ? (
+              <>
+                <View style={styles.how} testID="devtest-item-details-body">
+                  <Markdown text={item.how_to_test} />
+                </View>
+                <Pressable
+                  onPress={() => setDetails(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Hide details"
+                  testID="devtest-item-details">
+                  <Text variant="caption" color={t.violet} style={styles.how}>Hide details</Text>
+                </Pressable>
+              </>
+            ) : (
+              <Pressable
+                onPress={() => setDetails(true)}
+                accessibilityRole="button"
+                // This file's own note at the card header: an explicit label on a Pressable
+                // REPLACES whatever its children would have announced, so the prose has to be
+                // carried here or a screen reader loses the description entirely.
+                accessibilityLabel={`Show details. ${detailPreview}`}
+                testID="devtest-item-details">
+                <Text
+                  variant="caption"
+                  color={t.muted}
+                  style={styles.how}
+                  numberOfLines={DETAIL_PREVIEW_LINES}>
+                  {detailPreview}
+                </Text>
+                <Text variant="caption" color={t.violet} style={styles.how}>Show details</Text>
+              </Pressable>
+            )
           ) : null}
           {history === null ? (
             <Button
