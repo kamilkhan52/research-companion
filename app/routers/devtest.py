@@ -527,8 +527,11 @@ def _active_job(force: bool) -> str | None:
     have complied with the instruction to check. Bind the guard to the WORK, not to the call
     site, which is this repo's own repeatedly-learned lesson.
 
-    A server that cannot be reached has no jobs to kill, so an unreachable loopback is safe to
-    treat as idle — that is failing open toward the only outcome that is actually harmless here.
+    The one thing safe to read as "no jobs" is a server that is not THERE: nothing listening
+    means nothing running means nothing to kill. Every other failure — a 401 once auth is on, a
+    503, a timeout, an answer we cannot parse — means we did not find out, and this refuses
+    rather than restarting the server blind. An earlier cut collapsed all of those into "idle"
+    and quietly reopened the very hazard the guard exists for.
     """
     if force:
         return None
@@ -540,12 +543,69 @@ def _active_job(force: bool) -> str | None:
     import urllib.request
 
     port = os.environ.get("RC_PORT", "8000")          # run.sh's own default
+    blind = ("could not ask the running server whether a background job is live, so refusing "
+             "rather than restarting it blind")
     try:
+        # `fetch=0`: this probe must not trigger the route's own `git fetch`, which is bounded
+        # at DISPATCH_GIT_TIMEOUT_S and would otherwise routinely outlast the probe's patience.
         with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/api/devtest/deploy", timeout=5) as resp:
-            return (json.loads(resp.read()).get("deploy") or {}).get("active_job")
-    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
-        return None
+                f"http://127.0.0.1:{port}/api/devtest/deploy?fetch=0",
+                timeout=PROBE_TIMEOUT_S) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise DeployError(f"{blind} (HTTP {exc.code})") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise DeployError(f"{blind} (timed out)") from exc
+        return None                                   # nothing listening
+    except TimeoutError as exc:
+        raise DeployError(f"{blind} (timed out)") from exc
+    except OSError:
+        return None                                   # nothing listening
+    except ValueError as exc:
+        raise DeployError(f"{blind} (unreadable answer)") from exc
+    try:
+        return (body["deploy"] or {}).get("active_job")
+    except (KeyError, AttributeError, TypeError) as exc:
+        raise DeployError(f"{blind} (unexpected answer shape)") from exc
+
+
+def _assert_server_can_fast_forward(root: Path) -> None:
+    """Refuse a deploy whose server-checkout step could not complete, BEFORE anything moves.
+
+    `checkout main` runs before `merge --ff-only`, so a refused merge used to leave the checkout
+    already moved off the branch it was on — which under `RC_RELOAD` restarts the worker and
+    kills every in-flight job, on a deploy that then reports failure. The guard's own harm, on
+    its error path. Worse, it happened only after the device worktree had been advanced, so the
+    phone ended up on new main and the server on old.
+
+    Two ways it cannot complete, both cheap to know in advance.
+    """
+    ok, _ = _git_try(root, "rev-parse", "--verify", "refs/heads/main")
+    if ok:
+        # Local `main` carrying commits that are not on origin/main: the fast-forward refuses,
+        # and refusing here means we never touch the branch it is sitting on.
+        can, _ = _git_try(root, "merge-base", "--is-ancestor", "refs/heads/main", "origin/main")
+        if not can:
+            raise DeployError(
+                "local main has commits that are not on origin/main, so it cannot be "
+                "fast-forwarded; push or drop them first")
+    ok, listing = _git_try(root, "worktree", "list", "--porcelain")
+    if not ok:
+        return
+    # `git checkout main` fails outright when another worktree holds the branch, and this repo
+    # habitually runs several.
+    holder = None
+    for block in listing.split("\n\n"):
+        if "branch refs/heads/main" not in block:
+            continue
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                holder = line.split(" ", 1)[1]
+    if holder and Path(holder).resolve() != root.resolve():
+        raise DeployError(
+            f"the branch main is checked out in another worktree ({holder}), so the server "
+            "checkout cannot move onto it")
 
 
 def deploy(force: bool = False, defer_server: bool = False) -> dict:
@@ -591,6 +651,8 @@ def deploy(force: bool = False, defer_server: bool = False) -> dict:
             f"there is no device worktree at {before['device_worktree']}, so this cannot move "
             "what the phone runs (set RC_DEVICE_WORKTREE if it lives elsewhere)")
     _assert_clean(root, "the server checkout")
+    if before["server"] != before["target"]:
+        _assert_server_can_fast_forward(root)
 
     device = _device_worktree()
     # Nobody is supposed to edit this one, so anything here is detritus — but stash rather than
@@ -603,14 +665,14 @@ def deploy(force: bool = False, defer_server: bool = False) -> dict:
     # The server checkout is LAST and, over HTTP, deferred: advancing it restarts the process
     # answering the request, which would truncate the reply reporting it.
     server_moved = before["server"] != before["target"]
-    if server_moved:
-        _advance_server_checkout(root, defer=defer_server)
+    if server_moved and not defer_server:
+        _advance_server_checkout(root, defer=False)
 
     after = deploy_status()
     log.info("deploy: device %s -> %s, server %s -> %s",
              before["device"][:7], after["device"][:7], before["server"][:7],
              before["target"][:7])
-    return {
+    result = {
         "target": before["target"], "target_subject": before["target_subject"],
         "device_was": before["device"], "device_now": after["device"],
         "server_was": before["server"],
@@ -623,6 +685,11 @@ def deploy(force: bool = False, defer_server: bool = False) -> dict:
         "backend_restarting": server_moved,
         "needs_npm_ci": before["needs_npm_ci"],
     }
+    if server_moved and defer_server:
+        # Spawned LAST, after the response dict is built: `deploy_status()` above runs a handful
+        # of git reads in this same repo, and a child racing them contends over `index.lock`.
+        _advance_server_checkout(root, defer=True)
+    return result
 
 
 #: The deferred half of a deploy, run as `python -c` in a DETACHED child.
@@ -783,6 +850,11 @@ DISPATCH_BASE_BRANCH = "rc-dispatch-base"
 #: Git calls made while holding `_dispatch_lock` and blocking the HTTP request. `fetch` touches
 #: the network, so it needs a bound; a slow remote must not hang the dispatch route.
 DISPATCH_GIT_TIMEOUT_S = 20.0
+
+#: How long the cross-process job probe waits. Comfortably longer than the endpoint's own
+#: worst case — the GET can spend up to DISPATCH_GIT_TIMEOUT_S fetching — because a probe that
+#: gives up first would report "idle" on every slow link and silently disarm the DR-083 guard.
+PROBE_TIMEOUT_S = DISPATCH_GIT_TIMEOUT_S + 10.0
 
 
 def _dispatch_dir() -> Path:
@@ -1433,7 +1505,7 @@ def _dispatch_prompt(item_id: str | None, resuming: bool = False) -> str:
 
 
 @router.get("/api/devtest/deploy")
-def deploy_state(request: Request):
+def deploy_state(request: Request, fetch: bool = True):
     """How much of what has been MERGED is actually reachable from the phone.
 
     The bubble shows this so "nothing changed after I reloaded" stops being a mystery: a merged
@@ -1445,8 +1517,9 @@ def deploy_state(request: Request):
     try:
         # Fetching here is the point: `origin/main` is a local ref, so without it every
         # checkout looks level with a commit that predates the merge and the banner never
-        # appears — which is the failure this feature exists to end.
-        status = deploy_status(fetch=True)
+        # appears — which is the failure this feature exists to end. `fetch=0` is for the
+        # cross-process job probe, which only wants `active_job` and must not pay for a fetch.
+        status = deploy_status(fetch=fetch)
     except DeployError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if public:

@@ -1609,3 +1609,198 @@ def test_the_dispatch_brief_ends_on_the_phone_not_at_merged(client, monkeypatch)
     # The reason a mobile-only change still needs the server checkout moved.
     assert "ledger the bubble reads comes from the server checkout" in prompt
     assert "whether he needs to reload the app" in prompt
+
+
+# --- deploy review round 2 --------------------------------------------------------------------
+
+class _Resp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_the_cross_process_probe_reads_the_running_servers_answer(monkeypatch):
+    """The success path, which nothing covered: renaming the `active_job` key would have left
+    the whole suite green with the guard dead."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    seen: list[str] = []
+
+    def urlopen(url, timeout=None):
+        seen.append(url)
+        return _Resp(b'{"deploy": {"active_job": "discover"}}')
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    assert dt._active_job(force=False) == "discover"
+    # `fetch=0`: the probe must not trigger the route's own git fetch, which is bounded at 20s
+    # and would otherwise routinely outlast the probe and be read as "idle".
+    assert "fetch=0" in seen[0]
+
+
+def test_a_server_that_answers_unusably_is_not_read_as_idle(monkeypatch):
+    """"Unreachable means no jobs" is true for a refused connection and FALSE for a server that
+    answered, just not with the answer. Collapsing them disarmed the DR-083 guard on a 401 (as
+    soon as auth is on locally), a 503, or any link slow enough to outlast the probe."""
+    import urllib.error
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+
+    def raises(exc):
+        def urlopen(url, timeout=None):
+            raise exc
+        return urlopen
+
+    for exc in (urllib.error.HTTPError("u", 401, "Unauthorized", {}, None),
+                urllib.error.HTTPError("u", 503, "Unavailable", {}, None),
+                TimeoutError("timed out"),
+                urllib.error.URLError(TimeoutError("timed out"))):
+        monkeypatch.setattr("urllib.request.urlopen", raises(exc))
+        with pytest.raises(dt.DeployError, match="refusing rather than restarting it blind"):
+            dt._active_job(force=False)
+
+    # A body we cannot make sense of is also "we did not find out".
+    monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout=None: _Resp(b'"nope"'))
+    with pytest.raises(dt.DeployError):
+        dt._active_job(force=False)
+
+
+def test_a_server_that_is_not_running_is_idle(monkeypatch):
+    """The one failure that IS safe to read as idle: nothing listening means nothing running
+    means nothing a restart could kill."""
+    import urllib.error
+
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+
+    def refused(url, timeout=None):
+        raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+
+    monkeypatch.setattr("urllib.request.urlopen", refused)
+    assert dt._active_job(force=False) is None
+
+
+def test_the_probe_waits_longer_than_the_endpoint_it_calls(monkeypatch):
+    """A probe that gives up before its own endpoint can answer reports idle on every slow
+    link, which is the guard failing exactly when the fetch is slowest."""
+    from app.routers import devtest as dt
+
+    assert dt.PROBE_TIMEOUT_S > dt.DISPATCH_GIT_TIMEOUT_S
+
+
+def test_nothing_moves_when_the_server_checkout_could_not_complete(monkeypatch, tmp_path):
+    """`checkout main` runs BEFORE `merge --ff-only`, so a refused merge used to leave the
+    checkout already moved off its branch — restarting the worker and killing every in-flight
+    job, on a deploy that then reported failure. And it happened only after the device worktree
+    had been advanced, leaving the phone on new main and the server on old."""
+    from app.routers import devtest as dt
+
+    device = _device_wt(dt, tmp_path)
+    ran = _fake_git(monkeypatch)
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: device)
+    monkeypatch.setattr(dt, "_fetch_main", lambda root: None)
+    monkeypatch.setattr(dt, "_assert_server_can_fast_forward", lambda root: (_ for _ in ()).throw(
+        dt.DeployError("local main has commits that are not on origin/main")))
+
+    with pytest.raises(dt.DeployError, match="not on origin/main"):
+        dt.deploy()
+    # The device worktree must NOT have been advanced into a split deployment.
+    assert not any(a[0] == "checkout" and "-B" in a for _cwd, a in ran)
+
+
+def test_local_main_ahead_of_origin_is_refused_before_anything_moves(monkeypatch, tmp_path):
+    from app.routers import devtest as dt
+
+    def try_git(cwd, *args):
+        if args[:2] == ("rev-parse", "--verify"):
+            return True, "localmainsha"
+        if args[0] == "merge-base":
+            return False, ""            # local main is NOT an ancestor of origin/main
+        return True, ""
+
+    monkeypatch.setattr(dt, "_git_try", try_git)
+    with pytest.raises(dt.DeployError, match="cannot be fast-forwarded"):
+        dt._assert_server_can_fast_forward(tmp_path)
+
+
+def test_main_held_by_another_worktree_is_refused(monkeypatch, tmp_path):
+    """`git checkout main` fails outright when another worktree holds the branch, and this repo
+    habitually runs several."""
+    from app.routers import devtest as dt
+
+    listing = (f"worktree {tmp_path}\nHEAD abc\nbranch refs/heads/feature\n\n"
+               "worktree /elsewhere/device-main\nHEAD def\nbranch refs/heads/main\n")
+
+    def try_git(cwd, *args):
+        if args[:2] == ("rev-parse", "--verify"):
+            return False, ""            # no local main; ancestry check is skipped
+        if args[0] == "worktree":
+            return True, listing
+        return True, ""
+
+    monkeypatch.setattr(dt, "_git_try", try_git)
+    with pytest.raises(dt.DeployError, match="another worktree"):
+        dt._assert_server_can_fast_forward(tmp_path)
+
+
+def test_the_deferred_child_actually_runs_and_fast_forwards(tmp_path):
+    """The child is a source STRING executed by `python -c`; the argv test only inspected it, so
+    a syntax error or a wrong sys.argv index would have shipped silently."""
+    import subprocess
+    import sys
+
+    from app.routers import devtest as dt
+
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True)
+    git = ["git", "-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t"]
+    (work / "f").write_text("one")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "one"], check=True)
+    subprocess.run([*git, "push", "-q", "origin", "main"], check=True)
+    (work / "f").write_text("two")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-qm", "two"], check=True)
+    subprocess.run([*git, "push", "-q", "origin", "main"], check=True)
+    subprocess.run([*git, "reset", "-q", "--hard", "HEAD~1"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "sidetrack"], check=True)
+
+    record = tmp_path / "deploy-last.json"
+    done = subprocess.run([sys.executable, "-c", dt._DEPLOY_CHILD, str(work), str(record)],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(record.read_text())["error"] is None
+    head = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    target = subprocess.run(["git", "-C", str(work), "rev-parse", "origin/main"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert head == target and (work / "f").read_text() == "two"
+
+
+def test_the_deferred_child_records_a_failure_instead_of_vanishing(tmp_path):
+    """Its failures have nowhere else to surface: by the time it runs the response is long sent.
+    Silence here would leave the banner saying "behind" forever."""
+    import subprocess
+    import sys
+
+    from app.routers import devtest as dt
+
+    record = tmp_path / "deploy-last.json"
+    done = subprocess.run(
+        [sys.executable, "-c", dt._DEPLOY_CHILD, str(tmp_path / "not-a-repo"), str(record)],
+        capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0                 # it reports, rather than crashing
+    assert json.loads(record.read_text())["error"]

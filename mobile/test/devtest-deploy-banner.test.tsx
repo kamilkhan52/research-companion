@@ -140,3 +140,33 @@ test('a missing device worktree blocks deploying', async () => {
   await findByText(/worktree Metro serves is missing/);
   expect(queryByTestId('devtest-deploy-now')).toBeNull();
 });
+
+test('the npm ci warning survives the deploy, because that is when it applies', async () => {
+  // Afterwards the server recomputes this over an empty range, so a warning that only came from
+  // the pre-deploy state would vanish at exactly the moment it mattered — and the toast would
+  // say "reload the app" into a bundle that cannot build.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', needs_npm_ci: true }),
+  });
+  jest.mocked(api.deployNow).mockResolvedValue({
+    deploy: {
+      target: 'abc', target_subject: 'x', device_was: 'old', device_now: 'abc',
+      server_was: 'old', server_pending: false, server_now: 'abc',
+      needs_app_reload: true, backend_restarting: false, needs_npm_ci: true,
+    },
+  });
+  const { findByTestId, findByText } = render(<DeployBanner />);
+  fireEvent.press(await findByTestId('devtest-deploy-now'));
+  await findByText(/Deploying… run `npm ci`, then reload/);
+});
+
+test('a failed deferred half is not headed "0 merged changes"', async () => {
+  // The header is about being behind; at zero behind it was rendering nonsense over a real
+  // error message.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ last_error: 'Not possible to fast-forward, aborting.' }),
+  });
+  const { findByText, queryByText } = render(<DeployBanner />);
+  await findByText('Last deploy did not finish');
+  expect(queryByText(/0 merged changes/)).toBeNull();
+});
