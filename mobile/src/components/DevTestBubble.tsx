@@ -1148,40 +1148,50 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
   return (
     <View style={[styles.dispatchBanner, { backgroundColor: wash, borderColor: tint }]}
           testID="devtest-dispatch-status">
-      <Pressable
-        onPress={() => setOverride({ key, open: !open })}
-        accessibilityRole="button"
-        // An explicit label on a Pressable replaces what its children would have announced, so
-        // the headline has to be repeated here (the same trap as the card header above).
-        accessibilityLabel={`${headline}. ${formatElapsed(status.elapsed_s)}. Tap to ${open ? 'hide' : 'show'} details.`}
-        testID="devtest-dispatch-status-toggle">
-        <View style={styles.dispatchBannerHead}>
-          <Icon name={running ? 'zap' : bad ? 'alert-triangle' : 'check'} size={14} color={tint} />
-          <Text variant="caption" color={t.text} style={styles.dispatchBannerTitle}>{headline}</Text>
-          <Text variant="caption" color={t.muted}>{formatElapsed(status.elapsed_s)}</Text>
-          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.muted} />
-          {dismissable ? (
-            // Its own Pressable, not a branch of the row's: dismissing and collapsing are
-            // different intentions and a mis-tap on the wrong one is not recoverable by tapping
-            // again — the banner would be gone.
-            <Pressable
-              // `setValue` alone would be lost: its write is debounced 300ms and dismissing
-              // unmounts this component immediately, which cancels it — the same trap the
-              // verdict draft hit in PR #380. `setValue` updates the ref synchronously, so
-              // `markSubmitted` then flushes the new value to storage at once.
-              onPress={() => {
-                dismissal.setValue({ key });
-                void dismissal.markSubmitted();
-              }}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Dismiss this dispatch status"
-              testID="devtest-dispatch-status-dismiss">
-              <Icon name="x" size={14} color={t.muted} />
-            </Pressable>
-          ) : null}
-        </View>
-      </Pressable>
+      {/* Two SIBLING controls, not one inside the other. `Pressable` sets `accessible` on
+          itself, so a dismiss button nested in the toggle would sit inside an element that has
+          already declared itself a single labelled button — and the toggle's own explicit label
+          replaces its children's announcement, so the × would be unreachable to a screen reader
+          with nothing naming it (Opus review, PR #475). Siblings also take the Android touch
+          negotiation out of the picture entirely. */}
+      <View style={styles.dispatchBannerHead}>
+        <Pressable
+          onPress={() => setOverride({ key, open: !open })}
+          accessibilityRole="button"
+          // An explicit label on a Pressable replaces what its children would have announced, so
+          // the headline has to be repeated here (the same trap as the card header above).
+          accessibilityLabel={`${headline}. ${formatElapsed(status.elapsed_s)}. Tap to ${open ? 'hide' : 'show'} details.`}
+          style={styles.dispatchBannerToggle}
+          testID="devtest-dispatch-status-toggle">
+          <View style={styles.dispatchBannerHead}>
+            <Icon name={running ? 'zap' : bad ? 'alert-triangle' : 'check'} size={14} color={tint} />
+            {/* One line, and it must ELLIPSIZE rather than wrap: "one line collapsed" is the
+                whole measure DR-121 is about, and the longest headlines ("… stopped without
+                replying (process gone)") wrap to two on a 360dp phone. */}
+            <Text variant="caption" color={t.text} numberOfLines={1}
+                  style={styles.dispatchBannerTitle}>{headline}</Text>
+            <Text variant="caption" color={t.muted}>{formatElapsed(status.elapsed_s)}</Text>
+            <Icon name={open ? 'chevron-up' : 'chevron-down'} size={14} color={t.muted} />
+          </View>
+        </Pressable>
+        {dismissable ? (
+          <Pressable
+            // `setValue` alone would be lost: its write is debounced 300ms, and closing the
+            // sheet unmounts the Modal's children, which cancels the pending write — the same
+            // trap the verdict draft hit in PR #380. `setValue` updates the ref synchronously,
+            // so `markSubmitted` flushes the new value to storage at once.
+            onPress={() => {
+              dismissal.setValue({ key });
+              void dismissal.markSubmitted();
+            }}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss this dispatch status"
+            testID="devtest-dispatch-status-dismiss">
+            <Icon name="x" size={14} color={t.muted} />
+          </Pressable>
+        ) : null}
+      </View>
       {open ? (
         <>
           {detail ? (
@@ -1585,7 +1595,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
           {item.how_to_test ? (
             details ? (
               <>
-                <View style={styles.how} testID="devtest-item-details-body">
+                <View style={styles.howBody} testID="devtest-item-details-body">
                   <Markdown text={item.how_to_test} />
                 </View>
                 <Pressable
@@ -1752,6 +1762,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   cardTitle: { fontFamily: fonts.bodyMedium },
   activity: { marginTop: 2 },
   how: { marginTop: space.xs, lineHeight: 18 },
+  // The same spacing without the `lineHeight`, which is a TextStyle: on the View wrapping the
+  // rendered description it is silently ignored at runtime and only misleads the next reader.
+  howBody: { marginTop: space.xs },
   history: { marginTop: 4 },
   historyEntry: {
     marginTop: space.sm,
@@ -1799,6 +1812,8 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     gap: 2,
   },
   dispatchBannerHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  // DR-121: the toggle takes the row's slack so the dismiss × beside it stays pinned right.
+  dispatchBannerToggle: { flex: 1 },
   // Takes the slack so the elapsed time stays pinned right however long the headline runs.
   dispatchBannerTitle: { flex: 1 },
   // minWidth, not width: at OS font scales past ~1.4x "Filter" outgrows 44px and a fixed width

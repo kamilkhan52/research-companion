@@ -196,8 +196,13 @@ test('an ended dispatch can be dismissed to nothing, and stays dismissed', async
   // Re-mounting is what happens every time he reopens the sheet — the Modal renders no children
   // while hidden. The dismissal is persisted precisely so that does not bring it back.
   const again = render(<DispatchBanner status={ended} />);
+  // SYNCHRONOUSLY, before any await: this is the frame before the persisted dismissal has been
+  // read back, and rendering the banner in it would flash a status he has already dismissed onto
+  // the sheet on every single open. An awaited assertion alone is satisfied either way, so it
+  // could not tell that guard from its absence (Opus review, PR #475).
+  expect(again.queryByTestId('devtest-dispatch-status')).toBeNull();
   await waitFor(() => expect(again.queryByTestId('devtest-dispatch-status')).toBeNull());
-  // Give the load every chance to resolve into a visible banner before trusting the null.
+  // And still gone once the load has definitely resolved.
   await new Promise((r) => setTimeout(r, 0));
   expect(again.queryByTestId('devtest-dispatch-status')).toBeNull();
 });
@@ -230,6 +235,26 @@ test('a live dispatch cannot be dismissed, and neither can one waiting to resume
     result: null,
   }));
   expect(limited.queryByTestId('devtest-dispatch-status-dismiss')).toBeNull();
+});
+
+test('the dismiss button is a sibling of the toggle, not nested inside it', async () => {
+  // `Pressable` marks itself `accessible`, and the toggle carries an explicit label — which
+  // REPLACES its children's announcement. A × nested in it would be unreachable to a screen
+  // reader with nothing naming it, so the only way to "see no status" would be sighted-only
+  // (Opus review, PR #475).
+  const { getByTestId } = await show(status({ state: 'finished', last_summary: null }));
+  const toggle = getByTestId('devtest-dispatch-status-toggle');
+  const dismiss = getByTestId('devtest-dispatch-status-dismiss');
+  for (let n = dismiss.parent; n; n = n.parent) expect(n).not.toBe(toggle);
+});
+
+test('the collapsed headline is held to one line', async () => {
+  // "One line" is the whole measure DR-121 is about, and the longest headlines wrap on a 360dp
+  // phone once the chevron and × are in the row beside them. Ellipsize, do not wrap.
+  const { getByText } = await show(status({
+    state: 'gone', ended_reason: 'process gone', last_summary: null, last_step: null,
+  }));
+  expect(getByText('opus stopped without replying (process gone)').props.numberOfLines).toBe(1);
 });
 
 test('collapsing never hides Resume, the one action the banner carries', async () => {

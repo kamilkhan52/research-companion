@@ -112,6 +112,17 @@ test('markdownToPlain leaves the identifiers this ledger is full of alone', () =
   expect(markdownToPlain('this is _emphatic_ prose')).toBe('this is emphatic prose');
 });
 
+test('markdownToPlain resolves the escapes a table cell is forced to write', () => {
+  // A ledger row lives in a markdown TABLE, so a literal pipe must be escaped — and DR-116's
+  // cell really does carry this. Left in, it is the same visible-syntax complaint DR-120 exists
+  // to fix, on one of the freshest rows he opens.
+  expect(markdownToPlain("guarded on `query.trim() \\|\\| filter !== 'all'` today"))
+    .toBe("guarded on query.trim() || filter !== 'all' today");
+  // The unescape runs LAST on purpose: earlier, `\*` would become a live emphasis marker and
+  // the words on either side of it would be eaten.
+  expect(markdownToPlain('a literal \\*asterisk\\* pair')).toBe('a literal *asterisk* pair');
+});
+
 test('markdownToPlain leaves maths as written', () => {
   // A half-stripped equation reads worse than its source, and `Markdown.tsx` renders these via
   // MathView rather than as text anyway.
