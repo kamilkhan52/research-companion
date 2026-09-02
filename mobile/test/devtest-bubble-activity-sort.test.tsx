@@ -226,11 +226,16 @@ async function openWithPersistedSort(sort: string) {
 
 /** The receiver matters, not just the arguments (Opus review, PR #469): a prototype spy matches
  *  any of the sheet's ScrollViews, and a call aimed at the vertical item list — a no-op on device
- *  — would otherwise satisfy every assertion here. */
+ *  — would otherwise satisfy every assertion here. The row is named by testID rather than merely
+ *  checked for `horizontal` (Opus review, PR #471): there are two horizontal rows now, so "some
+ *  horizontal row scrolled" would stop being the assertion this means to make. */
 function expectScrolledChipRow(scrollTo: jest.SpyInstance, x: number) {
   expect(scrollTo).toHaveBeenCalledWith({ x, animated: false });
-  const receiver = (scrollTo.mock.contexts ?? scrollTo.mock.instances)[0] as { props: { horizontal?: boolean } };
+  const receiver = (scrollTo.mock.contexts ?? scrollTo.mock.instances)[0] as {
+    props: { horizontal?: boolean; testID?: string };
+  };
   expect(receiver.props.horizontal).toBe(true);
+  expect(receiver.props.testID).toBe('devtest-sort-chips');
 }
 
 test('a selected off-screen SORT chip is scrolled into view when the sheet opens', async () => {

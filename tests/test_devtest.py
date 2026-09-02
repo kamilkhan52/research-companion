@@ -396,21 +396,26 @@ def test_a_batch_dispatch_is_not_credited_to_any_item(client, tmp_path, monkeypa
 
 
 @pytest.fixture
-def non_utc_timezone(monkeypatch):
+def non_utc_timezone():
     """Run a test in a zone with a real UTC offset.
 
     Both timestamp tests below are TAUTOLOGIES on a UTC machine — reading a naive local value as
     if it were UTC gives the same number — and GitHub's runners are UTC while the dev Mac is not.
     Since merges are gated on CI, the blind spot was on exactly the side that matters (Opus
     review, PR #471).
+
+    It takes its OWN `MonkeyPatch` rather than the shared per-test one: `undo()` on that would
+    also unwind whatever the `client` fixture had patched (`RC_DEVTEST_DIR`, `dev_mode`) for any
+    test using both. Harmless today given LIFO finalization, latent otherwise (Opus review,
+    PR #471, round 2).
     """
     import time as _time
 
-    monkeypatch.setenv("TZ", "America/New_York")
-    _time.tzset()
-    yield
-    monkeypatch.undo()
-    _time.tzset()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TZ", "America/New_York")
+        _time.tzset()
+        yield
+    _time.tzset()       # after the context restored the previous TZ
 
 
 def test_one_instant_spelled_three_ways_reads_as_one_timestamp(non_utc_timezone):

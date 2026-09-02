@@ -390,10 +390,6 @@ export function DevTestBubble() {
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
   const narrowed = narrowedBy.length > 0;
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
-  const setSort = (next: SortMode) => {
-    sortChips.markChosen();
-    toolbar.setValue((v) => ({ ...v, sort: next }));
-  };
 
   // DR-116's chip reveal, for BOTH rows. DR-118 made this general rather than filter-only: adding
   // a fourth sort chip widened that row past a phone's width, so a restored "A–Z"/"Recently
@@ -410,6 +406,12 @@ export function DevTestBubble() {
   const setFilter = (next: ReviewFilter) => {
     filterChips.markChosen();
     toolbar.setValue((v) => ({ ...v, filter: next }));
+  };
+  // Below its hook rather than beside `setQuery`: only ever called from an `onPress`, so a
+  // forward reference would work — but it would TDZ-crash the day anything calls it at render.
+  const setSort = (next: SortMode) => {
+    sortChips.markChosen();
+    toolbar.setValue((v) => ({ ...v, sort: next }));
   };
   // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
   const showEverything = () => {
@@ -618,6 +620,9 @@ export function DevTestBubble() {
             <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
             <ScrollView
               ref={filterChips.scrollRef}
+              // Named so a test asserting "this row scrolled" cannot be satisfied by the OTHER
+              // horizontal row (Opus review, PR #471).
+              testID="devtest-filter-chips"
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
@@ -637,6 +642,7 @@ export function DevTestBubble() {
             <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
             <ScrollView
               ref={sortChips.scrollRef}
+              testID="devtest-sort-chips"
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.filterRow}
