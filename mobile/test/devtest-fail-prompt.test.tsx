@@ -1,92 +1,117 @@
 // Kamil, 2026-09-02: "Let's prompt for dispatch on Fail."
 //
 // Recording a fail and handing it to Claude were two unrelated gestures a screen apart, and the
-// gap is where a fail sits: the DR-009 fail waited ten hours because nothing carried it
-// anywhere. A fail is the one verdict that asks for work, so it now ends on a prompt.
+// gap is where a fail sits: DR-009's waited ten hours because nothing carried it anywhere.
+//
+// The prompt lives on the SHEET, not on the card. Recording a verdict re-runs the list filter,
+// and under "Not reviewed" — the flow DR-077 exists for — that unmounts the card in the same
+// commit, so a prompt owned by the card would never be seen.
 
-jest.mock('@kesha-antonov/react-native-chat', () => ({
-  Bubble: () => null, Chat: () => null, InputToolbar: () => null, MessageText: () => null,
-}));
 jest.mock('expo-router', () => ({ usePathname: () => '/discover' }));
 jest.mock('@/ui/Toast', () => ({ showToast: jest.fn() }));
-
 jest.mock('@/api/endpoints', () => ({
-  getDevTestItems: jest.fn().mockResolvedValue({ items: [] }),
+  getDevTestItems: jest.fn(),
   recordDevTestFeedback: jest.fn().mockResolvedValue({ entry: {} }),
   getDevTestFeedback: jest.fn().mockResolvedValue({ entries: [] }),
-  dispatchToClaude: jest.fn().mockResolvedValue({
-    dispatch: { id: 'd1', model: 'opus', item_id: 'DR-091', log: '/x', started_at: '' },
-  }),
+  createDevTestItem: jest.fn(),
+  dispatchToClaude: jest.fn(),
+  getDispatchStatus: jest.fn().mockResolvedValue({ dispatch: null }),
+  resumeDispatch: jest.fn(),
+  getDeployState: jest.fn().mockRejectedValue(new Error('no deploy state')),
+  deployNow: jest.fn(),
 }));
 
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
-import { ItemCard } from '@/components/DevTestBubble';
+import { DevTestBubble } from '@/components/DevTestBubble';
 import type { DevTestItem } from '@/api/endpoints';
 
-const ITEM: DevTestItem = {
-  id: 'DR-091', state: 'open', raised: '2026-08-21', title: 'A figure bug',
-  how_to_test: 'open the paper', feedback_count: 0,
-};
+const ITEMS: DevTestItem[] = [
+  { id: 'DR-A', state: 'open', raised: '2026-09-01', title: 'Alpha thing',
+    how_to_test: 'open it', feedback_count: 0 },
+];
 
-const card = (extra = {}) => render(
-  <ItemCard item={ITEM} shot={null} route="/discover" startExpanded dispatchModel="opus"
-            {...extra} />,
-);
+const OK = { dispatch: { id: 'd1', model: 'opus' as const, item_id: 'DR-A', log: '/x',
+                         started_at: '' } };
+
+async function failTheItem() {
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByText('Alpha thing'));          // expand the card
+  fireEvent.press(await screen.findByText('Fail'));
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  return screen;
+}
 
 beforeEach(() => jest.clearAllMocks());
 
-test('a fail ends on a prompt to hand it over, not on a closed card', async () => {
-  const view = card();
-  fireEvent.press(await view.findByText('Fail'));
-  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
-  await view.findByTestId('devtest-fail-prompt');
-  await view.findByText('Fail recorded. Hand it to Claude now?');
+test('a fail raises a prompt to hand it over', async () => {
+  const screen = await failTheItem();
+  await screen.findByTestId('devtest-fail-prompt');
+  await screen.findByText('DR-A failed. Hand it to Claude now?');
 });
 
-test('taking the prompt dispatches on that item and closes the card', async () => {
-  const view = card();
-  fireEvent.press(await view.findByText('Fail'));
-  fireEvent.press(await view.findByTestId('devtest-fail-prompt-dispatch'));
-  await waitFor(() =>
-    expect(api.dispatchToClaude).toHaveBeenCalledWith('opus', 'DR-091', false));
-  // Handed off, so the queue wants it gone — same as any other finished verdict.
-  await waitFor(() => expect(view.queryByTestId('devtest-fail-prompt')).toBeNull());
+test('the prompt survives the card being filtered away by its own verdict', async () => {
+  // Recording the verdict re-runs the filter. Under "Not reviewed" the item stops matching and
+  // its card unmounts in the same commit — which is precisely why the prompt is not on the card.
+  const screen = await failTheItem();
+  fireEvent.press(screen.getByLabelText('Not reviewed'));
+  await waitFor(() => expect(screen.queryByText('Alpha thing')).toBeNull());
+  expect(screen.getByTestId('devtest-fail-prompt')).toBeTruthy();
 });
 
-test('declining closes the card without dispatching', async () => {
-  const view = card();
-  fireEvent.press(await view.findByText('Fail'));
-  fireEvent.press(await view.findByTestId('devtest-fail-prompt-dismiss'));
-  await waitFor(() => expect(view.queryByTestId('devtest-fail-prompt')).toBeNull());
+test('taking the prompt dispatches on that item and clears it', async () => {
+  jest.mocked(api.dispatchToClaude).mockResolvedValue(OK);
+  const screen = await failTheItem();
+  fireEvent.press(await screen.findByTestId('devtest-fail-prompt-dispatch'));
+  await waitFor(() => expect(api.dispatchToClaude).toHaveBeenCalledWith('sonnet', 'DR-A', false));
+  await waitFor(() => expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull());
+});
+
+test('a REFUSED dispatch leaves the prompt up, because retrying later is the right move', async () => {
+  // `fireDispatch` swallows its own errors and resolves either way, so dismissing on `.then`
+  // treated a refusal as a hand-off. And a refusal is the EXPECTED answer while another session
+  // is running — most of the time once you are working a queue of fails — so this left the fail
+  // carried nowhere while the UI said otherwise: the exact gap this feature exists to close.
+  jest.mocked(api.dispatchToClaude).mockRejectedValue(
+    new Error('A dispatched session is already running (dispatch-1)'));
+  const screen = await failTheItem();
+  fireEvent.press(await screen.findByTestId('devtest-fail-prompt-dispatch'));
+  await waitFor(() => expect(api.dispatchToClaude).toHaveBeenCalled());
+  expect(screen.getByTestId('devtest-fail-prompt')).toBeTruthy();
+});
+
+test('declining clears it without dispatching', async () => {
+  const screen = await failTheItem();
+  fireEvent.press(await screen.findByTestId('devtest-fail-prompt-dismiss'));
+  await waitFor(() => expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull());
   expect(api.dispatchToClaude).not.toHaveBeenCalled();
 });
 
-test('a pass closes the card and never prompts', async () => {
-  // A pass finishes with the item; there is nothing to hand over.
-  const view = card();
-  fireEvent.press(await view.findByText('Pass'));
+test('a pass raises nothing — there is nothing to hand over', async () => {
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByText('Alpha thing'));
+  fireEvent.press(await screen.findByText('Pass'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
-  expect(view.queryByTestId('devtest-fail-prompt')).toBeNull();
+  expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull();
 });
 
-test('a remark keeps the card open for the note, and does not prompt', async () => {
-  // The remark path is about SEEING the comment land; a dispatch prompt on top of it would
-  // bury the very thing that fix exists to show.
-  const view = card();
-  fireEvent.changeText(await view.findByPlaceholderText(/comment/i), 'just a note');
-  fireEvent.press(await view.findByText('Remark'));
+test('a remark raises nothing — it would bury the note DR-119 exists to show', async () => {
+  jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByText('Alpha thing'));
+  fireEvent.changeText(
+    await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)'),
+    'a note');
+  fireEvent.press(await screen.findByText('Remark'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
-  expect(view.queryByTestId('devtest-fail-prompt')).toBeNull();
-});
-
-test('without a model picked there is nothing to offer, so no prompt', async () => {
-  // The persistence-test mount renders ItemCard with no dispatchModel; it must not grow a
-  // prompt whose button cannot exist.
-  const view = render(
-    <ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
-  fireEvent.press(await view.findByText('Fail'));
-  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
-  expect(view.queryByTestId('devtest-fail-prompt')).toBeNull();
+  expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull();
 });

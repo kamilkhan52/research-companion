@@ -391,6 +391,10 @@ export function DevTestBubble() {
   // DR-092: the model a bubble dispatch uses, persisted so it survives reopen like the toolbar.
   const modelDraft = usePersistedDraft<DispatchModel>(draftKey('devtest-dispatch-model'), 'sonnet');
   const [dispatchingAll, setDispatchingAll] = useState(false);
+  // The item whose fail is waiting to be handed over, or null. Sheet-level so it survives the
+  // re-filter that recording a verdict triggers, which under "Not reviewed" unmounts the card
+  // that raised it in the same commit.
+  const [failPrompt, setFailPrompt] = useState<string | null>(null);
   // The heartbeat behind the banner below: what a dispatched session is doing, and how the last
   // one ended. Polls only while this sheet is open.
   const dispatchStatus = useDispatchHeartbeat(visible);
@@ -718,6 +722,13 @@ export function DevTestBubble() {
           </View>
           {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
           <DeployBanner />
+          {failPrompt ? (
+            <FailPrompt
+              itemId={failPrompt}
+              model={modelDraft.value}
+              onDone={() => setFailPrompt(null)}
+            />
+          ) : null}
 
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
@@ -764,6 +775,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onExpandChange={onExpandChange}
+                    onFailRecorded={setFailPrompt}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -791,12 +803,14 @@ export function DevTestBubble() {
                   <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
                   {sections.verify.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={setFailPrompt} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={setFailPrompt} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -823,7 +837,8 @@ export function DevTestBubble() {
                   {showRest || narrowed
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={setFailPrompt} />
                       ))
                     : null}
                 </>
@@ -925,6 +940,59 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
 /** How much of a description shows before "Show details". Enough to tell items apart, short
  *  enough that the verdict row stays on screen. */
 const DETAIL_PREVIEW_LINES = 3;
+
+/** The prompt a fail raises: recording it and acting on it used to be two gestures a screen
+ *  apart, and the gap is where a fail sits — DR-009's waited ten hours because nothing carried
+ *  it anywhere.
+ *
+ *  It clears ONLY when a dispatch is actually accepted. `fireDispatch` swallows its own errors
+ *  and resolves either way, so dismissing on `.then` treated a refusal as a hand-off — and a
+ *  refusal is the EXPECTED answer while another session is running, which is most of the time
+ *  once you are working a queue of fails. That left the card looking exactly like the
+ *  successful case with the fail carried nowhere: the gap this exists to close, with the UI
+ *  now asserting the opposite. */
+function FailPrompt({ itemId, model, onDone }: {
+  itemId: string; model: DispatchModel; onDone: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <View style={styles.failPrompt} testID="devtest-fail-prompt">
+      <Text variant="caption" color={t.text}>
+        {itemId} failed. Hand it to Claude now?
+      </Text>
+      <Text variant="caption" color={t.muted}>
+        It continues the session that already worked this item when there is one, so it starts
+        from your comment rather than from scratch.
+      </Text>
+      <View style={styles.failPromptRow}>
+        <Button
+          title={`Dispatch (${model})`}
+          icon="zap"
+          loading={busy}
+          disabled={busy}
+          testID="devtest-fail-prompt-dispatch"
+          onPress={() => {
+            void fireDispatch(model, itemId, setBusy).then((d) => {
+              // Only a real dispatch dismisses this. A refusal leaves it up, because trying
+              // again once the running session replies is the correct next action.
+              if (d) onDone();
+            });
+          }}
+        />
+        <Button
+          title="Not now"
+          variant="ghost"
+          disabled={busy}
+          testID="devtest-fail-prompt-dismiss"
+          onPress={onDone}
+        />
+      </View>
+    </View>
+  );
+}
 
 /** How long to wait before re-reading state after a deploy: the server checkout moves in a
  *  detached child a couple of seconds later, so an immediate re-read sees the old answer. */
@@ -1400,11 +1468,15 @@ interface ItemCardDraft {
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
 export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
-                          dispatchModel, activity, onExpandChange }: {
+                          dispatchModel, activity, onExpandChange, onFailRecorded }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
   /** Told when this card opens or closes, so the list can restore the reading position it
    *  had before all that content appeared. */
   onExpandChange?: (expanded: boolean, id: string) => void;
+  /** Told when a FAIL lands, so the sheet can raise the hand-it-over prompt. Raised there
+   *  rather than here because recording a verdict re-filters the list, which can unmount this
+   *  card in the same commit. */
+  onFailRecorded?: (id: string) => void;
   /** DR-118: "You opened it · 2h ago" and friends — what the "Last activity" sort ordered this
    *  card by. Undefined under every other sort, where it would be noise. */
   activity?: string;
@@ -1421,10 +1493,6 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // ordinary dispatch was in flight, and the second tap earned a raw single-flight 409 toast
   // rather than doing nothing.
   const [dispatching, setDispatching] = useState<'item' | 'fresh' | null>(null);
-  // Shown only just after a fail is recorded. Deliberately not persisted: it is a prompt about
-  // the thing he just did, not a state of the item — coming back tomorrow to a card still
-  // asking "send this to Claude?" would be noise on an item already dealt with.
-  const [failPrompt, setFailPrompt] = useState(false);
   // DR-065: "which item was opened, any unfinished message... full resumption of previous
   // state" — closing the sheet (or the app dying) used to lose whichever card was expanded and
   // whatever remark was half-typed, since it was plain useState inside a Modal. Keyed per item
@@ -1499,16 +1567,14 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
       // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
       // (which actually persists) instead, resetting only the ephemeral fields.
-      // A FAIL is the one verdict that asks for work, so it does not just close: the card
-      // stays open on a prompt to hand it to Claude. Kamil, 2026-09-02: "Let's prompt for
-      // dispatch on Fail." Before this, recording a fail and dispatching on it were two
-      // unrelated gestures a screen apart, and the gap is where a fail sat all morning — the
-      // DR-009 fail waited ten hours because nothing carried it anywhere.
-      //
-      // A PASS still closes. It finishes with the item and DR-077's queue wants it gone.
-      const prompting = verdict === 'fail' && !!dispatchModel;
-      if (verdict === 'pass') setExpanded(false);
-      setFailPrompt(prompting);
+      // A FAIL is the one verdict that asks for work, so it raises a prompt to hand it over —
+      // but the prompt belongs to the SHEET, not to this card. Recording a verdict re-runs the
+      // list's filter, and under "Not reviewed" (the flow DR-077 exists for) that unmounts this
+      // card immediately, taking any local prompt with it before it could be seen. It also lets
+      // the card keep its ordinary collapse, so nothing about a fail is written to the
+      // persisted draft that a later mount would restore without the prompt that justified it.
+      if (verdict !== 'remark') setExpanded(false);
+      if (verdict === 'fail') onFailRecorded?.(item.id);
       draft.setValue((v) => ({
         // A remark is a COMMENT, and the card used to collapse on submit with the history list
         // untouched — so the note you had just written vanished and nothing said it had landed.
@@ -1518,7 +1584,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
         // out of the way.
         // `setExpanded(false)` above already wrote the collapse for a verdict; this literal
         // replaces the whole draft, so it has to carry the same value rather than contradict it.
-        expanded: verdict !== 'pass', comment: '', attach: false,
+        expanded: verdict === 'remark', comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
         verdictAt: verdict === 'remark' ? v.verdictAt : Date.now(),
         // Carried, not reset: this literal replaces the whole draft, and DR-118's visit stamp is
@@ -1700,45 +1766,6 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             <Button title="Remark" icon="message-circle" variant="ghost" disabled={busy}
               onPress={() => void send('remark')} />
           </View>
-          {/* The prompt a fail raises. It sits ABOVE the ordinary dispatch controls and states
-              what it will do, because the point is that recording the fail and acting on it
-              stop being two separate gestures a screen apart. */}
-          {failPrompt ? (
-            <View style={styles.failPrompt} testID="devtest-fail-prompt">
-              <Text variant="caption" color={t.text}>
-                Fail recorded. Hand it to Claude now?
-              </Text>
-              <Text variant="caption" color={t.muted}>
-                It continues the session that already worked this item when there is one, so it
-                starts from your comment rather than from scratch.
-              </Text>
-              <View style={styles.failPromptRow}>
-                <Button
-                  title={`Dispatch (${dispatchModel})`}
-                  icon="zap"
-                  loading={dispatching === 'item'}
-                  disabled={dispatching !== null}
-                  testID="devtest-fail-prompt-dispatch"
-                  onPress={() => {
-                    void fireDispatch(
-                      dispatchModel as DispatchModel, item.id,
-                      (b) => setDispatching(b ? 'item' : null),
-                    ).then(() => {
-                      setFailPrompt(false);
-                      setExpanded(false);   // handed off; the queue wants it out of the way
-                    });
-                  }}
-                />
-                <Button
-                  title="Not now"
-                  variant="ghost"
-                  disabled={dispatching !== null}
-                  testID="devtest-fail-prompt-dismiss"
-                  onPress={() => { setFailPrompt(false); setExpanded(false); }}
-                />
-              </View>
-            </View>
-          ) : null}
           {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
               Fire-on-tap; the toast and its eventual bubble reply confirm. */}
           {/* Two buttons, not a toggle: continuing is the default and the common case, so it
