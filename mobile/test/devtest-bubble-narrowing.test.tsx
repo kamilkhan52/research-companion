@@ -6,7 +6,7 @@
 // collapsed "Everything else" section while a filter is on.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { ScrollView } from 'react-native';
 
 import { DevTestBubble, narrowingReasons } from '@/components/DevTestBubble';
@@ -106,6 +106,21 @@ test('"Show all" leaves the sort mode alone', async () => {
   expect(screen.getByText(/^Results \(3\)/)).toBeTruthy();
 });
 
+// Opus review, PR #469: "Everything else" is force-open while narrowed, so clearing the filter
+// without also opening it makes cards that were on screen a frame ago disappear — a miniature of
+// the reported confusion, produced by the button that exists to end it.
+test('"Show all" does not hide the closed items the filter had just put on screen', async () => {
+  await seedVerdict('DR-C', 'fail');
+  const screen = await openBubble();
+  fireEvent.press(screen.getByLabelText('Failed'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+
+  fireEvent.press(screen.getByText('Show all 3'));
+
+  await waitFor(() => expect(screen.getByText('Zulu widget')).toBeTruthy());
+  expect(screen.getByText('Alpha thing')).toBeTruthy();
+});
+
 // The worst version of the bug, one level down: the caption counts a match that the collapsed
 // section is still hiding, so FEWER cards are on screen than the number being read.
 test('a match inside "Everything else" is on screen while a filter is active, with no expand tap', async () => {
@@ -130,23 +145,39 @@ test('with nothing narrowing the list, "Everything else" is still a collapsed to
 // chip is off-screen on a phone and every VISIBLE chip looks unselected — which is how an active
 // filter reads as "the Filter is set to All". RNTL computes no layout, so the chip's own onLayout
 // is fired here to stand in for the real measurement.
-test('a selected off-screen filter chip is scrolled into view when the sheet opens', async () => {
+//
+// The receiver is asserted, not just the arguments (Opus review, PR #469): a prototype spy matches
+// ANY of the three ScrollViews in this sheet, and pointing the call at the vertical item list — a
+// total no-op on device, since you cannot scroll a vertical list horizontally — otherwise leaves
+// every test in this file green.
+function expectScrolledFilterRow(scrollTo: jest.SpyInstance, x: number) {
+  expect(scrollTo).toHaveBeenCalledWith({ x, animated: false });
+  const receiver = (scrollTo.mock.contexts ?? scrollTo.mock.instances)[0] as { props: { horizontal?: boolean } };
+  expect(receiver.props.horizontal).toBe(true);
+}
+
+async function openWithPersistedFilter(filter: string) {
   await AsyncStorage.setItem(
     draftKey('devtest-toolbar'),
-    JSON.stringify({ version: 1, value: { query: '', filter: 'failed', sort: 'default' }, submitted: false, acceptedBaseline: null }),
+    JSON.stringify({ version: 1, value: { query: '', filter, sort: 'default' }, submitted: false, acceptedBaseline: null }),
   );
-  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   // The persisted filter matches nothing here, so the item list is not the readiness signal —
   // the restored chip selection is. (That empty result is itself the reported situation: a
   // filter from a previous session, still on, with no visible cause.)
   jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
-  await waitFor(() => expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true));
   await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
+  return screen;
+}
+
+test('a selected off-screen filter chip is scrolled into view when the sheet opens', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openWithPersistedFilter('failed');
+  expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true);
 
   fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
-  expect(scrollTo).toHaveBeenCalledWith({ x: 320 - space.md, animated: false });
+  expectScrolledFilterRow(scrollTo, 320 - space.md);
 
   // Once per open, and only for the selected chip: an unselected chip laying out later must not
   // drag the row away from the selection the tester is looking at.
@@ -154,6 +185,79 @@ test('a selected off-screen filter chip is scrolled into view when the sheet ope
   fireEvent(screen.getByLabelText('Reviewed'), 'layout', { nativeEvent: { layout: { x: 180, y: 0, width: 70, height: 28 } } });
   fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
   expect(scrollTo).not.toHaveBeenCalled();
+  scrollTo.mockRestore();
+});
+
+// The reverse arrival order: the chip is measured first and the persisted selection lands after.
+// The layout callback alone cannot cover it — the chip's layout does not change when the filter
+// hydrates, so RN fires no second onLayout and nothing would ever scroll (Opus review, PR #469).
+// The toolbar's storage read is held open here to force that order deterministically.
+test('the reveal still happens when the chip is measured before the filter is restored', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  let releaseHydration = () => {};
+  const held = new Promise<void>((resolve) => { releaseHydration = resolve; });
+  const toolbarDraft = JSON.stringify({
+    version: 1, value: { query: '', filter: 'failed', sort: 'default' }, submitted: false, acceptedBaseline: null,
+  });
+  // Swapped by assignment and restored in `finally`, not via `jest.spyOn`: AsyncStorage's own
+  // module mock IS a `jest.fn`, so `mockRestore` would leave it returning `undefined` for every
+  // later test in this file rather than restoring the store-backed implementation.
+  const realGetItem = AsyncStorage.getItem;
+  // Serves the toolbar draft only, and only once released. Every other draft key answers `null`
+  // (its own default), which is what this component sees on a fresh install anyway.
+  (AsyncStorage as { getItem: unknown }).getItem = async (key: string) => {
+    if (key !== draftKey('devtest-toolbar')) return null;
+    await held;
+    return toolbarDraft;
+  };
+  try {
+    const screen = await openBubble();                     // renders on the pre-hydration "All"
+    expect(screen.getByLabelText('All').props.accessibilityState.selected).toBe(true);
+    fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
+    expect(scrollTo).not.toHaveBeenCalled();               // nothing is selected there yet
+
+    await act(async () => { releaseHydration(); await Promise.resolve(); });
+
+    await waitFor(() => expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true));
+    expectScrolledFilterRow(scrollTo, 320 - space.md);     // no second layout pass was needed
+  } finally {
+    (AsyncStorage as { getItem: unknown }).getItem = realGetItem;
+    scrollTo.mockRestore();
+  }
+});
+
+// The tester's own tap must never move the row: the chip he pressed is by definition already on
+// screen, and selecting it switches its label to semibold, which changes its measured width and
+// re-fires onLayout for the whole row (Opus review, PR #469 — this used to snap the row sideways,
+// unanimated, on the first filter tap of each open).
+test('tapping a filter chip never scrolls the chip row', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openBubble();
+
+  fireEvent.press(screen.getByLabelText('Failed'));
+  await waitFor(() => expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true));
+  // The re-measure a selection triggers on device.
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 78, height: 28 } } });
+
+  expect(scrollTo).not.toHaveBeenCalled();
+  scrollTo.mockRestore();
+});
+
+// The "once per OPEN" reset is the whole mechanism, and it is load-bearing because RN's Modal
+// returns null while hidden — children unmount and every chip lays out again on the next open.
+test('reopening the sheet reveals the still-active filter chip again', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openWithPersistedFilter('failed');
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
+  expectScrolledFilterRow(scrollTo, 320 - space.md);
+
+  fireEvent.press(screen.getByLabelText('Close'));
+  scrollTo.mockClear();
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
+
+  expectScrolledFilterRow(scrollTo, 320 - space.md);
   scrollTo.mockRestore();
 });
 

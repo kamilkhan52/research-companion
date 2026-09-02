@@ -280,24 +280,55 @@ export function DevTestBubble() {
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
   const narrowed = narrowedBy.length > 0;
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
-  const setFilter = (next: ReviewFilter) => toolbar.setValue((v) => ({ ...v, filter: next }));
   const setSort = (next: SortMode) => toolbar.setValue((v) => ({ ...v, sort: next }));
-  // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
-  const showEverything = () => toolbar.setValue((v) => ({ ...v, query: '', filter: 'all' }));
 
   // DR-116: the filter chips live in a horizontal ScrollView that always opens at offset 0, so
   // on a phone-width screen an active "Passed"/"Failed" chip sits off-screen and every chip the
   // tester CAN see looks unselected — visually indistinguishable from "All" being on, which is
-  // exactly how he read it. Scroll the selected chip into view once per open, driven by the
-  // chip's own layout (nothing else here knows chip widths). Never for "All": it is already the
-  // leftmost chip, so scrolling in the untouched default case would be motion for nothing.
+  // exactly how he read it. The RESTORED selection is scrolled into view once per sheet open.
+  //
+  // Two paths, because neither alone is sufficient (Opus review, PR #469): a chip's `x` is only
+  // known once it has laid out, and the persisted filter is only known once AsyncStorage answers
+  // — either can land first. The layout callback covers "selection known, chip measured later";
+  // the effect covers "chip measured, selection hydrated later". Neither spends the once-per-open
+  // token while `x` is still unknown, or a sheet that lays out before hydration would silently
+  // never scroll at all.
   const filterScrollRef = useRef<ScrollView>(null);
-  const filterScrolledRef = useRef(false);
-  const revealFilterChip = useCallback((key: ReviewFilter, e: LayoutChangeEvent) => {
-    if (key === 'all' || key !== filter || filterScrolledRef.current) return;
-    filterScrolledRef.current = true;
-    filterScrollRef.current?.scrollTo({ x: Math.max(0, e.nativeEvent.layout.x - space.md), animated: false });
-  }, [filter]);
+  const filterChipX = useRef<Partial<Record<ReviewFilter, number>>>({});
+  const filterRevealedRef = useRef(false);
+  const revealSelectedChip = useCallback(() => {
+    // "All" is already the leftmost chip, so revealing it would be motion for nothing.
+    if (!toolbar.ready || filterRevealedRef.current || filter === 'all') return;
+    const x = filterChipX.current[filter];
+    if (x == null) return;
+    filterRevealedRef.current = true;
+    filterScrollRef.current?.scrollTo({ x: Math.max(0, x - space.md), animated: false });
+  }, [filter, toolbar.ready]);
+  const rememberChipX = (key: ReviewFilter, e: LayoutChangeEvent) => {
+    filterChipX.current[key] = e.nativeEvent.layout.x;
+    revealSelectedChip();
+  };
+  useEffect(() => {
+    if (visible) revealSelectedChip();
+  }, [visible, revealSelectedChip]);
+
+  // A tap is not a restore, so it spends the token even though the tester's own choice must never
+  // move the row (Opus review, PR #469: selecting a chip switches its label to semibold, which
+  // changes its measured width and re-fires `onLayout` for the whole row — without this the first
+  // filter tap of each open snapped the chip row sideways, unanimated, under the finger).
+  const setFilter = (next: ReviewFilter) => {
+    filterRevealedRef.current = true;
+    toolbar.setValue((v) => ({ ...v, filter: next }));
+  };
+  // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
+  // "Everything else" is force-open while narrowed, so clearing the filter without opening it
+  // would make cards that were on screen a frame ago vanish — a miniature of the reported
+  // confusion, from the button that exists to end it (Opus review, PR #469).
+  const showEverything = () => {
+    setShowRest(true);
+    setFilter('all');
+    setQuery('');
+  };
 
   // Seeded in bulk on open (covers items whose card has never mounted — DR-077's whole point is
   // finding those), then kept live by each mounted ItemCard reporting its own verdict as it
@@ -390,7 +421,9 @@ export function DevTestBubble() {
   // DR-074: restore once per open, after the list has real content to scroll to — not on every
   // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
   useEffect(() => {
-    if (!visible) { restoredScrollRef.current = false; filterScrolledRef.current = false; return; }
+    // DR-116's chip reveal is "once per open" too, and RN's Modal returns null while hidden, so
+    // its children unmount and every chip lays out again on the next open.
+    if (!visible) { restoredScrollRef.current = false; filterRevealedRef.current = false; return; }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
     restoredScrollRef.current = true;
     const y = scrollDraft.value;
@@ -484,7 +517,7 @@ export function DevTestBubble() {
                   label={f.label}
                   active={filter === f.key}
                   onPress={() => setFilter(f.key)}
-                  onLayout={(e) => revealFilterChip(f.key, e)}
+                  onLayout={(e) => rememberChipX(f.key, e)}
                 />
               ))}
             </ScrollView>
@@ -510,6 +543,9 @@ export function DevTestBubble() {
                 title={`Show all ${items.length}`}
                 variant="ghost"
                 icon="rotate-ccw"
+                // Says what it DOES, not what it is — this is the escape hatch the whole row
+                // exists for, and "Show all 117" alone does not say the filter goes with it.
+                accessibilityLabel={`Show all ${items.length} items — clears the filter and search`}
                 onPress={showEverything}
               />
             </View>
@@ -1264,7 +1300,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   chipRowLabel: { minWidth: 44 },
   filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
   // DR-116: the caption takes the spare width so a long reason wraps rather than squeezing the
-  // "Show all" button that is the whole point of the row.
-  matchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  // "Show all" button that is the whole point of the row. `flexWrap` because that button's height
+  // is fixed while its padding scales with accessibility text size — at large scales it takes the
+  // next line rather than crushing the caption to its min-content width.
+  matchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, flexWrap: 'wrap' },
   matchCount: { marginTop: 2, flex: 1 },
 });

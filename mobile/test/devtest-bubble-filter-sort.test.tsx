@@ -30,9 +30,10 @@ import * as api from '@/api/endpoints';
 const ITEMS: DevTestItem[] = [
   { id: 'DR-A', state: 'implemented — verify', raised: '2026-08-12', title: 'Zulu widget', how_to_test: '', feedback_count: 0 },
   { id: 'DR-B', state: 'open', raised: '2026-08-12', title: 'Beta gadget', how_to_test: '', feedback_count: 0 },
-  // `closed` lands in the collapsed "Everything else" section — its ItemCard never mounts unless
-  // that section is expanded, which is exactly the case a bulk (not per-card) verdict read exists
-  // to cover.
+  // `closed` lands in the "Everything else" section — collapsed by default (and since DR-116,
+  // force-expanded while a filter or search is on), so its ItemCard may not have mounted when a
+  // verdict of its own is needed. That is the case a bulk (not per-card) verdict read exists to
+  // cover.
   { id: 'DR-C', state: 'closed', raised: '2026-08-12', title: 'Alpha thing', how_to_test: '', feedback_count: 0 },
 ];
 
@@ -84,17 +85,21 @@ test('a clear button appears once search text is entered, and empties the field'
 });
 
 test('the "Not reviewed" filter excludes a verdict recorded on an item whose card never mounted', async () => {
-  // DR-C sits in the "Everything else" section, whose card would only mount once that section is
-  // open — so this can only pass if verdict knowledge comes from the bulk storage read on open,
-  // not from a mounted card reporting itself (DR-A/DR-B, which always mount, would pass this same
-  // assertion either way — the match count is what actually pins it on DR-C specifically).
-  // Since DR-116 that section is EXPANDED while a filter is active, which strengthens the test
-  // rather than weakening it: DR-C is now absent from a rendered section, not from a hidden one,
-  // so a parent that had failed to learn its verdict would show the card here.
+  // DR-C's verdict can only be known here if it came from the bulk storage read on open, not from
+  // a mounted card reporting itself (DR-A/DR-B, which always mount, would pass this assertion
+  // either way — the match count is what pins it on DR-C specifically).
+  //
+  // The SYNCHRONOUS assertion is what makes that discriminating, and since DR-116 it is the only
+  // thing that does (Opus review, PR #469, revert-verified). This test used to lean on DR-C's card
+  // never mounting inside the collapsed "Everything else" section; a filter now force-expands that
+  // section, so a mounted-card-only implementation would self-heal within a commit or two — render
+  // DR-C, have it report its verdict, drop it — and a `waitFor` would happily wait that out. With
+  // the bulk read the correct count is in the very commit the press produces; without it, that
+  // first commit reads "3 of 3".
   await seedVerdict('DR-C', 'pass', 1000);
   const screen = await openBubble();
   fireEvent.press(screen.getByLabelText('Not reviewed'));
-  await waitFor(() => expect(screen.getByText(/2 of 3 shown/)).toBeTruthy());
+  expect(screen.getByText(/2 of 3 shown/)).toBeTruthy();
   expect(screen.getByText('Zulu widget')).toBeTruthy();
   expect(screen.getByText('Beta gadget')).toBeTruthy();
   expect(screen.getByText(/Everything else/)).toBeTruthy();
