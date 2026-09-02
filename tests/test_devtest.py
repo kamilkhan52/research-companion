@@ -2248,7 +2248,11 @@ def test_a_follow_up_continues_the_session_that_already_did_the_work(client, mon
     what it is a follow-up TO."""
     import subprocess
 
-    _archive_dispatch(tmp_path, item_id="DR-115", session_id="sess-115", model="opus")
+    _archive_dispatch(tmp_path, item_id="DR-115", session_id="sess-115", model="opus",
+                      age_s=600)
+    # Feedback NEWER than the run is what makes this a follow-up rather than a retry.
+    client.post("/api/devtest/feedback",
+                json={"item_id": "DR-115", "verdict": "fail", "comment": "still wrong"})
     calls = {}
 
     class FakeProc:
@@ -2316,7 +2320,7 @@ def test_a_stale_session_is_not_continued(client, monkeypatch, tmp_path):
     from app.routers import devtest as dt
 
     _archive_dispatch(tmp_path, item_id="DR-115",
-                      age_s=dt.DISPATCH_RESUME_MAX_AGE_S + 3600)
+                      age_s=dt.DISPATCH_CONTINUE_MAX_AGE_S + 3600)
     calls = {}
 
     class FakeProc:
@@ -2330,20 +2334,15 @@ def test_a_stale_session_is_not_continued(client, monkeypatch, tmp_path):
 
 
 def test_a_batch_run_is_never_a_continuation(client, monkeypatch, tmp_path):
-    """"More work on THIS issue" has no meaning for a run over the whole pending queue."""
-    import subprocess
+    """"More work on THIS issue" has no meaning for a run over the whole pending queue.
+
+    Asserted against the lookup directly. Going through the route passed for a second reason —
+    `_canonical_ids(None)` is empty, so no record can match even with the guard deleted — which
+    is exactly the shape of a test that names one thing and pins another."""
+    from app.routers import devtest as dt
 
     _archive_dispatch(tmp_path, item_id="DR-115")
-    calls = {}
-
-    class FakeProc:
-        pid = 9204
-
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
-    monkeypatch.setattr(subprocess, "Popen",
-                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
-    client.post("/api/devtest/dispatch", json={"model": "sonnet"})
-    assert "--resume" not in calls["argv"]
+    assert dt._continuable_dispatch(None) is None
 
 
 def test_the_newest_session_for_an_item_wins(client, monkeypatch, tmp_path):
@@ -2374,3 +2373,183 @@ def test_every_dispatch_bounds_its_context(client, monkeypatch, tmp_path):
     argv = _spawn_argv(client, monkeypatch)
     assert argv[argv.index("--autocompact") + 1] == str(dt.DISPATCH_AUTOCOMPACT_TOKENS)
     assert 100_000 <= dt.DISPATCH_AUTOCOMPACT_TOKENS <= 1_000_000   # the CLI's accepted range
+
+
+def test_only_a_rate_limit_resume_inherits_the_worktree(client, monkeypatch, tmp_path):
+    """The riskiest line in the change, and it survived reversion green.
+
+    There is ONE shared dispatch worktree, and the session being continued for a follow-up is
+    generally NOT the last one to have run in it. Handing session A the tree session B left —
+    B's branch, B's uncommitted files, a stale origin/main — to a session with acceptEdits,
+    git, gh and merge authority is how B's work ends up committed under A's item and pushed to
+    B's branch, with no stash to recover it from. Only a rate-limit resume, which IS the
+    session that was just using the tree, may keep it."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    resets: list[bool] = []
+    monkeypatch.setattr(dt, "_dispatch_cwd",
+                        lambda reset=True, dispatch_id="": (resets.append(reset), "/tmp/wt")[1])
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    class FakeProc:
+        pid = 9300
+
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: FakeProc())
+
+    # 1. a fresh dispatch resets
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-500", "model": "sonnet"})
+    # 2. a follow-up ALSO resets — the point of this test
+    _archive_dispatch(tmp_path, item_id="DR-500", session_id="sess-500")
+    (tmp_path / "inbox" / "dispatch" / "current.json").unlink(missing_ok=True)
+    r = client.post("/api/devtest/dispatch", json={"item_id": "DR-500", "model": "sonnet"})
+    # Prove the second spawn ACTUALLY continued: without this the assertion below passes
+    # vacuously whenever continuation silently did not happen, which is how the first cut of
+    # this very test agreed with the bug it was written to catch.
+    assert r.json()["dispatch"]["continued_session"] is True
+    assert resets == [True, True]
+
+
+def test_a_rate_limit_resume_still_keeps_its_tree(client, monkeypatch, tmp_path):
+    """The counterweight: that session was using the tree moments ago, and its uncommitted half
+    is what is being resumed."""
+    import subprocess
+
+    from app.routers import devtest as dt
+
+    d = _record_dispatch(tmp_path, 999999, _stream_log(
+        {"type": "system", "subtype": "init", "session_id": "sess-rl"},
+        _rate_limit_event(status="rejected"),
+    ))
+    _kill_says_gone(monkeypatch)
+    client.get("/api/devtest/dispatch")            # archive it to last.json
+    assert (d / "last.json").exists()
+
+    resets: list[bool] = []
+    monkeypatch.setattr(dt, "_dispatch_cwd",
+                        lambda reset=True, dispatch_id="": (resets.append(reset), "/tmp/wt")[1])
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    class FakeProc:
+        pid = 9301
+
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: FakeProc())
+    client.post("/api/devtest/dispatch", json={"model": "opus", "resume": True})
+    assert resets == [False]
+
+
+def test_a_retry_is_not_told_that_feedback_exists(client, monkeypatch, tmp_path):
+    """Within the continuation window a RETRY is likelier than a genuine follow-up — his device
+    passes land days later, a dead run gets re-tapped in minutes. Telling such a session
+    "Kamil has left new feedback" sends it looking for a comment that is not there, and asks it
+    to judge trust-vs-re-verify on work it may never have finished."""
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-501", session_id="sess-501")
+    calls = {}
+
+    class FakeProc:
+        pid = 9302
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-501", "model": "sonnet"})
+    prompt = calls["argv"][calls["argv"].index("-p") + 1]
+    assert "did not finish" in prompt and "does not exist" in prompt
+    assert "has left new feedback" not in prompt
+    assert calls["argv"][calls["argv"].index("--resume") + 1] == "sess-501"   # still continues
+
+
+def test_feedback_newer_than_the_run_makes_it_a_follow_up(client, monkeypatch, tmp_path):
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-502", session_id="sess-502", age_s=600)
+    client.post("/api/devtest/feedback",
+                json={"item_id": "DR-502", "verdict": "fail", "comment": "still broken"})
+    calls = {}
+
+    class FakeProc:
+        pid = 9303
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-502", "model": "sonnet"})
+    prompt = calls["argv"][calls["argv"].index("-p") + 1]
+    assert "has left new feedback on DR-502" in prompt
+    assert "trust or re-verify" in prompt
+
+
+def test_an_agent_reply_is_not_mistaken_for_his_feedback(client, monkeypatch, tmp_path):
+    """Otherwise every item the agent has answered looks like it has something new to say."""
+    from app.routers import devtest as dt
+
+    _archive_dispatch(tmp_path, item_id="DR-503", session_id="sess-503", age_s=600)
+    devtest.append_response("DR-503", "shipped it")
+    found = dt._continuable_dispatch("DR-503")
+    assert found is not None and found[2] == "unfinished"
+
+
+def test_a_malformed_dispatch_record_does_not_block_every_dispatch(monkeypatch, tmp_path):
+    """A 500 here can only be cleared by deleting a file by hand — impossible from the phone,
+    which is the only place dispatches come from. Its sibling scan over these same files is
+    already this tolerant."""
+    from app.routers import devtest as dt
+
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "dispatch-bad-a.json").write_text("[1, 2, 3]")
+    (d / "dispatch-bad-b.json").write_text(json.dumps({"item_id": "DR-504",
+                                                       "started_ts": "soon"}))
+    assert dt._continuable_dispatch("DR-504") is None
+
+
+def test_a_retired_model_on_an_old_record_is_not_spawned(client, monkeypatch, tmp_path):
+    """The model comes off disk, bypassing the request validation. DISPATCH_MODELS has churned
+    before, and a record naming a retired one spawns a process that dies at once."""
+    import subprocess
+
+    _archive_dispatch(tmp_path, item_id="DR-505", session_id="sess-505", model="gpt-nonsense")
+    calls = {}
+
+    class FakeProc:
+        pid = 9304
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda argv, **kw: (calls.update(argv=argv), FakeProc())[1])
+    client.post("/api/devtest/dispatch", json={"item_id": "DR-505", "model": "sonnet"})
+    assert calls["argv"][calls["argv"].index("--model") + 1] == "sonnet"
+
+
+def test_an_unresumable_newer_record_does_not_hide_a_resumable_older_one():
+    """A run that died before writing its init record leaves a record with no session id. It
+    used to abandon the lookup entirely, hiding the completed session sitting right behind it —
+    and that is what made the worktree-reset test above pass vacuously."""
+    import time as _time
+
+    from app.routers import devtest as dt
+
+    d = _dispatch_dir_for_tests()
+    (d / "dispatch-old.log").write_text(
+        _stream_log({"type": "system", "subtype": "init", "session_id": "sess-good"}))
+    (d / "dispatch-old.json").write_text(json.dumps({
+        "id": "dispatch-old", "item_id": "DR-600", "model": "opus",
+        "log": str(d / "dispatch-old.log"), "started_ts": _time.time() - 600}))
+    (d / "dispatch-new.log").write_text("")          # died before its first record
+    (d / "dispatch-new.json").write_text(json.dumps({
+        "id": "dispatch-new", "item_id": "DR-600", "model": "opus",
+        "log": str(d / "dispatch-new.log"), "started_ts": _time.time() - 60}))
+
+    found = dt._continuable_dispatch("DR-600")
+    assert found is not None and found[1] == "sess-good"
+
+
+def _dispatch_dir_for_tests():
+    from app.routers import devtest as dt
+
+    d = dt._dispatch_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d

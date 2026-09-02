@@ -81,3 +81,19 @@ test('the toast says when a session was picked back up, rather than guessing', a
   await waitFor(() => expect(showToast).toHaveBeenCalledWith(
     expect.stringMatching(/picking DR-091 back up/)));
 });
+
+test('the two dispatch buttons share one busy flag', async () => {
+  // Separate flags left "fresh" enabled while the ordinary dispatch was in flight, so a second
+  // tap earned a raw single-flight 409 toast instead of doing nothing.
+  let release: (v: unknown) => void = () => {};
+  jest.mocked(api.dispatchToClaude).mockReturnValue(
+    new Promise((res) => { release = res; }) as ReturnType<typeof api.dispatchToClaude>);
+  const view = render(
+    <ItemCard item={ITEM} shot={null} route="/discover" startExpanded dispatchModel="opus" />,
+  );
+  fireEvent.press(await view.findByTestId('devtest-dispatch-item'));
+  await waitFor(() =>
+    expect(view.getByTestId('devtest-dispatch-fresh').props.accessibilityState.disabled)
+      .toBe(true));
+  release({ dispatch: { id: 'd', model: 'opus', item_id: 'DR-091', log: '', started_at: '' } });
+});
