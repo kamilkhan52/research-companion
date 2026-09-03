@@ -1163,10 +1163,12 @@ def _is_executable_file(path: str) -> bool:
 #: install would spawn that one during a homebrew update rather than wait — not this machine,
 #: but it is why the fallback list should stay short.
 #:
-#: No constant covers an arbitrarily slow link, so giving up still says RETRY. That is not a
-#: hedge: the alternative advice is a trap, because an explicit `RC_CLAUDE_BIN` refuses rather
-#: than falling through, so pointing it at the homebrew symlink converts every future update
-#: gap into a permanent-looking "not an executable file".
+#: No constant covers an arbitrarily slow link, so giving up still says RETRY rather than
+#: naming `RC_CLAUDE_BIN`. An override is waited out like anything else — it is read inside
+#: this loop — so an update gap under one recovers; what it cannot survive is the CLI moving,
+#: because an override REFUSES rather than falling through. Advertising it on the phone as the
+#: answer to a transient would have people set it and then, on the next relocation, read a
+#: permanent-looking "not an executable file" instead of a lookup that would have found it.
 #:
 #: Blocking a POST for 30s is deliberate and does not cross invariant 1: `_via_public_tunnel`
 #: 403s tunnel requests before the wait, so the ~100s Cloudflare cap is structurally out of

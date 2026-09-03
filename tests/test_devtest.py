@@ -2715,9 +2715,11 @@ def test_the_wait_is_bounded_and_says_to_retry(client, monkeypatch):
     """A CLI that never comes back is a real absence — but even then the toast says RETRY.
 
     No constant covers an arbitrarily slow link (the gap is a 190 MB download, so it scales
-    with bandwidth), and the obvious alternative advice is a trap: an explicit `RC_CLAUDE_BIN`
-    refuses rather than falling through, so pointing it at the homebrew symlink converts every
-    future update gap into a permanent-looking "not an executable file".
+    with bandwidth), and the obvious alternative advice is worse than useless on a phone: an
+    override is waited out like anything else, so it does not help with a transient, and
+    because it REFUSES rather than falling through it turns a later relocation of the CLI into
+    a permanent-looking "not an executable file" instead of a lookup that would have found
+    it.
 
     The bound is the other half. This runs inside a POST, and waiting forever would hang the
     phone rather than answer it.
