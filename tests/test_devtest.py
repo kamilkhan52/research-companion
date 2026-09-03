@@ -2782,3 +2782,32 @@ def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeyp
     assert not (dt._dispatch_dir() / "current.json").exists()
     # And no orphan log: the spawn never happened, so there is nothing for one to hold.
     assert not list(dt._dispatch_dir().glob("*.log"))
+
+
+# --- the deploy banner must not offer a deploy the POST will refuse (2026-09-03) --------------
+
+def test_the_deploy_status_reports_a_running_dispatch(client, monkeypatch):
+    """The POST refuses while a dispatched session runs; the GET has to say so, or the banner
+    renders a live Deploy button whose tap comes back 409. The button was the wrong thing to
+    render — the refusal itself is correct."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_dispatch_running", lambda: None)
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] is None
+
+    monkeypatch.setattr(dt, "_dispatch_running", lambda: {"id": "dispatch-xyz", "pid": 4242})
+    body = client.get("/api/devtest/deploy").json()["deploy"]
+    assert body["active_dispatch"] == "dispatch-xyz"
+    # Reported SEPARATELY from a background job: they are different waits, and the client tells
+    # you which one you are waiting for.
+    assert "active_job" in body
+
+
+def test_the_get_and_the_post_agree_about_a_running_dispatch(client, monkeypatch):
+    """The two halves are the defect: a GET that says deployable and a POST that 409s. Assert
+    them against the same state rather than each on its own."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_dispatch_running", lambda: {"id": "dispatch-abc", "pid": 4242})
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] == "dispatch-abc"
+    assert client.post("/api/devtest/deploy").status_code == 409

@@ -2016,7 +2016,14 @@ def deploy_state(request: Request, fetch: bool = True):
                   "last_error": None, "server_branch": "", "deployable": False}
     else:
         status["deployable"] = True
-    return {"deploy": {**status, "active_job": jobs.any_active()}}
+    # The POST refuses while a dispatched session is running, so the GET has to say so too.
+    # Without this the banner offers a live Deploy button and the tap comes back 409 — the
+    # button was the wrong thing to render, not the refusal. Reported beside `active_job`
+    # rather than folded into it: they are different waits (a session ends with a bubble reply,
+    # a job just finishes) and the client says which one you are waiting for.
+    running = _dispatch_running()
+    return {"deploy": {**status, "active_job": jobs.any_active(),
+                       "active_dispatch": (running or {}).get("id")}}
 
 
 @router.post("/api/devtest/deploy")

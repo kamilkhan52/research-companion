@@ -253,6 +253,8 @@ export interface DeployState {
   last_error: string | null;
   /** Name of a live background job, if any — deploying restarts the server and would kill it. */
   active_job: string | null;
+  /** The dispatched session holding the deploy, if any. The POST refuses while one runs. */
+  active_dispatch: string | null;
 }
 
 export interface DeployResult {
