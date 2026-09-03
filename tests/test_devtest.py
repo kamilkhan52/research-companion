@@ -2782,3 +2782,105 @@ def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeyp
     assert not (dt._dispatch_dir() / "current.json").exists()
     # And no orphan log: the spawn never happened, so there is nothing for one to hold.
     assert not list(dt._dispatch_dir().glob("*.log"))
+
+
+# --- the deploy banner must not offer a deploy the POST will refuse (2026-09-03) --------------
+
+def test_the_deploy_status_reports_a_running_dispatch(client, monkeypatch, tmp_path):
+    """The POST refuses while a dispatched session runs; the GET has to say so, or the banner
+    renders a live Deploy button whose tap comes back 409. The button was the wrong thing to
+    render — the refusal itself is correct.
+
+    Git is stubbed like every sibling here, and that is not tidiness: unstubbed, `_main_root()`
+    resolves to the REAL repo, so this test fetched github.com three times, and the only thing
+    between it and a genuine `git checkout -B device-main` plus an advance of the live server
+    checkout was one monkeypatch name.
+    """
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: (None, False))
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] is None
+
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"id": "dispatch-xyz"}, True))
+    body = client.get("/api/devtest/deploy").json()["deploy"]
+    assert body["active_dispatch"] == "dispatch-xyz"
+    # Reported SEPARATELY from a background job: they are different waits, and the client tells
+    # you which one you are waiting for.
+    assert body["active_job"] is None
+
+    # A record with no id still has to block. The POST refuses on truthiness alone, so returning
+    # None here would re-open the very split this row is about.
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"pid": 4242}, True))
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"]
+
+    # A record that exists but is DEAD is not a blocker — otherwise the last session ever run
+    # would block deploying forever.
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"id": "dispatch-old"}, False))
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] is None
+
+
+def test_the_status_route_does_not_reap_the_dispatch_it_reads(client, monkeypatch, tmp_path):
+    """`_dispatch_running` REAPS — it rewrites `last.json` and unlinks `current.json` — and the
+    status route holds no lock. A reap racing a spawn deletes the NEW session's record: single
+    flight is gone, the banner offers a deploy that restarts the server under a live session,
+    and the next dispatch `git reset --hard`s the worktree it is working in. The read-only
+    `_dispatch_peek` exists for exactly this and is what the sibling status route uses."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+
+    reaped: list[str] = []
+    monkeypatch.setattr(dt, "_dispatch_running",
+                        lambda: reaped.append("reaped") or {"id": "dispatch-live"})
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"id": "dispatch-live"}, True))
+
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] == "dispatch-live"
+    assert reaped == [], "the GET must not take the writing path"
+
+
+def test_the_get_and_the_post_agree_about_a_running_dispatch(client, monkeypatch, tmp_path):
+    """The two halves ARE the defect — a GET that says deployable and a POST that 409s — so
+    assert them against the same state.
+
+    Asserting the 409's DETAIL, not just its code: the POST has three other 409 sources, and one
+    of them (no device worktree) fires unconditionally in a CI-shaped checkout. Deleting the
+    dispatch guard entirely left the whole module green when this only checked the status code.
+    """
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"id": "dispatch-abc"}, True))
+    monkeypatch.setattr(dt, "_dispatch_running", lambda: {"id": "dispatch-abc"})
+
+    assert client.get("/api/devtest/deploy").json()["deploy"]["active_dispatch"] == "dispatch-abc"
+    r = client.post("/api/devtest/deploy")
+    assert r.status_code == 409
+    assert "dispatched session is still running" in r.json()["detail"]
+
+
+def test_the_tunnel_message_wins_over_a_running_dispatch(client, monkeypatch, tmp_path):
+    """Off-tailnet, waiting for the session will not let you deploy — the tunnel will. Blanked
+    server-side rather than reordered client-side, which is the precedent `server_branch`
+    already set two fields above: let the client's tunnel clause short-circuit."""
+    from app.routers import devtest as dt
+
+    _fake_git(monkeypatch, server="aaa", device="bbb", target="ccc")
+    monkeypatch.setattr(dt, "_main_root", lambda: tmp_path)
+    monkeypatch.setattr(dt, "_device_worktree", lambda: _device_wt(dt, tmp_path))
+    monkeypatch.setattr(dt.jobs, "any_active", lambda: None)
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"id": "dispatch-xyz"}, True))
+
+    d = client.get("/api/devtest/deploy", headers={"cf-ray": "abc123"}).json()["deploy"]
+    assert d["deployable"] is False
+    assert d["active_dispatch"] is None

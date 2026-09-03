@@ -2004,6 +2004,24 @@ def deploy_state(request: Request, fetch: bool = True):
         status = deploy_status(fetch=fetch)
     except DeployError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # The POST refuses while a dispatched session is running, so the GET has to say so too.
+    # Without this the banner offers a live Deploy button and the tap comes back 409 — the
+    # button was the wrong thing to render, not the refusal. Reported beside `active_job`
+    # rather than folded into it: they are different waits (a session ends with a bubble reply,
+    # a job just finishes) and the client says which one you are waiting for.
+    #
+    # `_dispatch_peek`, NOT `_dispatch_running`: the latter reaps, and a reap WRITES
+    # (`last.json`) and UNLINKS (`current.json`). This route holds no lock, so a reap racing a
+    # spawn deletes the NEW session's record — single flight gone, the banner offering a deploy
+    # that restarts the server under a live session, and the next dispatch `git reset --hard`ing
+    # the worktree that session is working in. The sibling status route takes the lock and falls
+    # back to exactly this peek for the same reason.
+    info, alive = _dispatch_peek()
+    # `or "a dispatched session"`: the POST refuses on truthiness alone, so reporting None for a
+    # record that merely lacks an id would re-open the split this whole change closes.
+    status = {**status, "active_job": jobs.any_active(),
+              "active_dispatch": ((info.get("id") or "a dispatched session")
+                                  if info and alive else None)}
     if public:
         # Same asymmetry the dispatch status route settles: state still crosses so the banner
         # works off-tailnet, but host paths and commit subjects do not, and the button is not
@@ -2012,11 +2030,16 @@ def deploy_state(request: Request, fetch: bool = True):
         # detail as the host path beside it. Blanking it also lets the client's branch clause
         # short-circuit, so an off-tailnet reader gets the actionable "use the tailnet address"
         # rather than a branch name they can do nothing with.
+        # `active_dispatch` is blanked for that second reason rather than the first: the id is
+        # not sensitive (the dispatch status route returns it over the tunnel unredacted), but
+        # off-tailnet, waiting for the session will not let you deploy — the tunnel will — so
+        # the tunnel clause has to be the one that speaks.
         status = {**status, "device_worktree": None, "target_subject": None,
-                  "last_error": None, "server_branch": "", "deployable": False}
+                  "last_error": None, "server_branch": "", "deployable": False,
+                  "active_dispatch": None}
     else:
         status["deployable"] = True
-    return {"deploy": {**status, "active_job": jobs.any_active()}}
+    return {"deploy": status}
 
 
 @router.post("/api/devtest/deploy")

@@ -1282,7 +1282,9 @@ export function DeployBanner() {
   // response said it was under way, and that failure has nowhere else to surface.
   if (!state || (behind <= 0 && !state.last_error)) return null;
 
-  const blocker = state.active_job
+  const blocker = state.active_dispatch
+    ? `Claude is still working (${state.active_dispatch})`
+    : state.active_job
     ? `a background job is running (${state.active_job})`
     : !state.clean ? 'the server checkout has uncommitted changes'
     : !state.device_present ? 'the worktree Metro serves is missing'

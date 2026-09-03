@@ -31,6 +31,7 @@ const LEVEL: DeployState = {
   device_worktree: '/w/device-main', device_present: true, needs_npm_ci: false,
   server_branch: 'main',
   clean: true, deployable: true, last_error: null, active_job: null,
+  active_dispatch: null,
 };
 
 const state = (over: Partial<DeployState>): DeployState => ({ ...LEVEL, ...over });
@@ -209,4 +210,30 @@ test('a rebased branch — zero behind but still different — is still a blocke
   const { findByText, queryByTestId } = render(<DeployBanner />);
   await findByText(/server checkout is on my-feature, not main/);
   expect(queryByTestId('devtest-deploy-now')).toBeNull();
+});
+
+test('a running dispatch blocks the deploy, and the banner says so instead of offering it', async () => {
+  // The defect this covers: the POST refuses while a session runs, but the GET said nothing, so
+  // the banner rendered a live Deploy button whose tap came back 409. The refusal was right; the
+  // button was the wrong thing to render.
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', active_dispatch: 'dispatch-abc' }),
+  });
+  const { findByText, queryByTestId } = render(<DeployBanner />);
+  await findByText(/Claude is still working/);
+  // By testID, not by text: the button reads "Deploy and reload", so `queryByText('Deploy')`
+  // is exact-matched to nothing and could never have failed — the "instead of offering it"
+  // half of this test's own name was untested.
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
+});
+
+test('a dispatch is named ahead of a background job — they are different waits', async () => {
+  jest.mocked(api.getDeployState).mockResolvedValue({
+    deploy: state({ device_behind: 1, device: 'old', active_dispatch: 'dispatch-abc',
+                    active_job: 'discover' }),
+  });
+  const { findByText } = render(<DeployBanner />);
+  // A session ends with a bubble reply; a job just finishes. Saying "a background job is
+  // running" while Claude holds it would send you to watch the wrong thing.
+  await findByText(/Claude is still working/);
 });
