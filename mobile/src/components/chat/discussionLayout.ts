@@ -31,10 +31,11 @@ export function discussionComposerPadding(bottomInset: number) {
  * clearing the composer while accidentally hiding the oldest message (or vice versa).
  *
  * `topClearance` is the fourth consumer (DR-115 round 2): how far below the viewport's top edge
- * a message's top must sit to be clear of the floating header. It is the SAME distance the
- * list's own visual-top padding already gives the oldest message, so a landmark jump lands the
- * way "start of thread" does rather than tucking the line the reader wants under the title.
- * Zero when the header is in flow, because then the list starts below it already.
+ * a message's top must sit to be clear of the floating header. When the header overlays, it is
+ * the SAME distance the list's own visual-top padding gives the oldest message, so a landmark
+ * jump lands the way "start of thread" does rather than tucking the line the reader wants under
+ * the title. It is zero when the header is in flow — the list already starts below it, so that
+ * case is the one where the two deliberately differ (the padding there is only `listGap`).
  */
 export function discussionChromeLayout({
   topInset,

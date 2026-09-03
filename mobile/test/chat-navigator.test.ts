@@ -346,11 +346,13 @@ test('taking over the scroll cancels the start-of-thread correction', () => {
 
 // --- landing clear of the floating header (Kamil's 2026-09-02 remark on DR-115) ---------------
 
-test('the chrome clearance is applied as a NEGATIVE viewOffset, because the list is inverted', () => {
-  // The sign is the whole finding. VirtualizedList SUBTRACTS viewOffset from the offset it
-  // computes; `inverted` is a scaleY(-1), so a smaller offset moves content UP — further behind
-  // the header, i.e. exactly the direction Kamil reported ("the top of the message is hidden by
-  // the title"). Positive would have made his report worse rather than fixing it.
+test('the chrome clearance reaches scrollToIndex as a negative viewOffset', () => {
+  // Scoped honestly, like the viewPosition test above: this pins the plumbing and the constant,
+  // NOT that the sign is right — Jest cannot exercise the inverted transform. The derivation,
+  // for whoever re-verifies it without a device: VirtualizedList SUBTRACTS viewOffset from the
+  // offset it computes, and `inverted` is a scaleY(-1), so a smaller offset moves content UP —
+  // further behind the header, i.e. exactly the direction Kamil reported ("the top of the
+  // message is hidden by the title"). Positive would have made his report worse, not better.
   expect(landingViewOffset(CHROME)).toBe(-CHROME);
   // …and no chrome means a plain 0, not the -0 that negation gives, which is not Object.is-equal.
   expect(Object.is(landingViewOffset(0), 0)).toBe(true);
@@ -385,44 +387,165 @@ test('the re-aim after an unmeasured target clears the same chrome, both times',
     expect.objectContaining({ index: 30, viewOffset: -CHROME }));
 });
 
-test('a cleared landing still counts as arriving, though the message above shows its foot', () => {
-  // The band held clear of the header is filled by the FOOT of the message above the target,
-  // and `itemVisiblePercentThreshold: 1` reports a sliver as viewable — so the top row after a
-  // cleared landing is legitimately target+1. Demanding equality would leave every jump
-  // permanently "in flight", which silently disables the retirement below: the landmark would
-  // survive a scroll-to-latest tap again, the P1 this hook already paid for once.
+test('a cleared landing counts as arriving even when TWO rows fill the band above it', () => {
+  // The band held clear of the header is filled by whatever fits in it, and on this screen that
+  // is routinely two rows: the one-line user turn that prompted the response, plus a sliver of
+  // the response above THAT — and `itemVisiblePercentThreshold: 1` reports a sliver. So the top
+  // row after a cleared landing is target+2 on the commonest target shape there is. Bounding it
+  // at target+1 (the first cut of this fix) leaves every jump permanently "in flight", which
+  // silently disables the retirement below: the landmark then survives a scroll-to-latest tap,
+  // the P1 this hook already paid for once.
   const list = fakeList();
   const { result } = renderHook(() =>
     useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
   );
   act(() => result.current.onViewableItemsChanged(viewable([2])));
-  act(() => result.current.goUp());                                    // aims at 2
-  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // arrives; 3's foot shows
+  act(() => result.current.goUp());                                       // aims at 2
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3, 4])));  // arrives; 3 and 4 show
 
   // Now the library's own scroll-to-latest button fires: no drag, no length change.
   act(() => result.current.onViewableItemsChanged(viewable([0])));
   list.scrollToIndex.mockClear();
   act(() => result.current.goDown());
-  expect(list.scrollToIndex).not.toHaveBeenCalled();                   // not the stale 2 - 1 = 1
+  expect(list.scrollToIndex).not.toHaveBeenCalled();                      // not the stale 2 - 1 = 1
   expect(list.scrollToOffset).toHaveBeenCalledWith(
     expect.objectContaining({ offset: 0 }));
 });
 
-test('the neighbour showing its foot does not retire the landmark it belongs to', () => {
-  // The other half of the same tolerance, and the half that needs a DOWN press to prove: from
-  // landmark 2 the next step down is 1, whereas a landmark wrongly retired would count from the
-  // reported top row (3) and go to 2 — back to the message the reader is already reading.
+test('the rows filling the band do not retire the landmark they sit above', () => {
+  // The RETIREMENT branch of the same predicate — the arrival branch is the test above. It
+  // takes a DOWN press to show: from landmark 2 the next step down is 1, whereas a landmark
+  // wrongly retired would count from the reported top row (4) and go to 3, back up the thread
+  // past the message being read. (A second report is needed because the first one is consumed
+  // as the arrival; it is the second that reaches the retirement check.)
   const list = fakeList();
   const { result } = renderHook(() =>
     useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
   );
   act(() => result.current.onViewableItemsChanged(viewable([2])));
-  act(() => result.current.goUp());                                    // lands on 2
-  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // 3's foot under the header
-  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));  // and again, settled
+  act(() => result.current.goUp());                                       // lands on 2
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3, 4])));  // the band, filled
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3, 4])));  // and again, settled
   act(() => result.current.goDown());
   expect(list.scrollToIndex).toHaveBeenLastCalledWith(
     expect.objectContaining({ index: 1 }));
+});
+
+test('a report that no longer contains the target retires the landmark, chrome or not', () => {
+  // The tolerance is "the target is on screen with only older rows above it" — not "any report
+  // with a bigger top row". A reader carried somewhere else entirely still gets a fresh aim.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 12, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());                                       // landmark = 2
+  act(() => result.current.onViewableItemsChanged(viewable([2, 3])));     // arrived
+  act(() => result.current.onViewableItemsChanged(viewable([7, 8])));     // moved, not by us
+  list.scrollToIndex.mockClear();
+  act(() => result.current.goUp());
+  // Aimed from where they demonstrably are (8, the message they are inside), not landmark + 1.
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 8 }));
+});
+
+// --- the clearance must not push a landing off the live edge ----------------------------------
+
+test('a landing that clamped at the live edge is corrected back to it', () => {
+  // `scrollToIndex` clamps its offset at 0 BEFORE subtracting viewOffset, so when the target and
+  // everything newer already fit on one screen the clearance is added to a landing that was
+  // ALREADY at the live edge: the thread parks CHROME px short of the bottom and the newest
+  // message's tail goes behind the floating composer — the other half of the chrome Kamil asked
+  // us to respect. A settled offset at or below the clearance can only mean the clamp bound.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.goLive());
+  act(() => result.current.goUp());                       // the newest message's own top
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: CHROME } }));
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
+});
+
+test('a landing that did not clamp is left exactly where it was asked to be', () => {
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: 1800 } }));
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
+});
+
+test('the correction waits for the scroll to settle, so it cannot fire mid-travel', () => {
+  // A jump AWAY from the live edge passes through the clearance band on its way out. Read at a
+  // fixed delay instead of after a quiet period, the check would see one of those frames and
+  // yank the reader back to the bottom, cancelling their own jump.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([0])));
+  act(() => result.current.goUp());
+  list.scrollToOffset.mockClear();
+  // Spaced wider than the quiet period on purpose: a check on a FIXED delay from the landing
+  // would fire here, while the offset is still inside the band, and snap the reader back.
+  for (const y of [20, 60, CHROME, 400, 1200, 2600]) {
+    act(() => result.current.onScroll({ contentOffset: { y } }));
+    act(() => void jest.advanceTimersByTime(100));
+  }
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
+});
+
+test('the reader taking over cancels the live-edge correction', () => {
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.goLive());
+  act(() => result.current.goUp());
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: CHROME } }));
+  act(() => result.current.onScrollBeginDrag());
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
+});
+
+test('with no chrome to clear there is nothing to correct', () => {
+  // Without an overlay header the landing is whatever the list computed, so the snap must not
+  // exist at all — this is the in-flow-header case, which must stay byte-identical to before.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8 }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([2])));
+  act(() => result.current.goUp());
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: 40 } }));
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
+});
+
+test('a new message drops a correction armed against the old live edge', () => {
+  const list = fakeList();
+  const { result, rerender } = renderHook(
+    ({ count }: { count: number }) =>
+      useChatNavigator({ listRef: { current: list }, count, topClearance: CHROME }),
+    { initialProps: { count: 8 } },
+  );
+  act(() => result.current.goLive());
+  act(() => result.current.goUp());
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: CHROME } }));
+  rerender({ count: 9 });                                 // a turn landed; the live edge moved
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
 });
 
 test('a target that exhausts its corrections stops claiming the reader is on it', () => {

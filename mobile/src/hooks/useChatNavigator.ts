@@ -40,6 +40,11 @@
 //    screen, it is hidden by the title"). Every index landing therefore clears `topClearance`
 //    px — the same distance the list's own visual-top padding already gives the oldest
 //    message. `viewOffset` carries it, and its sign is inverted here: see `landingViewOffset`.
+//    Two consequences that are not obvious and are both handled below: the list clamps its
+//    computed offset at 0 BEFORE subtracting viewOffset, so a landing that was already at the
+//    live edge gets the clearance added on top of it (`scheduleSnapCheck`); and the cleared
+//    band is filled by older rows, so a viewability report after a landing names one of THEM
+//    as the top row (`describesLanding`).
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { ViewToken } from 'react-native';
@@ -51,6 +56,9 @@ export const CHAT_NAV_VIEW_POSITION = 1;
 
 /** How long to let cells mount after an approximate landing before aiming again. */
 const RETRY_DELAY_MS = 140;
+/** Quiet time after the last scroll event at which a landing is treated as settled. Short
+ *  enough to be invisible, long enough not to read an offset mid-travel. */
+const SETTLE_QUIET_MS = 160;
 /** After this many corrections the approximate landing is where the reader stays — a target
  *  that keeps failing is a list that keeps re-measuring, and retrying forever would fight it. */
 const MAX_RETRIES = 2;
@@ -73,6 +81,13 @@ export interface ScrollToIndexFailedInfo {
   averageItemLength: number;
 }
 
+/** The scroll events the chat library forwards arrive in reanimated's shape (a top-level
+ *  `contentOffset`), not RN's `nativeEvent` shape — the same pair DR-089 reads. */
+export interface ScrollLikeEvent {
+  contentOffset?: { y?: number };
+  nativeEvent?: { contentOffset?: { y?: number } };
+}
+
 /** What to pass as `viewOffset` to leave `topClearance` px of chrome above the landing.
  *
  *  The sign is the trap. VirtualizedList computes `offset = max(0, cellOffset - viewPosition *
@@ -87,16 +102,24 @@ export function landingViewOffset(topClearance: number) {
   return -topClearance || 0;
 }
 
-/** Does a viewability report naming `top` as the topmost row describe a landing on `index`?
+/** Does a viewability report spanning rows `bottom`…`top` describe a landing on `index`?
  *
- *  Not just equality, once chrome is being cleared: the landing deliberately leaves
- *  `topClearance` px above the target, and that band is filled by the FOOT of the message
- *  above, which `itemVisiblePercentThreshold: 1` duly reports as viewable. So the honest
- *  answer after a cleared landing is "the target, or its older neighbour". Demanding equality
- *  would mean no jump ever registered as having arrived — which would silently disable the
- *  retirement below and bring back the stale-landmark teleport it exists to prevent. */
-function describesLanding(top: number, index: number, topClearance: number) {
-  return top === index || (topClearance > 0 && top === index + 1);
+ *  Not equality, once chrome is being cleared. The landing deliberately leaves `topClearance`
+ *  px above the target, and that band is filled by WHATEVER fits in it — which on this screen
+ *  is routinely two rows, since the message above an assistant response is the one-line user
+ *  turn that prompted it, and `itemVisiblePercentThreshold: 1` reports a 4% sliver of the
+ *  response above THAT as viewable too. So the reported top row is `index + k` for a k this
+ *  hook cannot compute, and `index + 1` is a guess, not a bound.
+ *
+ *  What can be checked is the shape a landing leaves behind: the target is on screen, and
+ *  everything above it in the report is OLDER than it. Getting this too narrow does not fail
+ *  loudly — it means no jump ever registers as having arrived, which leaves `pendingTopRef`
+ *  set forever and silently disables the retirement below, bringing back the stale-landmark
+ *  teleport that PR #467's review round added it to prevent. */
+function describesLanding(top: number, bottom: number, index: number, topClearance: number) {
+  if (top === index) return true;
+  if (topClearance <= 0) return false;
+  return top > index && bottom <= index;
 }
 
 export function useChatNavigator({
@@ -125,6 +148,15 @@ export function useChatNavigator({
   // requirement) while the rest travel in `listProps`, which is cheapest left alone.
   const clearanceRef = useRef(topClearance);
   clearanceRef.current = topClearance;
+  // Mirrored for the same reason: the snap below runs from a timer and a ref-stable scroll
+  // handler, and the OS reduce-motion preference resolves a moment after mount.
+  const animatedRef = useRef(animated);
+  animatedRef.current = animated;
+  /** Last scroll offset the list reported. 0 is the live edge (the list is inverted). */
+  const offsetRef = useRef(0);
+  /** Set while an index landing may still need correcting back to the live edge. */
+  const snapArmedRef = useRef(false);
+  const snapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Adjusting a ref during render (rather than in an effect) so a press in the same commit as
   // a new message cannot read a landmark that no longer names the message it was recorded for.
@@ -141,12 +173,64 @@ export function useChatNavigator({
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
+    // Same reasoning for the live-edge correction: it was armed for a landing in the old array,
+    // and a new message moves the live edge itself.
+    snapArmedRef.current = false;
+    if (snapTimer.current) {
+      clearTimeout(snapTimer.current);
+      snapTimer.current = null;
+    }
   }
 
   useEffect(() => () => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
     if (oldestTimer.current) clearTimeout(oldestTimer.current);
+    if (snapTimer.current) clearTimeout(snapTimer.current);
   }, []);
+
+  const cancelSnap = useCallback(() => {
+    snapArmedRef.current = false;
+    if (snapTimer.current) {
+      clearTimeout(snapTimer.current);
+      snapTimer.current = null;
+    }
+  }, []);
+
+  // The correction for a landing that CLAMPED at the live edge.
+  //
+  // `scrollToIndex` clamps its computed offset at 0 BEFORE subtracting viewOffset — the max()
+  // in VirtualizedList sits inside — so when the target and everything newer than it already
+  // fit on one screen, the list issues our clearance ON TOP of a landing that was already at
+  // the live edge. The thread then parks `topClearance` px short of the bottom and the newest
+  // message's tail disappears behind the floating composer: the very chrome Kamil asked us to
+  // respect in the same breath as the header.
+  //
+  // The test for it is exact rather than a heuristic. The list issues `max(0, natural) +
+  // clearance`, so a SETTLED offset at or below the clearance can only mean `natural <= 0` —
+  // the clamp bound, and the true landing is the live edge. Settled matters: mid-travel the
+  // offset passes through that range on any jump away from the bottom, which is why this runs
+  // on a quiet period after the last scroll event rather than on a fixed delay.
+  const scheduleSnapCheck = useCallback(() => {
+    if (snapTimer.current) clearTimeout(snapTimer.current);
+    snapTimer.current = setTimeout(() => {
+      snapTimer.current = null;
+      if (!snapArmedRef.current) return;
+      snapArmedRef.current = false;
+      if (offsetRef.current > 0 && offsetRef.current <= clearanceRef.current) {
+        listRef.current?.scrollToOffset({ offset: 0, animated: animatedRef.current });
+      }
+    }, SETTLE_QUIET_MS);
+  }, [listRef]);
+
+  /** Every scroll event, ours and the reader's. Only records where the list is — the landmark
+   *  is never inferred from an offset (DR-089: there is no synchronous ground truth to compare
+   *  one against under the inverted transform). */
+  const onScroll = useCallback((event: ScrollLikeEvent) => {
+    const y = event?.contentOffset?.y ?? event?.nativeEvent?.contentOffset?.y;
+    if (typeof y !== 'number') return;
+    offsetRef.current = y;
+    if (snapArmedRef.current) scheduleSnapCheck();
+  }, [scheduleSnapCheck]);
 
   const scrollTo = useCallback(
     (target: NavTarget) => {
@@ -161,6 +245,7 @@ export function useChatNavigator({
         clearTimeout(oldestTimer.current);
         oldestTimer.current = null;
       }
+      cancelSnap();
       if (target.kind === 'live') list.scrollToOffset({ offset: 0, animated });
       else if (target.kind === 'oldest') list.scrollToEnd({ animated });
       else {
@@ -170,6 +255,11 @@ export function useChatNavigator({
           viewOffset: landingViewOffset(clearanceRef.current),
           animated,
         });
+        // Only an index landing can clamp at the live edge with the clearance added on top.
+        if (clearanceRef.current > 0) {
+          snapArmedRef.current = true;
+          scheduleSnapCheck();
+        }
       }
       landmarkRef.current = landmarkAfter(target, countRef.current);
       // What the viewport's top row should become once this scroll lands. Until a report
@@ -177,7 +267,7 @@ export function useChatNavigator({
       // on their own — which is the distinction that makes the retirement below safe.
       pendingTopRef.current = target.kind === 'live' ? null : landmarkRef.current;
     },
-    [animated, listRef],
+    [animated, cancelSnap, listRef, scheduleSnapCheck],
   );
 
   const goUp = useCallback(() => {
@@ -219,15 +309,24 @@ export function useChatNavigator({
   // one is composed with DR-100's first-paint listener at the call site.
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     let top: number | null = null;
+    let bottom: number | null = null;
     for (const token of viewableItems) {
-      if (typeof token.index === 'number' && (top === null || token.index > top)) top = token.index;
+      if (typeof token.index !== 'number') continue;
+      if (top === null || token.index > top) top = token.index;
+      if (bottom === null || token.index < bottom) bottom = token.index;
     }
-    if (top === null) return;
+    if (top === null || bottom === null) return;
+    // NOTE this is the row at the viewport's top EDGE, which with an overlay header is the row
+    // hidden BEHIND the title rather than the first one the reader can read. `stepUp` aims here
+    // when it has no landmark, so after a hand-scroll it can start one message further back
+    // than "the message you are inside". Pre-existing (the header predates the rail) and not
+    // fixable from viewability alone, which carries no geometry — recorded so the next reader
+    // does not mistake it for the clearance below.
     topIndexRef.current = top;
     if (pendingTopRef.current !== null) {
       // A jump of ours is still travelling. Reports along the way name rows we are passing,
       // not where the reader chose to be, so nothing is concluded from them until one matches.
-      if (describesLanding(top, pendingTopRef.current, clearanceRef.current)) {
+      if (describesLanding(top, bottom, pendingTopRef.current, clearanceRef.current)) {
         pendingTopRef.current = null;
       }
       return;
@@ -240,7 +339,7 @@ export function useChatNavigator({
     // LIVE_EDGE is exempt: it is the one landmark that makes no claim about the top row, since
     // parked at the newest message whichever row fits above it is at the visual top.
     if (landmarkRef.current !== null && landmarkRef.current !== LIVE_EDGE
-        && !describesLanding(top, landmarkRef.current, clearanceRef.current)) {
+        && !describesLanding(top, bottom, landmarkRef.current, clearanceRef.current)) {
       landmarkRef.current = null;
       if (oldestTimer.current) {   // as with a drag: they are no longer where we put them
         clearTimeout(oldestTimer.current);
@@ -253,6 +352,8 @@ export function useChatNavigator({
    *  where the reader is. */
   const onScrollBeginDrag = useCallback(() => {
     landmarkRef.current = null;
+    // The reader is driving now: a correction computed for OUR landing would fight them.
+    cancelSnap();
     // The reader has taken over, so any correction still queued is no longer wanted. Without
     // this, tapping "start of thread" and changing your mind within RETRY_DELAY_MS yanks you
     // back out of your own drag — a movement nobody asked for at the moment it happens.
@@ -307,5 +408,14 @@ export function useChatNavigator({
     [animated, listRef],
   );
 
-  return { goUp, goDown, goOldest, goLive, onViewableItemsChanged, onScrollBeginDrag, onScrollToIndexFailed };
+  return {
+    goUp,
+    goDown,
+    goOldest,
+    goLive,
+    onScroll,
+    onViewableItemsChanged,
+    onScrollBeginDrag,
+    onScrollToIndexFailed,
+  };
 }

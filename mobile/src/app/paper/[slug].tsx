@@ -1855,9 +1855,12 @@ function DiscussionThread({
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
       readerPin.onScroll(event);
+      // DR-115 — the navigator only records the offset, to tell a landing that clamped at the
+      // live edge from one that did not. Same event shape as DR-089's.
+      chatNav.onScroll(event);
       railRef.current?.wake();
     },
-    [readerPin.onScroll],
+    [chatNav.onScroll, readerPin.onScroll],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
