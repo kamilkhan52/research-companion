@@ -45,6 +45,11 @@ const ITEMS: DevTestItem[] = [
     how_to_test: '', feedback_count: 0, last_activity: secondsAgo(3_600), last_activity_kind: 'dispatch' },
 ];
 
+/** DR-123: the sort chips moved behind the header's ⋮, closed on every open. */
+function openOptions(screen: ReturnType<typeof render>) {
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));
+}
+
 async function seedDraft(id: string, value: Record<string, unknown>) {
   await AsyncStorage.setItem(
     draftKey('devtest-item', id),
@@ -86,6 +91,7 @@ afterEach(async () => {
 
 test('"Last activity" orders the whole matched set newest-first from the server timestamps', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.queryByText(/^To verify/)).toBeNull());
   expect(screen.getByText(/^Results \(3\)/)).toBeTruthy();
@@ -98,6 +104,7 @@ test('a card this phone opened counts as activity, even though the server never 
   // come from the local draft: no server field changed.
   await seedDraft('DR-B', { openedAt: NOW - 5 * 60 * 1000 });
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/^Results \(3\)/)).toBeTruthy());
   expect(order(screen)).toEqual(['Beta gadget', 'Zulu widget', 'Alpha thing']);
@@ -108,6 +115,7 @@ test('a local verdict older than the item\'s server activity does not drag it fo
   // so it stays where the dispatch puts it rather than sinking to the week-old verdict.
   await seedDraft('DR-C', { verdict: 'pass', verdictAt: NOW - 7 * 86_400 * 1000 });
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/^Results \(3\)/)).toBeTruthy());
   expect(order(screen)).toEqual(['Zulu widget', 'Alpha thing', 'Beta gadget']);
@@ -116,6 +124,7 @@ test('a local verdict older than the item\'s server activity does not drag it fo
 test('each card says what the timestamp it was sorted by refers to', async () => {
   await seedDraft('DR-B', { openedAt: NOW - 5 * 60 * 1000 });
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/^Results \(3\)/)).toBeTruthy());
   expect(screen.getByText('You opened it · 5 min ago')).toBeTruthy();
@@ -126,6 +135,7 @@ test('each card says what the timestamp it was sorted by refers to', async () =>
 test('the note appears only under the sort it explains', async () => {
   const screen = await openBubble();
   expect(screen.queryByText(/Claude replied/)).toBeNull();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/Claude replied/)).toBeTruthy());
   fireEvent.press(screen.getByLabelText('A–Z'));
@@ -138,6 +148,7 @@ test('an item nothing has ever happened to sorts below every item something has'
     how_to_test: '', feedback_count: 0, last_activity: null, last_activity_kind: null,
   };
   const screen = await openBubble([quiet, ...ITEMS]);
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/^Results \(4\)/)).toBeTruthy());
   const json = JSON.stringify(screen.toJSON());
@@ -185,6 +196,7 @@ test('the list does not re-sort under the finger that opened a card', async () =
   // Expanding IS activity, so a live activity map would slide the card away mid-read. The stamp
   // is taken now and honoured on the NEXT open of the sheet.
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Last activity'));
   await waitFor(() => expect(screen.getByText(/^Results \(3\)/)).toBeTruthy());
   fireEvent.press(screen.getByText('Beta gadget'));            // the last row
@@ -220,6 +232,8 @@ async function openWithPersistedSort(sort: string) {
   jest.mocked(api.getDevTestItems).mockResolvedValue({ items: ITEMS });
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Zulu widget')).toBeTruthy());
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));
   await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
   return screen;
 }
@@ -238,7 +252,7 @@ function expectScrolledChipRow(scrollTo: jest.SpyInstance, x: number) {
   expect(receiver.props.testID).toBe('devtest-sort-chips');
 }
 
-test('a selected off-screen SORT chip is scrolled into view when the sheet opens', async () => {
+test('a selected off-screen SORT chip is scrolled into view when the options menu opens', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openWithPersistedSort('az');
   fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 52, height: 28 } } });
@@ -256,6 +270,7 @@ test('tapping a sort chip never scrolls the sort row', async () => {
   // snapped the filter row sideways under the finger in PR #469.
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('A–Z'));
   await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
   fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 58, height: 28 } } });
@@ -266,24 +281,25 @@ test('tapping a sort chip never scrolls the sort row', async () => {
 test('the default "Priority" chip never triggers a scroll — it is already leftmost', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent(screen.getByLabelText('Priority'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 89, height: 28 } } });
   expect(scrollTo).not.toHaveBeenCalled();
   scrollTo.mockRestore();
 });
 
-test('reopening the sheet reveals the still-active sort chip from a FRESH measurement', async () => {
+test('reopening the options menu reveals the still-active sort chip from a FRESH measurement', async () => {
   // Keeping the previous open's measurement would fire the effect path before this open's
   // ScrollView has been laid out natively — which on Android clamps the scroll to 0 — and spend
   // the once-per-open token, so the real measurement arriving after is discarded (PR #469).
+  // DR-123: the container the chips mount with is now the ⋮ menu, so that is what re-arms it.
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openWithPersistedSort('az');
   fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 420, y: 0, width: 52, height: 28 } } });
   expectScrolledChipRow(scrollTo, 420 - space.md);
 
-  fireEvent.press(screen.getByLabelText('Close'));
+  openOptions(screen);                              // close
   scrollTo.mockClear();
-  fireEvent.press(screen.getByLabelText('Open device-test companion'));
-  await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
+  openOptions(screen);                              // and reopen
   expect(scrollTo).not.toHaveBeenCalled();          // nothing measured THIS open yet
   fireEvent(screen.getByLabelText('A–Z'), 'layout', { nativeEvent: { layout: { x: 480, y: 0, width: 52, height: 28 } } });
   expectScrolledChipRow(scrollTo, 480 - space.md);

@@ -39,7 +39,7 @@ beforeEach(() => {
 
 async function remark(view: ReturnType<typeof render>, text: string) {
   fireEvent.changeText(await view.findByPlaceholderText(/comment/i), text);
-  fireEvent.press(await view.findByText('Remark'));
+  fireEvent.press(await view.findByText('Comment'));
 }
 
 test('a remark appears in the card instead of closing it', async () => {
@@ -68,7 +68,7 @@ test('a pass still closes the card and does not fetch a list nobody is looking a
 
 test('an already-open history refreshes after a pass, so it never shows a stale list', async () => {
   const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
-  fireEvent.press(await view.findByText('Show earlier notes'));
+  fireEvent.press(await view.findByText('Show conversation'));
   await waitFor(() => expect(api.getDevTestFeedback).toHaveBeenCalledTimes(1));
 
   fireEvent.press(await view.findByText('Pass'));

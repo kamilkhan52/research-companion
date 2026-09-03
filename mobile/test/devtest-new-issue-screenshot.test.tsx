@@ -58,10 +58,10 @@ test('a screenshot alone is a valid remark once attached', async () => {
   const { getByText, getByLabelText, findByText } = render(
     <ItemCard item={ITEM} shot="B64SHOT" route="/paper/x" startExpanded />,
   );
-  await findByText('Remark');
+  await findByText('Comment');
   // Attach the captured screen, leave the comment empty.
   fireEvent.press(getByText('Attach the captured screen'));
-  fireEvent.press(getByText('Remark'));
+  fireEvent.press(getByText('Comment'));
   await waitFor(() =>
     expect(api.recordDevTestFeedback).toHaveBeenCalledWith(
       expect.objectContaining({ verdict: 'remark', screenshot_b64: 'B64SHOT' }),
@@ -74,8 +74,8 @@ test('a remark with neither comment nor screenshot is refused client-side', asyn
   const { getByText, findByText } = render(
     <ItemCard item={ITEM} shot={null} route="/paper/x" startExpanded />,
   );
-  await findByText('Remark');
-  fireEvent.press(getByText('Remark'));
+  await findByText('Comment');
+  fireEvent.press(getByText('Comment'));
   await new Promise((r) => setTimeout(r, 50));
   expect(api.recordDevTestFeedback).not.toHaveBeenCalled();
 });

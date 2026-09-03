@@ -34,7 +34,9 @@ test('an expanded card dispatches THIS issue on the picked model, fire-on-tap', 
   const { getByText, findByText } = render(
     <ItemCard item={ITEM} shot={null} route="/discover" startExpanded dispatchModel="opus" />,
   );
-  const button = await findByText('Dispatch to Claude (opus)');
+  // DR-123 shortened the label — the card it sits on already names the item, so "to Claude" was
+  // saying twice what the icon and the model chip say once.
+  const button = await findByText('Dispatch (opus)');
   fireEvent.press(button);
   // The third argument is `fresh`: false here, because continuing a session that already knows
   // the item is the default.
@@ -46,7 +48,8 @@ test('no dispatch control without a model (the persistence-test mount stays unaf
   const { queryByText } = render(
     <ItemCard item={ITEM} shot={null} route="/discover" startExpanded />,
   );
-  expect(queryByText(/Dispatch to Claude/)).toBeNull();
+  expect(queryByText(/Dispatch \(/)).toBeNull();
+  expect(queryByText('Fresh session')).toBeNull();
 });
 
 test('the card offers a fresh session as a separate, deliberate act', async () => {

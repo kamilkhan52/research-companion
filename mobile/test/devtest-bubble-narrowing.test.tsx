@@ -42,6 +42,13 @@ async function openBubble() {
   return screen;
 }
 
+/** DR-123: the filter and sort chip rows moved behind the header's ⋮, closed on every open. The
+ *  count caption and its "Show all" deliberately did NOT move — see the comment at their usage
+ *  site — so they stay reachable without this. */
+function openOptions(screen: ReturnType<typeof render>) {
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));
+}
+
 async function seedVerdict(id: string, verdict: 'pass' | 'fail') {
   await AsyncStorage.setItem(
     draftKey('devtest-item', id),
@@ -71,6 +78,7 @@ test('the count caption says WHAT is narrowing the list, not just how many survi
   const screen = await openBubble();
   expect(screen.queryByTestId('devtest-match-row')).toBeNull();   // nothing hidden, nothing said
 
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Failed'));
   await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
   expect(screen.getByText(/narrowed by filter “Failed”/)).toBeTruthy();
@@ -81,6 +89,7 @@ test('the count caption says WHAT is narrowing the list, not just how many survi
 
 test('"Show all" restores every item, clearing both the filter and the search in one tap', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Passed'));
   fireEvent.changeText(screen.getByPlaceholderText('Search by id or title'), 'zulu');
   await waitFor(() => expect(screen.queryByText('Beta gadget')).toBeNull());
@@ -98,6 +107,7 @@ test('"Show all" restores every item, clearing both the filter and the search in
 // nothing to do with the complaint, so "Show all" must leave it exactly where the tester put it.
 test('"Show all" leaves the sort mode alone', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('A–Z'));
   fireEvent.press(screen.getByLabelText('Reviewed'));
   await waitFor(() => expect(screen.getByTestId('devtest-match-row')).toBeTruthy());
@@ -120,6 +130,7 @@ describe.each([
   test('does not hide the closed items the filter had just put on screen', async () => {
     await seedVerdict('DR-C', 'fail');
     const screen = await openBubble();
+    openOptions(screen);
     fireEvent.press(screen.getByLabelText('Failed'));
     await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
 
@@ -147,6 +158,7 @@ test('a match inside "Everything else" is on screen while a filter is active, wi
   await seedVerdict('DR-C', 'fail');
   const screen = await openBubble();
 
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Failed'));
 
   await waitFor(() => expect(screen.getByText(/1 of 3 shown/)).toBeTruthy());
@@ -188,10 +200,11 @@ async function openWithPersistedFilter(filter: string) {
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
   await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
+  openOptions(screen);
   return screen;
 }
 
-test('a selected off-screen filter chip is scrolled into view when the sheet opens', async () => {
+test('a selected off-screen filter chip is scrolled into view when the options menu opens', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openWithPersistedFilter('failed');
   expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true);
@@ -232,6 +245,7 @@ test('the reveal still happens when the chip is measured before the filter is re
   };
   try {
     const screen = await openBubble();                     // renders on the pre-hydration "All"
+    openOptions(screen);
     expect(screen.getByLabelText('All').props.accessibilityState.selected).toBe(true);
     fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
     expect(scrollTo).not.toHaveBeenCalled();               // nothing is selected there yet
@@ -253,6 +267,7 @@ test('the reveal still happens when the chip is measured before the filter is re
 test('tapping a filter chip never scrolls the chip row', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openBubble();
+  openOptions(screen);
 
   fireEvent.press(screen.getByLabelText('Failed'));
   await waitFor(() => expect(screen.getByLabelText('Failed').props.accessibilityState.selected).toBe(true));
@@ -263,16 +278,43 @@ test('tapping a filter chip never scrolls the chip row', async () => {
   scrollTo.mockRestore();
 });
 
-// The "once per OPEN" reset is the whole mechanism, and it is load-bearing because RN's Modal
-// returns null while hidden — children unmount and every chip lays out again on the next open.
+// The "once per OPEN" reset is the whole mechanism, and it is load-bearing because the chips'
+// container returns null while closed — children unmount and every chip lays out again next time.
+//
+// DR-123 moved the chips into the ⋮ menu, so the container that unmounts them is now the MENU.
+// That is what this asserts: the reveal must re-arm on every menu open, not once per sheet open —
+// with the chips behind a menu, a token spent on the first open and never reset would leave a
+// restored "Failed"/"A–Z" sitting off the right edge for the rest of the session, which is DR-116
+// itself.
 //
 // The reopen deliberately reports a DIFFERENT x (Opus review, PR #469). Keeping the previous
-// open's measurements would let the effect path fire from that cache the instant the sheet
-// reopens — before this open's ScrollView has been laid out natively, which on Android clamps the
+// open's measurements would let the effect path fire from that cache the instant the row
+// remounts — before its ScrollView has been laid out natively, which on Android clamps the
 // scroll to 0 — and spend the token, so the real measurement arriving a moment later is thrown
 // away and the chip stays off-screen. Asserting "nothing yet, then the FRESH offset" is what tells
 // a live measurement from a stale one; RNTL computes no layout, so an equal x could not.
-test('reopening the sheet reveals the still-active filter chip from a fresh measurement', async () => {
+test('reopening the options menu reveals the still-active filter chip from a fresh measurement', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  const screen = await openWithPersistedFilter('failed');
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
+  expectScrolledFilterRow(scrollTo, 320 - space.md);
+
+  openOptions(screen);                                   // close it
+  scrollTo.mockClear();
+  openOptions(screen);                                   // and open it again
+  expect(scrollTo).not.toHaveBeenCalled();               // nothing has been measured THIS open yet
+
+  fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 400, y: 0, width: 70, height: 28 } } });
+  expectScrolledFilterRow(scrollTo, 400 - space.md);
+  scrollTo.mockRestore();
+});
+
+// Closing the SHEET must also re-arm it, and it does so through a different path: `menuOpen` is
+// reset with everything else this-sitting-is-over, so the next sheet open starts from a closed
+// menu with no measurements carried over. Without that reset the menu would come back open — the
+// opposite of "everything collapsible should be collapsed by default" — and its reveal token
+// would still be spent from the previous sitting.
+test('closing the sheet closes the options menu and re-arms the reveal', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openWithPersistedFilter('failed');
   fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
@@ -282,8 +324,10 @@ test('reopening the sheet reveals the still-active filter chip from a fresh meas
   scrollTo.mockClear();
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
   await waitFor(() => expect(screen.getByText(/0 of 3 shown/)).toBeTruthy());
-  expect(scrollTo).not.toHaveBeenCalled();               // nothing has been measured THIS open yet
+  expect(screen.queryByTestId('devtest-options-menu')).toBeNull();   // closed by default
 
+  openOptions(screen);
+  expect(scrollTo).not.toHaveBeenCalled();
   fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 400, y: 0, width: 70, height: 28 } } });
   expectScrolledFilterRow(scrollTo, 400 - space.md);
   scrollTo.mockRestore();
@@ -292,6 +336,7 @@ test('reopening the sheet reveals the still-active filter chip from a fresh meas
 test('the default "All" chip never triggers a scroll — it is already the leftmost chip', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent(screen.getByLabelText('All'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 40, height: 28 } } });
   expect(scrollTo).not.toHaveBeenCalled();
   scrollTo.mockRestore();
