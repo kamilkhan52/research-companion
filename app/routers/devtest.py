@@ -1141,19 +1141,32 @@ def _is_executable_file(path: str) -> bool:
 
 #: How long to wait for the CLI to come back before giving up, and how often to look.
 #:
-#: The CLI auto-updates itself, and the update is not atomic: `npm i -g` UNLINKS
-#: `/opt/homebrew/bin/claude` and relinks it after unpacking, so for a moment there is no
-#: `claude` on the server's PATH at all. Measured against a live upgrade, that gap is ~0.6s
-#: inside a ~5s install. It is the whole outage — nothing is misconfigured, and a second later
-#: it is fine.
+#: The CLI auto-updates itself and the update is not atomic. npm's reify log shows the order:
 #:
-#: So the route WAITS rather than explaining. Five seconds is ~8x the measured gap and costs
-#: nothing in the normal case, where the first look succeeds; a dispatch that is about to run
-#: for forty minutes can afford to spend it. Narrating the gap instead was the wrong shape
-#: twice over: it told Kamil to set `RC_CLAUDE_BIN`, and because an explicit override REFUSES
-#: rather than falling through, taking that advice would turn every future 0.6s gap into a
-#: permanent-looking "RC_CLAUDE_BIN is not an executable file".
-CLAUDE_LOOKUP_WAIT_S = 5.0
+#:     silly reify mark retired [ '…/bin/claude' ]
+#:     http fetch GET 200 …/claude-code-darwin-arm64-2.1.224.tgz 14877ms (cache miss)
+#:
+#: It UNLINKS the bin entry FIRST and downloads 190 MB second, so the whole download sits
+#: inside the gap and the gap scales with bandwidth. Measured at 5ms resolution:
+#:
+#:     same version, warm cache   0.5s
+#:     same version, cold cache  14.8s
+#:     version change, uncached  14.9s / 17.9s
+#:
+#: An auto-update always changes version, so its tarball is never cached and 15-18s is the
+#: case that matters — the 0.5s figure is a no-op reinstall and sizing against it (as this
+#: first did) leaves the real outage uncovered. 30s is ~2x the measured worst case.
+#:
+#: No constant covers an arbitrarily slow link, so giving up still says RETRY. That is not a
+#: hedge: the alternative advice is a trap, because an explicit `RC_CLAUDE_BIN` refuses rather
+#: than falling through, so pointing it at the homebrew symlink converts every future update
+#: gap into a permanent-looking "not an executable file".
+#:
+#: Blocking a POST for 30s is deliberate and does not cross invariant 1: `_via_public_tunnel`
+#: 403s tunnel requests before the wait, so the ~100s Cloudflare cap is structurally out of
+#: play, and the client shows the button busy throughout. The wait is taken BEFORE
+#: `_dispatch_lock`, so it never blocks the status endpoint.
+CLAUDE_LOOKUP_WAIT_S = 30.0
 CLAUDE_LOOKUP_POLL_S = 0.1
 
 
@@ -1168,22 +1181,23 @@ def _await_claude_binary(wait_s: float | None = None) -> str | None:
 
 
 def _claude_missing_detail() -> str:
-    """Why the CLI could not be found — after `_await_claude_binary` has already waited.
+    """Why the CLI could not be found, in one line that fits a phone.
 
-    A bad `RC_CLAUDE_BIN` reports itself, because nothing else was looked at and the generic
-    "looked everywhere" list would be a lie. Otherwise the CLI genuinely is not installed
-    anywhere the server can see: an auto-update gap is ~0.6s and we have just waited seconds,
-    so by this point "try again" is no longer the answer and `RC_CLAUDE_BIN` is.
+    This is delivered to a `numberOfLines={1}` toast for 2.2 seconds, so roughly the first 45
+    characters are all Kamil will ever see — a longer, more complete message is not a more
+    informative one, it is a truncated one. The diagnosis goes to the server log, where the
+    person who can act on a filesystem path is; the toast gets the action.
     """
     import os
 
     override = os.path.expanduser((os.environ.get("RC_CLAUDE_BIN") or "").strip())
     if override:
-        return (f"RC_CLAUDE_BIN is set to {override}, which is not an executable file. "
-                "Point it at the claude CLI, or unset it to search PATH.")
-    looked = ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS)
-    return (f"Could not find the claude CLI. Waited {CLAUDE_LOOKUP_WAIT_S:.0f}s for it on the "
-            f"server's PATH and in {looked}. Set RC_CLAUDE_BIN to its full path.")
+        log.warning("devtest dispatch: RC_CLAUDE_BIN=%s is not an executable file", override)
+        return "RC_CLAUDE_BIN is not an executable file."
+    log.warning("devtest dispatch: no claude CLI after %.0fs; looked on PATH and in %s",
+                CLAUDE_LOOKUP_WAIT_S,
+                ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS))
+    return "claude CLI missing — retry, or see log."
 
 
 def _dispatch_dir() -> Path:
@@ -2176,10 +2190,16 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
                     stdin=subprocess.DEVNULL, start_new_session=True,
                 )
             except OSError as exc:
+                # Deliberately not "the CLI is broken": the same OSError covers a worktree that
+                # vanished under us, and naming the wrong one sends the next debugger the wrong
+                # way — which is how this PR started. The log carries which.
+                log.warning("devtest dispatch: could not spawn %s in %s: %s", binary, cwd, exc)
+                # Nothing has been recorded yet, so the only trace is an empty log file in a
+                # directory whose own DR-118 note says it only grows. Take it back out.
+                log_path.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=503,
-                    detail=f"The claude CLI at {binary} could not be started ({exc.strerror}). "
-                           "If it is updating itself, try Dispatch again in a moment.") from exc
+                    detail="Dispatch could not start — try again.") from exc
         info = {"id": dispatch_id, "pid": process.pid, "model": model,
                 "item_id": item_id, "log": str(log_path),
                 "resumed_from": resume_of.get("id") if resume_of else None,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import itertools
 import json
-import os
 import time
 
 import pytest
@@ -2663,35 +2662,48 @@ def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
     assert dt._claude_binary() is None
 
 
-def test_a_dispatch_survives_the_CLI_reinstalling_itself(client, monkeypatch, tmp_path):
+def test_a_dispatch_survives_the_CLI_reinstalling_itself(monkeypatch, tmp_path):
     """The outage, reproduced as measured rather than as I first guessed it.
 
-    The CLI auto-updates itself and `npm i -g` is not atomic: it UNLINKS the bin entry and
-    relinks it after unpacking, so for ~0.6s of a ~5s install there is no `claude` on PATH at
-    all — not a dangling symlink, nothing. (My first fix keyed on a dangling symlink, a state
-    npm never produces, so it never fired.) Nothing is misconfigured for that 0.6s, so the
-    route waits rather than 503ing with advice.
+    The CLI auto-updates itself and `npm i -g` is not atomic. Its reify log shows it retire the
+    bin entry FIRST and download 190 MB second, so for the length of that download there is no
+    `claude` on PATH at all — not a dangling symlink, nothing. (My first fix keyed on a dangling
+    symlink, a state npm never produces, so it never fired.) Nothing is misconfigured for that
+    window, so the route waits rather than 503ing with advice.
+
+    Both arms, because the real machine recovers through PATH and only a differently-laid-out
+    one recovers through the fallback list.
     """
     from app.routers import devtest as dt
 
+    ABSENT_LOOKS = 4
     installed = tmp_path / "claude"
-    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(installed),))
     monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
 
-    looks = itertools.count()
+    for arm in ("PATH", "fallback"):
+        looks = itertools.count()
+        installed.unlink(missing_ok=True)
 
-    def which_relinks_partway(path):
-        # Absent for the first few looks, exactly as during the unlink/relink gap.
-        if next(looks) >= 3 and not installed.exists():
-            installed.write_text("#!/bin/sh\nexit 0\n")
-            installed.chmod(0o755)
-        return os.path.isfile(path) and os.access(path, os.X_OK)
+        def relinks_partway(*_a, _looks=looks, **_k):
+            # Absent for the first few looks, then back — the unlink/relink sequence.
+            if next(_looks) >= ABSENT_LOOKS and not installed.exists():
+                installed.write_text("#!/bin/sh\nexit 0\n")
+                installed.chmod(0o755)
+            return str(installed) if installed.exists() else None
 
-    monkeypatch.setattr(dt, "_is_executable_file", which_relinks_partway)
-    assert dt._await_claude_binary() == str(installed)
-    assert next(looks) > 3, "should have looked more than once"
+        if arm == "PATH":
+            monkeypatch.setattr("shutil.which", relinks_partway)
+            monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ())
+        else:
+            monkeypatch.setattr("shutil.which", lambda name: None)
+            monkeypatch.setattr(dt, "_is_executable_file",
+                                lambda p, _f=relinks_partway: _f() is not None)
+            monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(installed),))
+
+        assert dt._await_claude_binary() == str(installed), arm
+        # It cannot have succeeded on the first look — the file did not exist yet.
+        assert next(looks) > ABSENT_LOOKS, arm
 
 
 def test_the_wait_is_bounded_and_then_says_where_it_looked(client, monkeypatch):
@@ -2710,8 +2722,12 @@ def test_the_wait_is_bounded_and_then_says_where_it_looked(client, monkeypatch):
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
     assert time.monotonic() - started < 5, "the wait must be bounded, not the full default"
+    # Short enough to survive a one-line, 2.2s toast: the client renders this through
+    # `showToast`, where ~45 characters is all Kamil ever sees. The paths go to the log, where
+    # whoever can act on a filesystem path actually is.
     detail = r.json()["detail"]
-    assert "RC_CLAUDE_BIN" in detail and "/nowhere/claude" in detail
+    assert len(detail) <= 45, detail
+    assert "retry" in detail
 
 
 def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
@@ -2726,8 +2742,8 @@ def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
     detail = r.json()["detail"]
-    assert "RC_CLAUDE_BIN" in detail and str(tmp_path / "typo") in detail
-    assert "/opt/homebrew" not in detail
+    assert len(detail) <= 45, detail
+    assert "RC_CLAUDE_BIN" in detail
     assert dt._claude_binary() is None          # and it really did refuse, not just report
 
 
@@ -2741,5 +2757,11 @@ def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeyp
     monkeypatch.setattr(dt, "_dispatch_cwd", lambda **k: str(tmp_path))
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
-    assert "try Dispatch again" in r.json()["detail"]
-    assert not (tmp_path / "current.json").exists()
+    assert "try again" in r.json()["detail"]
+    # `_dispatch_dir()`, not `tmp_path`: the route writes under the inbox dir the fixture sets,
+    # so asserting on tmp_path passed even with a real regression injected — a phantom
+    # "running" record whose pid `_dispatch_running` reads as alive, 409ing every dispatch
+    # after it, forever.
+    assert not (dt._dispatch_dir() / "current.json").exists()
+    # And no orphan log: the spawn never happened, so there is nothing for one to hold.
+    assert not list(dt._dispatch_dir().glob("*.log"))
