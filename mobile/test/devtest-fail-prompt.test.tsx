@@ -58,6 +58,7 @@ test('the prompt survives the card being filtered away by its own verdict', asyn
   // Recording the verdict re-runs the filter. Under "Not reviewed" the item stops matching and
   // its card unmounts in the same commit — which is precisely why the prompt is not on the card.
   const screen = await failTheItem();
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));   // DR-123: filter lives in the ⋮
   fireEvent.press(screen.getByLabelText('Not reviewed'));
   await waitFor(() => expect(screen.queryByText('Alpha thing')).toBeNull());
   expect(screen.getByTestId('devtest-fail-prompt')).toBeTruthy();
@@ -109,9 +110,9 @@ test('a remark raises nothing — it would bury the note DR-119 exists to show',
   await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
   fireEvent.press(screen.getByText('Alpha thing'));
   fireEvent.changeText(
-    await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)'),
-    'a note');
-  fireEvent.press(await screen.findByText('Remark'));
+    await screen.findByPlaceholderText('Comment (optional for Pass and Fail)'),
+    'a comment');
+  fireEvent.press(await screen.findByText('Comment'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
   expect(screen.queryByTestId('devtest-fail-prompt')).toBeNull();
 });
@@ -126,7 +127,9 @@ test('the prompt works under a non-default sort, not just the default one', asyn
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
   await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
 
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));   // DR-123: sort lives in the ⋮
   fireEvent.press(screen.getByLabelText('Last activity'));
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));   // close it again
   fireEvent.press(screen.getByText('Alpha thing'));
   fireEvent.press(await screen.findByText('Fail'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());

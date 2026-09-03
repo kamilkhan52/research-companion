@@ -1,9 +1,15 @@
 // The in-app device-test companion (DR-060) — dev builds only. A floating bubble, openable
 // from anywhere, listing the device-review ledger's items with what-to-test instructions;
-// pass/fail/remark verdicts (comment optional on verdicts, required for a bare remark), a
-// screenshot of the screen BENEATH the bubble, and new-issue capture. Everything lands in the
-// server's `.dev-feedback/` inbox for the /device-feedback skill to triage into the ledger —
-// the app never writes the ledger itself.
+// pass/fail/remark verdicts (text optional on a verdict, required for a bare remark unless a
+// screenshot is attached), a screenshot of the screen BENEATH the bubble, and new-issue capture.
+// Everything lands in the server's `.dev-feedback/` inbox for the /device-feedback skill to
+// triage into the ledger — the app never writes the ledger itself.
+//
+// `remark` is the WIRE word — the API, the inbox and the triage skill all speak it — and it is
+// deliberately not what the sheet says. DR-123: he asked "I don't know what Notes here are. Is
+// note a comment? A reply?", and the answer was that three words named two things. On screen his
+// entries are COMMENTS, the agent's are REPLIES, and the two together are the CONVERSATION;
+// nothing here says "note" or "agent" any more.
 //
 // Gating is server-truth: the parent renders this only when useDevMode() is true, and every
 // route 404s outside RC_DEV, so a production build cannot expose it even if the JS shipped.
@@ -16,7 +22,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View, type LayoutChangeEvent } from 'react-native';
 import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -34,9 +40,9 @@ import { relativeAge } from '@/components/NeighbourhoodLine';
 // the prose with the markdown syntax removed rather than the raw cell.
 import { markdownToPlain } from '@/lib/markdownPlain';
 import { showToast } from '@/ui/Toast';
-import { Button, Chip, Icon, Text } from '@/ui';
+import { Chip, Icon, IconButton, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 
 // Guarded: the JS package resolves as soon as it's `npm install`ed and Metro serves it —
@@ -270,6 +276,113 @@ function ToggleChip({ label, active, onPress, onLayout }: {
   );
 }
 
+/** DR-123 — Kamil: "The buttons for Show all, Dispatch all, Pass, Fail, Remark etc. are too big."
+ *
+ *  The shared `Button` is a 48–50px pill with 24px side padding and 15–16px `heading` text: right
+ *  for a screen with three actions on it, wrong for a review sheet that puts three on every card.
+ *  This is the sheet's own compact pill, and it is deliberately LOCAL rather than a new variant on
+ *  the shared primitive — he bounded the ask himself ("Reduce those too for this screen and we
+ *  might consider for the rest of the app later"), and this surface is dev-only, so the rest of the
+ *  app must not move underneath him as a side effect.
+ *
+ *  What shrinks is the PILL, not the target: `control.minTouch` is the floor the density tokens
+ *  say compactness may never cross ("it must never make an interactive control harder to hit"), so
+ *  the hitSlop is derived from that floor rather than picked by eye. */
+const SMALL_BTN_HEIGHT = 32;
+const SMALL_BTN_SLOP = Math.max(0, Math.round((control.minTouch - SMALL_BTN_HEIGHT) / 2));
+
+function SmallButton({ title, icon, variant = 'ghost', loading, disabled, onPress, style, ...rest }: {
+  title: string;
+  icon?: IconName;
+  variant?: 'primary' | 'ghost';
+  loading?: boolean;
+  disabled?: boolean;
+  onPress?: () => void;
+  style?: object;
+  testID?: string;
+  accessibilityLabel?: string;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const isDisabled = disabled || loading;
+  const fg = variant === 'primary' ? t.mintInk : t.text;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={isDisabled}
+      hitSlop={SMALL_BTN_SLOP}
+      accessibilityRole="button"
+      style={({ pressed }) => [
+        styles.smallBtn,
+        variant === 'primary' ? styles.smallBtnPrimary : styles.smallBtnGhost,
+        pressed && !isDisabled && { opacity: 0.82 },
+        isDisabled && { opacity: 0.45 },
+        style,
+      ]}
+      {...rest}>
+      {loading ? (
+        <ActivityIndicator size="small" color={variant === 'primary' ? t.mintInk : t.mint} />
+      ) : (
+        <>
+          {icon ? <Icon name={icon} size={14} color={fg} /> : null}
+          <Text variant="label" color={fg} numberOfLines={1}>{title}</Text>
+        </>
+      )}
+    </Pressable>
+  );
+}
+
+/** DR-123 — Kamil: "'Implemented -- verify' is too big."
+ *
+ *  The ledger's lifecycle states are written for the ledger, where a row has a whole column; on a
+ *  card they were a bordered chip wide enough to push everything else onto a second line. The
+ *  short form is what the card shows; the FULL state still reaches a screen reader through the
+ *  card header's own accessibility label, so nothing is actually lost.
+ *
+ *  Unknown states fall through unchanged rather than being mangled — the ledger may grow one, and
+ *  showing it verbatim is the honest failure. */
+const SHORT_STATES: Record<string, string> = {
+  'implemented — verify': 'Verify',
+  'new — untriaged': 'New',
+  open: 'Open',
+  partial: 'Partial',
+  planned: 'Planned',
+  deferred: 'Deferred',
+  closed: 'Closed',
+  superseded: 'Superseded',
+};
+export function shortState(state: string): string {
+  return SHORT_STATES[state] ?? state;
+}
+
+/** The section tones, per item: mint = waiting on him, amber = work still open, muted = neither.
+ *  Same three-way split `sectionItems` already makes, so a card's colour and the section it sits
+ *  in cannot disagree. */
+function stateTone(state: string, t: ThemePalette): string {
+  if (state === 'implemented — verify') return t.mint;
+  if (['open', 'partial', 'planned', 'new — untriaged'].includes(state)) return t.amber;
+  return t.muted;
+}
+
+/** DR-123 — Kamil: "I don't know what Notes here are. Is note a comment? A reply? Be clear and
+ *  consistent."
+ *
+ *  He was right that the word was unstable, and it was a real inconsistency rather than a wording
+ *  preference: the chip said "notes" but counted only HIS entries, the agent's answers were
+ *  counted separately as "replies", and the button labelled "Show earlier notes" opened BOTH. The
+ *  word "note" is now gone from the sheet entirely. His entries are "from you" (they are not all
+ *  comments — a bare Pass is one), the agent's are "replies", and the thing that holds both is the
+ *  "conversation". */
+export function cardMeta(item: DevTestItem, verdict: 'pass' | 'fail' | undefined): string {
+  const parts = [shortState(item.state)];
+  if (item.feedback_count) parts.push(`${item.feedback_count} from you`);
+  if (item.response_count) {
+    parts.push(`${item.response_count} repl${item.response_count === 1 ? 'y' : 'ies'}`);
+  }
+  if (verdict) parts.push(verdict === 'fail' ? 'Failed' : 'Passed');
+  return parts.join(' · ');
+}
+
 /** DR-116 — Kamil: "Dev test bubble shows 11 of 117. I don't know how to view the rest. The
  *  Filter is set to All". Nothing was truncated: DR-077's search and filter persist across app
  *  launches, so a choice made days ago was still narrowing the list, and the sheet said only
@@ -353,6 +466,10 @@ export function DevTestBubble() {
   const [error, setError] = useState<string | null>(null);
   const [showRest, setShowRest] = useState(false);
   const [creating, setCreating] = useState(false);
+  // DR-123: the ⋮ panel holding filter, sort and dispatch. Plain useState and NOT a persisted
+  // draft — "everything collapsible should be collapsed by default" is the ask, and a menu that
+  // remembered being open would greet him with the very rows he asked to have put away.
+  const [menuOpen, setMenuOpen] = useState(false);
   // DR-063: "I don't think I see the issue I just opened." A new item lands in the Open
   // section, which renders below whatever the verify queue holds (up to dozens of cards) —
   // easy to miss entirely. Pin it in its own section at the very top instead, expanded, until
@@ -423,8 +540,12 @@ export function DevTestBubble() {
   // reviewed" could now sit off-screen with every visible chip looking unselected — the same
   // unreadable state DR-116 was filed about, one row down and with no caption naming it (sort is
   // deliberately excluded from `narrowingReasons`, because it hides nothing).
-  const filterChips = useChipReveal(filter, 'all', toolbar.ready, visible);
-  const sortChips = useChipReveal(sort, 'default', toolbar.ready, visible);
+  //
+  // DR-123 moved both rows inside the ⋮ menu, so the thing they mount and unmount with is the
+  // MENU, not the sheet — passing `visible` here would spend the once-per-open token on the first
+  // sheet-open and then never reveal the restored chip on any subsequent menu open.
+  const filterChips = useChipReveal(filter, 'all', toolbar.ready, menuOpen);
+  const sortChips = useChipReveal(sort, 'default', toolbar.ready, menuOpen);
 
   // A tap is not a restore, so it spends the token even though the tester's own choice must never
   // move the row (Opus review, PR #469: selecting a chip switches its label to semibold, which
@@ -571,6 +692,10 @@ export function DevTestBubble() {
       // trigger, so without this an unanswered prompt greeted him on the next open, about a
       // fail from a session he had already walked away from.
       setFailQueue([]);
+      // DR-123: same "this sitting is over" reset. The menu is closed on every open by design,
+      // and leaving it open across a close would also strand `useChipReveal`'s token, which now
+      // keys off the menu rather than the sheet.
+      setMenuOpen(false);
       return;
     }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
@@ -584,42 +709,66 @@ export function DevTestBubble() {
       {!visible && !hidden ? <DevTestFloatingTrigger /> : null}
 
       <Modal visible={visible} animationType="slide" onRequestClose={() => setVisible(false)}>
-        <View style={[styles.sheet, { paddingTop: insets.top + space.sm }]}>
+        <View style={[styles.sheet, { paddingTop: insets.top + space.xs }]}>
+          {/* DR-123 — Kamil: "a lot of the top space is taken by options like filter, sort, how
+              many shown and hidden, dispatch. Put these all into a three dot or hamburger menu…
+              Everything collapsible should be collapsed by default." The fixed header used to be
+              six stacked rows (title, capture caption, search, Filter, Sort, Claude) before a
+              single card could be seen. It is now two: this row and the search field. Everything
+              he named lives behind the ⋮, closed on every open. */}
           <View style={styles.header}>
-            <Text variant="title">Device tests</Text>
+            <Text variant="heading" style={styles.headerTitle} numberOfLines={1}>Device tests</Text>
             <View style={styles.headerActions}>
-              <Button
-                title="New issue"
-                variant="ghost"
-                icon="plus"
+              <IconButton
+                name="plus"
+                size={18}
+                filled={false}
+                color={t.text}
+                accessibilityRole="button"
+                accessibilityLabel="New issue"
+                style={styles.headerIcon}
                 onPress={() => setCreating(true)}
               />
-              <Pressable
+              {/* Mint, not muted, while something is narrowing the list: DR-116 was filed because
+                  a filter restored from days ago was hiding rows with nothing on screen saying so,
+                  and putting the chips behind a menu is exactly the move that could bring that
+                  back. The count row below names the narrowing in words; this says "it is in
+                  here" from the one control that is always visible. */}
+              <IconButton
+                name="more-vertical"
+                size={18}
+                filled={false}
+                color={narrowed ? t.mint : t.text}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: menuOpen }}
+                accessibilityLabel={narrowed
+                  ? 'Options — filter, sort and dispatch. A filter or search is narrowing the list.'
+                  : 'Options — filter, sort and dispatch'}
+                testID="devtest-options-toggle"
+                style={styles.headerIcon}
+                onPress={() => setMenuOpen((v) => !v)}
+              />
+              <IconButton
+                name="x"
+                size={20}
+                filled={false}
+                color={t.muted}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                style={styles.headerIcon}
                 onPress={() => {
                   setVisible(false);
                   setJustCreated(null);
                 }}
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                hitSlop={12}
-                style={styles.close}
-              >
-                <Icon name="x" size={22} color={t.muted} />
-              </Pressable>
+              />
             </View>
           </View>
-          <Text variant="caption" color={t.muted} style={styles.subtitle}>
-            {shot ? 'Screen captured — attach it to any remark below.' : canScreenshot()
-              ? 'No capture this time.'
-              : 'Screenshots need a rebuilt dev client (react-native-view-shot).'}
-          </Text>
           {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
 
-          {/* DR-077 — search/filter/sort, outside the KeyboardAvoidingView/ScrollView below so
-              it stays put while the list scrolls. Filter and sort are mutually independent:
-              filter narrows WHICH items are in play, sort decides how to browse the result —
-              "Not reviewed" + "Priority" for finding the next one, "Reviewed" + "Recently
-              reviewed" for jumping back into whatever was just being worked on. */}
+          {/* DR-077 — search stays in the header rather than moving into the menu with the rest:
+              it is the one control he did not name, and it is how a specific row gets found in a
+              list of 120. Filter and sort are mutually independent from it: filter narrows WHICH
+              items are in play, sort decides how to browse the result. */}
           <View style={styles.searchRow}>
             <TextInput
               placeholder="Search by id or title"
@@ -644,68 +793,22 @@ export function DevTestBubble() {
               </Pressable>
             ) : null}
           </View>
-          {/* Opus review, PR #387: two visually identical chip rows with no label read as one
-              confusing group — "Filter"/"Sort" name what each row actually does. The label sits
-              INSIDE the same row View as its chips, and that plain View wrapper is load-bearing,
-              not just compactness: RN's ScrollView base style carries `flexGrow: 1`, so a bare
-              horizontal ScrollView in this flex-column sheet stretches to claim a share of the
-              spare VERTICAL space (Kamil's 2026-08-12 screenshot: two chip rows each filling a
-              third of the screen, the list shoved to the bottom). A View defaults to
-              `flexGrow: 0`, so each row hugs its content height. */}
-          <View style={styles.toolbarRow} testID="devtest-filter-toolbar">
-            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
-            <ScrollView
-              ref={filterChips.scrollRef}
-              // Named so a test asserting "this row scrolled" cannot be satisfied by the OTHER
-              // horizontal row (Opus review, PR #471).
-              testID="devtest-filter-chips"
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.filterRow}
-            >
-              {REVIEW_FILTERS.map((f) => (
-                <ToggleChip
-                  key={f.key}
-                  label={f.label}
-                  active={filter === f.key}
-                  onPress={() => setFilter(f.key)}
-                  onLayout={(e) => filterChips.rememberX(f.key, e)}
-                />
-              ))}
-            </ScrollView>
-          </View>
-          <View style={styles.toolbarRow} testID="devtest-sort-toolbar">
-            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
-            <ScrollView
-              ref={sortChips.scrollRef}
-              testID="devtest-sort-chips"
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.filterRow}
-            >
-              {SORT_MODES.map((s) => (
-                <ToggleChip
-                  key={s.key}
-                  label={s.label}
-                  active={sort === s.key}
-                  onPress={() => setSort(s.key)}
-                  onLayout={(e) => sortChips.rememberX(s.key, e)}
-                />
-              ))}
-            </ScrollView>
-          </View>
           {/* DR-116 — "shows 11 of 117. I don't know how to view the rest." The old caption said
               only how many were hidden; it never said BY WHAT, and the only escape was finding
               the responsible chip (possibly scrolled off-screen) or the search field's small ×.
-              Name the narrowing and put the way out next to the number. */}
+              Name the narrowing and put the way out next to the number.
+
+              DR-123 asked for this count to go into the menu too. It does not, and the reason is
+              DR-116 itself: unnarrowed it renders NOTHING (so it costs him no top space, which is
+              the actual complaint), and narrowed it is the only thing on screen that says why the
+              list is short. Hiding that behind a menu is the state DR-116 was filed about. */}
           {narrowed ? (
             <View style={styles.matchRow} testID="devtest-match-row">
               <Text variant="caption" color={t.muted} style={styles.matchCount}>
                 {filteredItems.length} of {items.length} shown · narrowed by {narrowedBy.join(' and ')}
               </Text>
-              <Button
+              <SmallButton
                 title={`Show all ${items.length}`}
-                variant="ghost"
                 icon="rotate-ccw"
                 // Says what it DOES, not what it is — this is the escape hatch the whole row
                 // exists for, and "Show all 117" alone does not say the filter goes with it.
@@ -715,20 +818,85 @@ export function DevTestBubble() {
             </View>
           ) : null}
 
-          {/* DR-092: hand the whole pending queue to one Claude session (Kamil's batch pick).
-              Fire-on-tap — dev-only, and the toast + bubble replies make a mis-tap visible. */}
-          <View style={styles.dispatchRow} testID="devtest-dispatch-all">
-            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Claude</Text>
-            <ModelPicker model={modelDraft.value} onChange={(m) => modelDraft.setValue(m)} />
-            <Button
-              title="Dispatch all"
-              variant="ghost"
-              icon="zap"
-              loading={dispatchingAll}
-              disabled={dispatchingAll}
-              onPress={() => void fireDispatch(modelDraft.value, undefined, setDispatchingAll)}
-            />
-          </View>
+          {menuOpen ? (
+            <View style={styles.menu} testID="devtest-options-menu">
+              {/* Opus review, PR #387: two visually identical chip rows with no label read as one
+                  confusing group — "Filter"/"Sort" name what each row actually does. The label sits
+                  INSIDE the same row View as its chips, and that plain View wrapper is load-bearing,
+                  not just compactness: RN's ScrollView base style carries `flexGrow: 1`, so a bare
+                  horizontal ScrollView in this flex-column sheet stretches to claim a share of the
+                  spare VERTICAL space (Kamil's 2026-08-12 screenshot: two chip rows each filling a
+                  third of the screen, the list shoved to the bottom). A View defaults to
+                  `flexGrow: 0`, so each row hugs its content height. */}
+              <View style={styles.toolbarRow} testID="devtest-filter-toolbar">
+                <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
+                <ScrollView
+                  ref={filterChips.scrollRef}
+                  // Named so a test asserting "this row scrolled" cannot be satisfied by the OTHER
+                  // horizontal row (Opus review, PR #471).
+                  testID="devtest-filter-chips"
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.filterRow}
+                >
+                  {REVIEW_FILTERS.map((f) => (
+                    <ToggleChip
+                      key={f.key}
+                      label={f.label}
+                      active={filter === f.key}
+                      onPress={() => setFilter(f.key)}
+                      onLayout={(e) => filterChips.rememberX(f.key, e)}
+                    />
+                  ))}
+                </ScrollView>
+              </View>
+              <View style={styles.toolbarRow} testID="devtest-sort-toolbar">
+                <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
+                <ScrollView
+                  ref={sortChips.scrollRef}
+                  testID="devtest-sort-chips"
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.filterRow}
+                >
+                  {SORT_MODES.map((s) => (
+                    <ToggleChip
+                      key={s.key}
+                      label={s.label}
+                      active={sort === s.key}
+                      onPress={() => setSort(s.key)}
+                      onLayout={(e) => sortChips.rememberX(s.key, e)}
+                    />
+                  ))}
+                </ScrollView>
+              </View>
+              {/* DR-092: hand the whole pending queue to one Claude session (Kamil's batch pick).
+                  Fire-on-tap — dev-only, and the toast + bubble replies make a mis-tap visible. */}
+              <View style={styles.dispatchRow} testID="devtest-dispatch-all">
+                <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Claude</Text>
+                <ModelPicker model={modelDraft.value} onChange={(m) => modelDraft.setValue(m)} />
+                <SmallButton
+                  title="Dispatch all"
+                  icon="zap"
+                  loading={dispatchingAll}
+                  disabled={dispatchingAll}
+                  onPress={() => {
+                    setMenuOpen(false);
+                    void fireDispatch(modelDraft.value, undefined, setDispatchingAll);
+                  }}
+                />
+              </View>
+              {/* Was a permanent caption under the title. It answers one question — can this
+                  sitting attach a screenshot — and the answer is already visible as the "Attach
+                  the captured screen" checkbox on every card when it is yes. It only has to be
+                  READABLE when it is no, which is what this line is for. */}
+              <Text variant="caption" color={t.muted} style={styles.menuNote}>
+                {shot ? 'Screen captured — attach it to any comment below.' : canScreenshot()
+                  ? 'No capture this time.'
+                  : 'Screenshots need a rebuilt dev client (react-native-view-shot).'}
+              </Text>
+            </View>
+          ) : null}
           {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
           <DeployBanner />
           {failPrompt ? (
@@ -868,8 +1036,10 @@ export function DevTestBubble() {
 }
 
 function Section({ label, tone }: { label: string; tone: string }) {
+  // DR-123's margin pass: `space.lg` above every section header was one of the larger fixed
+  // costs in a list of ~120 rows.
   return (
-    <Text variant="overline" color={tone} style={{ marginTop: space.lg, marginBottom: space.xs }}>
+    <Text variant="overline" color={tone} style={{ marginTop: space.md, marginBottom: space.xs }}>
       {label}
     </Text>
   );
@@ -984,9 +1154,10 @@ function FailPrompt({ itemId, model, onDone }: {
         from your comment rather than from scratch.
       </Text>
       <View style={styles.failPromptRow}>
-        <Button
+        <SmallButton
           title={`Dispatch (${model})`}
           icon="zap"
+          variant="primary"
           loading={busy}
           disabled={busy}
           testID="devtest-fail-prompt-dispatch"
@@ -998,9 +1169,8 @@ function FailPrompt({ itemId, model, onDone }: {
             });
           }}
         />
-        <Button
+        <SmallButton
           title="Not now"
-          variant="ghost"
           disabled={busy}
           testID="devtest-fail-prompt-dismiss"
           onPress={onDone}
@@ -1100,12 +1270,12 @@ export function DeployBanner() {
       ) : blocker ? (
         <Text variant="caption" color={t.muted}>Cannot deploy: {blocker}.</Text>
       ) : (
-        <Button
+        <SmallButton
           title="Deploy and reload"
-          variant="ghost"
           icon="upload-cloud"
           loading={busy}
           disabled={busy}
+          style={styles.bannerButton}
           testID="devtest-deploy-now"
           onPress={() => {
             setBusy(true);
@@ -1303,6 +1473,7 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
  *  call, not the client's. Enabled once the window has reopened — pressing early only earns
  *  another refusal. */
 function ResumeButton({ status }: { status: DispatchStatus }) {
+  const styles = useThemedStyles(makeStyles);
   const [busy, setBusy] = useState(false);
   const resetsAt = status.rate_limit?.resets_at ?? 0;
   // Recomputed on a tick rather than armed once. A single setTimeout for the real wait is hours
@@ -1321,12 +1492,12 @@ function ResumeButton({ status }: { status: DispatchStatus }) {
   }, [ready]);
 
   return (
-    <Button
+    <SmallButton
       title={ready ? 'Resume where it stopped' : `Resume ${formatUntil(resetsAt)}`}
-      variant="ghost"
       icon="play"
       loading={busy}
       disabled={busy || !ready}
+      style={styles.bannerButton}
       testID="devtest-dispatch-resume"
       onPress={() => {
         setBusy(true);
@@ -1433,8 +1604,10 @@ export function NewItemForm({ shot, route, onDone }: {
       />
       {shot ? <AttachToggle attach={attach} onToggle={() => setAttach((v) => !v)} /> : null}
       <View style={styles.row}>
-        <Button
+        <SmallButton
           title="Create"
+          icon="check"
+          variant="primary"
           loading={busy}
           disabled={!draft.value.title.trim()}
           onPress={async () => {
@@ -1458,7 +1631,7 @@ export function NewItemForm({ shot, route, onDone }: {
             }
           }}
         />
-        <Button title="Cancel" variant="ghost" onPress={() => {
+        <SmallButton title="Cancel" onPress={() => {
           void draft.clear(NEW_ITEM_DRAFT_FALLBACK);
           onDone(null);
         }} />
@@ -1563,7 +1736,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
     // DR-088: a screenshot alone is a valid remark. Requiring words on top of it pushed the
     // tester toward Pass/Fail (which didn't complain) just to get the screenshot through.
     if (verdict === 'remark' && !comment.trim() && !(attach && shot)) {
-      showToast('A remark needs a comment or an attached screenshot.');
+      showToast('A comment needs some text or an attached screenshot.');
       return;
     }
     setBusy(true);
@@ -1576,7 +1749,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
         route,
         screenshot_b64: wantedShot ? shot : undefined,
       });
-      showToast(`${item.id}: ${verdict} recorded${
+      // DR-123: `remark` is the wire word; "comment" is the one he is shown, matching the button
+      // he just pressed. A toast that named a third thing is how the vocabulary drifted.
+      showToast(`${item.id}: ${verdict === 'remark' ? 'comment' : verdict} recorded${
         screenshotOutcome(wantedShot, entry.screenshot, entry.screenshot_error)}.`);
       // Nothing left to resume once a verdict lands, but DR-075 wants the fact that a pass/fail
       // was already given to survive close/reopen (a remark leaves no verdict, so it doesn't
@@ -1640,31 +1815,32 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
         // The activity note is a child Text, and an explicit label on the Pressable replaces
         // whatever its children would have read out — so it has to be repeated here or it is
         // invisible to a screen reader under the one sort that shows it.
-        accessibilityLabel={`${item.id}: ${item.title}.${activity ? ` ${activity}.` : ''} Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.${lastVerdict ? ` Already ${lastVerdict === 'fail' ? 'failed' : 'passed'} this session.` : ''}`}
+        // The full state, not `shortState`'s abbreviation: a screen reader has no width problem,
+        // and it is the one place the exact ledger word still has to be reachable.
+        accessibilityLabel={`${item.id}: ${item.title}. ${item.state}.${activity ? ` ${activity}.` : ''} Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or comment'}.${lastVerdict ? ` Already ${lastVerdict === 'fail' ? 'failed' : 'passed'} this session.` : ''}`}
       >
+        {/* DR-123 — Kamil: "'Implemented -- verify' is too big. The PR or whatever name doesn't
+            need to be always visible."
+            The head was five bordered chips (id, state, notes, replies, verdict) that wrapped to
+            two rows on a phone before the title had been read. It is now the title, with ONE
+            muted line under it carrying the same facts as words. The id — the "PR or whatever
+            name" — moves into the expanded body, which is where it is actually used (naming the
+            item to a dispatch, or matching a reply that mentions it); search still matches it
+            whether or not it is on screen. */}
         <View style={styles.cardHead}>
-          <Chip label={item.id} color={t.violet} dot={false} />
-          <Chip label={item.state} color={t.muted} dot={false} />
-          {item.feedback_count ? (
-            <Chip label={`${item.feedback_count} note${item.feedback_count === 1 ? '' : 's'}`} color={t.mint} dot={false} />
-          ) : null}
-          {item.response_count ? (
-            // DR-080: a reply exists — worth opening the history before re-testing.
-            <Chip label={`${item.response_count} repl${item.response_count === 1 ? 'y' : 'ies'}`} color={t.violet} dot={false} />
-          ) : null}
-          {lastVerdict ? (
-            // Opus review, PR #380: an explicit `=== 'fail'` check (not an else) so a future
-            // widening of the verdict type can't silently mislabel an unrecognized value "Failed".
-            <Chip label={lastVerdict === 'fail' ? 'Failed' : 'Passed'} color={verdictColor ?? undefined} dot={false} />
-          ) : null}
+          <Text variant="body" numberOfLines={expanded ? undefined : 2} style={styles.cardTitle}>
+            {item.title}
+          </Text>
           {/* Nothing else on a collapsed card hints it's tappable (DR-061) — this chevron is
               the only affordance, so it has to be unambiguous on its own. */}
-          <View style={styles.cardChevron}>
-            <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
-          </View>
+          <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} color={t.muted} />
         </View>
-        <Text variant="body" numberOfLines={expanded ? undefined : 2} style={styles.cardTitle}>
-          {item.title}
+        <Text
+          variant="caption"
+          color={verdictColor ?? stateTone(item.state, t)}
+          style={styles.cardMeta}
+          numberOfLines={1}>
+          {cardMeta(item, lastVerdict)}
         </Text>
         {activity ? (
           <Text variant="caption" color={t.muted} style={styles.activity}>{activity}</Text>
@@ -1672,6 +1848,10 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       </Pressable>
       {expanded ? (
         <>
+          {/* The id and the date, once the card is open — see the head's note above. */}
+          <Text variant="caption" color={t.muted} style={styles.cardId}>
+            {item.id}{item.raised ? ` · raised ${item.raised}` : ''}
+          </Text>
           {/* Kamil, 2026-09-02: "the description, after it is fixed, should start collapsed."
               These run to whole screens of triage prose — the thing he opens a card FOR is the
               verdict row and the notes, and the description was pushing both below the fold. */}
@@ -1690,7 +1870,11 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             details ? (
               <>
                 <View style={styles.howBody} testID="devtest-item-details-body">
-                  <Markdown text={item.how_to_test} />
+                  {/* DR-123 — Kamil, on DR-120's own question ("say the word and I will keep the
+                      formatting but put it back to the smaller size"): "Reduce issues font. All.
+                      Descriptions comments etc." He said the word. The formatting stays; the
+                      reading scale drops to roughly the card's own type size. */}
+                  <Markdown text={item.how_to_test} textScale={BUBBLE_TEXT_SCALE} />
                 </View>
                 <Pressable
                   onPress={() => setDetails(false)}
@@ -1721,9 +1905,13 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             )
           ) : null}
           {history === null ? (
-            <Button
-              title="Show earlier notes"
-              variant="ghost"
+            // DR-123: "conversation", not "notes" — this one button opens BOTH his entries and
+            // Claude's replies, which is exactly the ambiguity he named ("I don't know what Notes
+            // here are. Is note a comment? A reply?").
+            <SmallButton
+              title="Show conversation"
+              icon="message-square"
+              style={styles.historyToggle}
               onPress={async () => {
                 try {
                   setHistory((await api.getDevTestFeedback(item.id)).entries);
@@ -1734,7 +1922,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             />
           ) : history.length === 0 ? (
             <Text variant="caption" color={t.muted} style={styles.history}>
-              No earlier notes.
+              Nothing here yet — no comments from you, no replies from Claude.
             </Text>
           ) : (
             // DR-080: a styled conversation, not `ts · verdict — comment` lines. Tester
@@ -1745,28 +1933,39 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
               e.kind === 'response' ? (
                 <View key={`${e.ts}-${idx}`} style={[styles.historyEntry, styles.historyAgent]}>
                   <View style={styles.historyHead}>
-                    <Chip label="Agent" color={t.violet} dot={false} />
+                    {/* DR-123: one vocabulary — his entries are "You", the agent's are "Claude",
+                        and what the agent leaves is a "reply". "Agent" was a third word for a
+                        thing the counts above already called a reply. */}
+                    <Text variant="label" color={t.violet}>Claude · reply</Text>
                     <Text variant="caption" color={t.muted}>{e.ts.slice(5, 16)}</Text>
                   </View>
-                  <Markdown text={e.text ?? ''} />
+                  <Markdown text={e.text ?? ''} textScale={BUBBLE_TEXT_SCALE} />
                 </View>
               ) : (
                 <View key={`${e.ts}-${idx}`} style={styles.historyEntry}>
                   <View style={styles.historyHead}>
-                    <Chip
-                      label={`You · ${e.verdict ?? 'note'}`}
-                      color={e.verdict === 'pass' ? t.mint : e.verdict === 'fail' ? t.danger : t.muted}
-                      dot={false}
-                    />
+                    <Text
+                      variant="label"
+                      color={e.verdict === 'pass' ? t.mint : e.verdict === 'fail' ? t.danger : t.muted}>
+                      {/* `remark` is still the wire word (the API, the inbox and the triage skill
+                          all speak it); "comment" is what he is shown, matching the button that
+                          produced it. */}
+                      You · {e.verdict === 'remark' || !e.verdict ? 'comment' : e.verdict}
+                    </Text>
                     <Text variant="caption" color={t.muted}>{e.ts.slice(5, 16)}</Text>
                   </View>
-                  {e.comment ? <Text variant="body">{e.comment}</Text> : null}
+                  {/* DR-123 — Kamil: "make sure the comment font size is like the rest of the
+                      things. Currently it's too large." It was `body` (15.5) inside a card whose
+                      own title is now smaller than that. */}
+                  {e.comment ? (
+                    <Text variant="caption" color={t.text} style={styles.historyComment}>{e.comment}</Text>
+                  ) : null}
                 </View>
               ),
             )
           )}
           <TextInput
-            placeholder="Comment (optional — a remark needs a comment or a screenshot)"
+            placeholder="Comment (optional for Pass and Fail)"
             placeholderTextColor={t.muted}
             value={comment}
             onChangeText={setComment}
@@ -1774,12 +1973,17 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             style={styles.input}
           />
           {shot ? <AttachToggle attach={attach} onToggle={() => setAttach(!attach)} /> : null}
+          {/* DR-123: "The buttons for … Pass, Fail, Remark etc. are too big. Use icons where
+              possible and clear." Compact pills, icon + word — icon ALONE is not clear here: a
+              check and a cross are unambiguous, but nothing reads as "leave a comment" without
+              its label, and a row where two of three are labelled reads worse than three that
+              are. `Remark` is now `Comment`, the same word the rest of the sheet uses. */}
           <View style={styles.row}>
-            <Button title="Pass" icon="check" loading={busy} disabled={busy}
+            <SmallButton title="Pass" icon="check" variant="primary" loading={busy} disabled={busy}
               onPress={() => void send('pass')} />
-            <Button title="Fail" icon="x" variant="ghost" disabled={busy}
+            <SmallButton title="Fail" icon="x" disabled={busy}
               onPress={() => void send('fail')} />
-            <Button title="Remark" icon="message-circle" variant="ghost" disabled={busy}
+            <SmallButton title="Comment" icon="message-circle" disabled={busy}
               onPress={() => void send('remark')} />
           </View>
           {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
@@ -1788,36 +1992,43 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
               stays one tap. "Fresh session" is the deliberate act — for when the accumulated
               context is the problem rather than the point — and reads as one. */}
           {dispatchModel ? (
-            <Button
-              title={`Dispatch to Claude (${dispatchModel})`}
-              icon="zap"
-              variant="ghost"
-              loading={dispatching === 'item'}
-              disabled={dispatching !== null}
-              onPress={() => void fireDispatch(
-                dispatchModel, item.id, (b) => setDispatching(b ? 'item' : null))}
-              style={{ marginTop: space.sm }}
-              testID="devtest-dispatch-item"
-            />
-          ) : null}
-          {dispatchModel ? (
-            <Button
-              title="Dispatch a fresh session"
-              icon="refresh-cw"
-              variant="ghost"
-              loading={dispatching === 'fresh'}
-              disabled={dispatching !== null}
-              testID="devtest-dispatch-fresh"
-              style={{ marginTop: space.sm }}
-              onPress={() => void fireDispatch(
-                dispatchModel, item.id, (b) => setDispatching(b ? 'fresh' : null), true)}
-            />
+            <View style={styles.row}>
+              <SmallButton
+                title={`Dispatch (${dispatchModel})`}
+                icon="zap"
+                loading={dispatching === 'item'}
+                disabled={dispatching !== null}
+                accessibilityLabel={`Dispatch ${item.id} to Claude on ${dispatchModel}, continuing the session that already worked it`}
+                onPress={() => void fireDispatch(
+                  dispatchModel, item.id, (b) => setDispatching(b ? 'item' : null))}
+                testID="devtest-dispatch-item"
+              />
+              <SmallButton
+                title="Fresh session"
+                icon="refresh-cw"
+                loading={dispatching === 'fresh'}
+                disabled={dispatching !== null}
+                accessibilityLabel={`Dispatch ${item.id} to a brand new Claude session on ${dispatchModel}`}
+                testID="devtest-dispatch-fresh"
+                onPress={() => void fireDispatch(
+                  dispatchModel, item.id, (b) => setDispatching(b ? 'fresh' : null), true)}
+              />
+            </View>
           ) : null}
         </>
       ) : null}
     </View>
   );
 }
+
+/** DR-123 — Kamil: "Reduce issues font. All. Descriptions comments etc."
+ *
+ *  The multiplier applied to every `<Markdown>` this sheet renders (the item description and
+ *  Claude's replies). 0.8 puts the 17px reading paragraph at ~13.6px, level with the card's own
+ *  title and meta line rather than a third larger than them — which is what made a description
+ *  the loudest thing on a card it is only context for. `Markdown` already supports this (DR-068's
+ *  discussion text-size control); nothing new had to be threaded through it. */
+const BUBBLE_TEXT_SCALE = 0.8;
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   bubble: {
@@ -1836,30 +2047,40 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     zIndex: 40,
   },
-  sheet: { flex: 1, backgroundColor: t.bg, paddingHorizontal: space.md },
+  // DR-123 — "Too large margin as well. Reduce those too for this screen." The sheet's own
+  // gutter and every card's padding drop one step on the space scale; the type sizes below do
+  // the same. Local to this dev-only sheet by his own scoping ("we might consider for the rest
+  // of the app later"), so no shared token moves.
+  sheet: { flex: 1, backgroundColor: t.bg, paddingHorizontal: space.sm },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  close: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  subtitle: { marginTop: 2 },
+  headerTitle: { flex: 1 },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
+  // Narrower than IconButton's default 42px circle: four of them share this row with the title,
+  // and the 8px hitSlop IconButton applies itself keeps each target past 44.
+  headerIcon: { width: 34, height: 34 },
   scroll: { paddingBottom: space.xl },
   card: {
     backgroundColor: t.elevated,
-    borderRadius: radius.md,
-    padding: space.md,
-    marginBottom: space.sm,
+    borderRadius: radius.sm,
+    padding: space.sm,
+    marginBottom: space.xs,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: t.line,
   },
-  cardHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs, flexWrap: 'wrap', marginBottom: space.xs },
-  cardChevron: { marginLeft: 'auto' },
+  // No `flexWrap` any more: the head is one title plus one chevron, and the chips that used to
+  // wrap it onto a second line are now the single `cardMeta` line below it.
+  cardHead: { flexDirection: 'row', alignItems: 'flex-start', gap: space.xs },
   justAddedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  cardTitle: { fontFamily: fonts.bodyMedium },
+  cardTitle: { flex: 1, fontFamily: fonts.bodyMedium, fontSize: 13.5, lineHeight: 18 },
+  cardMeta: { marginTop: 2, fontSize: 11.5, lineHeight: 15 },
+  cardId: { marginTop: space.xs, letterSpacing: 0.3 },
   activity: { marginTop: 2 },
   how: { marginTop: space.xs, lineHeight: 18 },
   // The same spacing without the `lineHeight`, which is a TextStyle: on the View wrapping the
   // rendered description it is silently ignored at runtime and only misleads the next reader.
   howBody: { marginTop: space.xs },
   history: { marginTop: 4 },
+  historyToggle: { marginTop: space.sm, alignSelf: 'flex-start' },
   historyEntry: {
     marginTop: space.sm,
     paddingLeft: space.sm,
@@ -1869,30 +2090,62 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   historyAgent: { borderLeftColor: t.violet },
   historyHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  historyComment: { lineHeight: 17 },
   input: {
     marginTop: space.sm,
     borderWidth: 1,
     borderColor: t.line,
     borderRadius: radius.sm,
-    padding: space.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 6,
+    fontSize: 13,
     color: t.text,
     backgroundColor: t.surface,
   },
-  inputTall: { minHeight: 72, textAlignVertical: 'top' },
+  inputTall: { minHeight: 64, textAlignVertical: 'top' },
   attachRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginTop: space.sm },
-  row: { flexDirection: 'row', gap: space.sm, marginTop: space.md, alignItems: 'center' },
+  // `flexWrap` so a row of compact pills breaks onto a second line at large OS font scales
+  // rather than squeezing each one below its label.
+  row: { flexDirection: 'row', gap: space.xs, marginTop: space.sm, alignItems: 'center', flexWrap: 'wrap' },
   restToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   searchInput: {
-    marginTop: space.sm,
+    marginTop: space.xs,
     borderWidth: 1,
     borderColor: t.line,
     borderRadius: radius.sm,
-    padding: space.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 6,
+    fontSize: 13,
     color: t.text,
     backgroundColor: t.surface,
   },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
   searchClear: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  // DR-123: the ⋮ panel. In FLOW rather than absolutely positioned over the list — it is only
+  // ever open while he is choosing something, and an in-flow panel needs no header-height
+  // arithmetic to stay anchored as the rows above it (the error line, the narrowed count) come
+  // and go.
+  menu: {
+    marginTop: space.xs,
+    padding: space.sm,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
+  },
+  menuNote: { marginTop: space.xs },
+  smallBtn: {
+    height: SMALL_BTN_HEIGHT,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  smallBtnPrimary: { backgroundColor: t.mint },
+  smallBtnGhost: { backgroundColor: t.elevated, borderWidth: 1, borderColor: t.line2 },
+  bannerButton: { marginTop: space.xs, alignSelf: 'flex-start' },
   // The row View (not the ScrollView) owns the vertical footprint — see the comment at the
   // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },

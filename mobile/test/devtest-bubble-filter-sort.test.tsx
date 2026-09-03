@@ -45,6 +45,13 @@ async function openBubble() {
   return screen;
 }
 
+/** DR-123 — Kamil: "a lot of the top space is taken by options like filter, sort … Put these all
+ *  into a three dot or hamburger menu." Both chip rows now live behind the header's ⋮, closed on
+ *  every open, so reaching a chip is one tap further in. */
+function openOptions(screen: ReturnType<typeof render>) {
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));
+}
+
 async function seedVerdict(id: string, verdict: 'pass' | 'fail', at: number) {
   await AsyncStorage.setItem(
     draftKey('devtest-item', id),
@@ -98,6 +105,7 @@ test('the "Not reviewed" filter excludes a verdict recorded on an item whose car
   // first commit reads "3 of 3".
   await seedVerdict('DR-C', 'pass', 1000);
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Not reviewed'));
   expect(screen.getByText(/2 of 3 shown/)).toBeTruthy();
   expect(screen.getByText('Zulu widget')).toBeTruthy();
@@ -112,6 +120,7 @@ test('the "Not reviewed" filter excludes a verdict recorded on an item whose car
 test('the "Reviewed" filter shows only items with a persisted verdict', async () => {
   await seedVerdict('DR-A', 'pass', 1000);
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Reviewed'));
   await waitFor(() => expect(screen.queryByText('Beta gadget')).toBeNull());
   expect(screen.getByText('Zulu widget')).toBeTruthy();
@@ -122,6 +131,7 @@ test('"Passed" and "Failed" filters split reviewed items by verdict', async () =
   await seedVerdict('DR-A', 'pass', 1000);
   await seedVerdict('DR-B', 'fail', 2000);
   const screen = await openBubble();
+  openOptions(screen);
 
   fireEvent.press(screen.getByLabelText('Passed'));
   await waitFor(() => expect(screen.queryByText('Beta gadget')).toBeNull());
@@ -134,7 +144,10 @@ test('"Passed" and "Failed" filters split reviewed items by verdict', async () =
 
 test('a verdict recorded in the current session updates the filter immediately, no reopen needed', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Not reviewed'));
+  // Close the menu again so the list — and the card this test taps — is on screen.
+  openOptions(screen);
   expect(screen.getByText('Zulu widget')).toBeTruthy();
 
   fireEvent.press(screen.getByText('Zulu widget'));
@@ -154,6 +167,7 @@ test('a verdict recorded in the current session updates the filter immediately, 
 
 test('"A–Z" sort flattens the sections into one alphabetical list', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('A–Z'));
   // Sections collapse into one "Results" group — the priority section headers disappear.
   await waitFor(() => expect(screen.queryByText(/^To verify/)).toBeNull());
@@ -180,6 +194,7 @@ test('"Recently reviewed" sort orders reviewed items newest-verdict-first', asyn
   await seedVerdict('DR-C', 'pass', 5000);
   await seedVerdict('DR-A', 'pass', 1000);
   const screen = await openBubble();
+  openOptions(screen);
   fireEvent.press(screen.getByLabelText('Reviewed'));
   fireEvent.press(screen.getByLabelText('Recently reviewed'));
   await waitFor(() => expect(screen.getByText('Beta gadget')).toBeTruthy());
@@ -201,6 +216,7 @@ test('"Recently reviewed" sort orders reviewed items newest-verdict-first', asyn
 // label and its chips must share a flexDirection-row wrapper whose own style does not grow.
 test('each chip row is wrapped in a non-growing row View, label inline with its chips', async () => {
   const screen = await openBubble();
+  openOptions(screen);
   for (const [testID, label, chip] of [
     ['devtest-filter-toolbar', 'Filter', 'Not reviewed'],
     ['devtest-sort-toolbar', 'Sort', 'Recently reviewed'],
@@ -216,6 +232,7 @@ test('each chip row is wrapped in a non-growing row View, label inline with its 
 
 test('the search/filter/sort choices survive closing and reopening the sheet', async () => {
   const first = await openBubble();
+  openOptions(first);
   fireEvent.press(first.getByLabelText('Not reviewed'));
   await waitFor(async () => {
     const raw = await AsyncStorage.getItem(draftKey('devtest-toolbar'));
@@ -224,5 +241,6 @@ test('the search/filter/sort choices survive closing and reopening the sheet', a
   fireEvent.press(first.getByLabelText('Close'));
 
   const second = await openBubble();
+  openOptions(second);
   expect(second.getByLabelText('Not reviewed').props.accessibilityState.selected).toBe(true);
 });

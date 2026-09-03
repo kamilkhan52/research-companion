@@ -34,7 +34,7 @@ const ITEM: DevTestItem = {
 test('an in-progress remark survives the card unmounting and remounting', async () => {
   const first = render(<ItemCard item={ITEM} shot={null} route="/discover" />);
   fireEvent.press(first.getByText(ITEM.title));
-  const input = await first.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
+  const input = await first.findByPlaceholderText('Comment (optional for Pass and Fail)');
   fireEvent.changeText(input, 'The search stopped but the indicator kept spinning.');
   // usePersistedDraft debounces its AsyncStorage write (real setTimeout, no fake timers in this
   // suite) — wait for the write to actually land, not just for the input's own state to update,
@@ -69,7 +69,7 @@ test('a submitted verdict clears the ephemeral fields but keeps the verdict mark
   const item = { ...ITEM, id: 'DR-998' };
   const screen = render(<ItemCard item={item} shot={null} route="/discover" />);
   fireEvent.press(screen.getByText(item.title));
-  const input = await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
+  const input = await screen.findByPlaceholderText('Comment (optional for Pass and Fail)');
   fireEvent.changeText(input, 'Confirmed working.');
   await waitFor(async () => {
     const raw = await AsyncStorage.getItem(draftKey('devtest-item', item.id));
@@ -125,9 +125,10 @@ test('a just-created item renders exactly once, not once pinned and once in Open
   // resurrect it via the other's stale in-memory state on its next debounced write.
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
-  await waitFor(() => expect(screen.getByText('New issue')).toBeTruthy());
+  // DR-123: the header action is icon-only now — its label is what names it.
+  await waitFor(() => expect(screen.getByLabelText('New issue')).toBeTruthy());
 
-  fireEvent.press(screen.getByText('New issue'));
+  fireEvent.press(screen.getByLabelText('New issue'));
   fireEvent.changeText(
     screen.getByPlaceholderText("What's wrong / what's the idea?"), 'A duplicate-render bug',
   );
@@ -148,7 +149,7 @@ test('scrolling the list persists the offset once the gesture settles', async ()
   // must NOT persist anything — only `onScrollEndDrag`/`onMomentumScrollEnd` do.
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
-  await waitFor(() => expect(screen.getByText('New issue')).toBeTruthy());
+  await waitFor(() => expect(screen.getByLabelText('New issue')).toBeTruthy());
 
   const list = screen.getByTestId('devtest-scroll');
   const event = {
@@ -188,15 +189,18 @@ test('reopening the bubble restores the persisted scroll offset', async () => {
 });
 
 // DR-075 — Kamil: "besides the 'Notes' [count], Pass and Fail feedback too should have some
-// indication... this helps me see what next to test." A remark already shows via the
-// feedback_count chip; a pass/fail verdict given this session gets the same visibility, and it
-// must survive the card unmounting and remounting the same way DR-065's other state does.
+// indication... this helps me see what next to test." A comment already shows via the count of
+// his own entries; a pass/fail verdict given this session gets the same visibility, and it must
+// survive the card unmounting and remounting the same way DR-065's other state does.
+//
+// DR-123 moved all of that from five bordered chips into ONE muted line — `Open · Passed` — so
+// these match within the line rather than expecting a standalone chip.
 
 test('a passed verdict is still visible after the card unmounts and remounts', async () => {
   const item = { ...ITEM, id: 'DR-997' };
   const first = render(<ItemCard item={item} shot={null} route="/discover" />);
   fireEvent.press(first.getByText(item.title));
-  await waitFor(() => expect(first.queryByText('Passed')).toBeNull());
+  await waitFor(() => expect(first.queryByText(/Passed/)).toBeNull());
   fireEvent.press(first.getByText('Pass'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
   // usePersistedDraft debounces its write (real setTimeout, no fake timers in this suite) —
@@ -209,7 +213,7 @@ test('a passed verdict is still visible after the card unmounts and remounts', a
   first.unmount();
 
   const second = render(<ItemCard item={item} shot={null} route="/discover" />);
-  await waitFor(() => expect(second.getByText('Passed')).toBeTruthy());
+  await waitFor(() => expect(second.getByText(/· Passed/)).toBeTruthy());
 });
 
 // Opus review, PR #380: `setValue`'s write is debounced 300ms, and closing the sheet unmounts
@@ -232,7 +236,7 @@ test('a verdict is persisted immediately, before the write-debounce would otherw
   expect(raw).toContain('"verdict":"pass"');
 
   const second = render(<ItemCard item={item} shot={null} route="/discover" />);
-  await waitFor(() => expect(second.getByText('Passed')).toBeTruthy());
+  await waitFor(() => expect(second.getByText(/· Passed/)).toBeTruthy());
 });
 
 test('a fail verdict, then a separate remark, keeps the Failed indication', async () => {
@@ -240,14 +244,14 @@ test('a fail verdict, then a separate remark, keeps the Failed indication', asyn
   const screen = render(<ItemCard item={item} shot={null} route="/discover" />);
   fireEvent.press(screen.getByText(item.title));
   fireEvent.press(screen.getByText('Fail'));
-  await waitFor(() => expect(screen.getByText('Failed')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/· Failed/)).toBeTruthy());
 
-  // A later remark on the same item is a note, not a new verdict — it must not clear or
-  // overwrite the Failed marker.
+  // A later comment on the same item is not a new verdict — it must not clear or overwrite the
+  // Failed marker.
   fireEvent.press(screen.getByText(item.title));
-  const input = await screen.findByPlaceholderText('Comment (optional — a remark needs a comment or a screenshot)');
+  const input = await screen.findByPlaceholderText('Comment (optional for Pass and Fail)');
   fireEvent.changeText(input, 'Adding more context.');
-  fireEvent.press(screen.getByText('Remark'));
+  fireEvent.press(screen.getByText('Comment'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalledTimes(2));
-  expect(screen.getByText('Failed')).toBeTruthy();
+  expect(screen.getByText(/· Failed/)).toBeTruthy();
 });
