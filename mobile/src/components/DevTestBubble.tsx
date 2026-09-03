@@ -391,6 +391,15 @@ export function DevTestBubble() {
   // DR-092: the model a bubble dispatch uses, persisted so it survives reopen like the toolbar.
   const modelDraft = usePersistedDraft<DispatchModel>(draftKey('devtest-dispatch-model'), 'sonnet');
   const [dispatchingAll, setDispatchingAll] = useState(false);
+  // Fails waiting to be handed over, oldest first — a QUEUE, not a slot. A single slot meant
+  // failing a second item silently discarded the first one's prompt, which is the same
+  // "recorded and carried nowhere" gap this feature exists to close, one level up. Only the
+  // head is shown, since dispatch is single-flight and a stack of prompts would be worse.
+  const [failQueue, setFailQueue] = useState<string[]>([]);
+  const queueFailPrompt = useCallback((id: string) => {
+    setFailQueue((q) => (q.includes(id) ? q : [...q, id]));
+  }, []);
+  const failPrompt = failQueue[0] ?? null;
   // The heartbeat behind the banner below: what a dispatched session is doing, and how the last
   // one ended. Polls only while this sheet is open.
   const dispatchStatus = useDispatchHeartbeat(visible);
@@ -558,6 +567,10 @@ export function DevTestBubble() {
       // its anchor otherwise, and collapsing it later scrolls to a position measured against
       // a list that no longer exists.
       expandAnchors.current = {};
+      // Same "this sitting is over" reset. `DevTestBubble` stays mounted to render the floating
+      // trigger, so without this an unanswered prompt greeted him on the next open, about a
+      // fail from a session he had already walked away from.
+      setFailQueue([]);
       return;
     }
     if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
@@ -718,6 +731,13 @@ export function DevTestBubble() {
           </View>
           {dispatchStatus ? <DispatchBanner status={dispatchStatus} /> : null}
           <DeployBanner />
+          {failPrompt ? (
+            <FailPrompt
+              itemId={failPrompt}
+              model={modelDraft.value}
+              onDone={() => setFailQueue((q) => q.slice(1))}
+            />
+          ) : null}
 
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
@@ -764,6 +784,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onExpandChange={onExpandChange}
+                    onFailRecorded={queueFailPrompt}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -783,6 +804,13 @@ export function DevTestBubble() {
                       // DR-118: only under the sort it explains. Elsewhere it is one more line
                       // of chrome on a card that already carries four chips.
                       activity={sort === 'activity' ? activityNote(i, localState[i.id]) : undefined}
+                      // This branch renders whenever `sort !== 'default'`, and both of these
+                      // were missing from it — so the fail prompt never appeared and no scroll
+                      // anchor was recorded under "Last activity", "Recently reviewed" or
+                      // "A–Z". "Last activity" is the sort Kamil asked for to work the queue,
+                      // which made it the first place the fail prompt was silently dead.
+                      onExpandChange={onExpandChange}
+                      onFailRecorded={queueFailPrompt}
                     />
                   ))}
                 </>
@@ -791,12 +819,14 @@ export function DevTestBubble() {
                   <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
                   {sections.verify.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={queueFailPrompt} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={queueFailPrompt} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -823,7 +853,8 @@ export function DevTestBubble() {
                   {showRest || narrowed
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
-                      onExpandChange={onExpandChange} />
+                      onExpandChange={onExpandChange}
+                    onFailRecorded={queueFailPrompt} />
                       ))
                     : null}
                 </>
@@ -925,6 +956,59 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
 /** How much of a description shows before "Show details". Enough to tell items apart, short
  *  enough that the verdict row stays on screen. */
 const DETAIL_PREVIEW_LINES = 3;
+
+/** The prompt a fail raises: recording it and acting on it used to be two gestures a screen
+ *  apart, and the gap is where a fail sits — DR-009's waited ten hours because nothing carried
+ *  it anywhere.
+ *
+ *  It clears ONLY when a dispatch is actually accepted. `fireDispatch` swallows its own errors
+ *  and resolves either way, so dismissing on `.then` treated a refusal as a hand-off — and a
+ *  refusal is the EXPECTED answer while another session is running, which is most of the time
+ *  once you are working a queue of fails. That left the card looking exactly like the
+ *  successful case with the fail carried nowhere: the gap this exists to close, with the UI
+ *  now asserting the opposite. */
+function FailPrompt({ itemId, model, onDone }: {
+  itemId: string; model: DispatchModel; onDone: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <View style={styles.failPrompt} testID="devtest-fail-prompt">
+      <Text variant="caption" color={t.text}>
+        {itemId} failed. Hand it to Claude now?
+      </Text>
+      <Text variant="caption" color={t.muted}>
+        It continues the session that already worked this item when there is one, so it starts
+        from your comment rather than from scratch.
+      </Text>
+      <View style={styles.failPromptRow}>
+        <Button
+          title={`Dispatch (${model})`}
+          icon="zap"
+          loading={busy}
+          disabled={busy}
+          testID="devtest-fail-prompt-dispatch"
+          onPress={() => {
+            void fireDispatch(model, itemId, setBusy).then((d) => {
+              // Only a real dispatch dismisses this. A refusal leaves it up, because trying
+              // again once the running session replies is the correct next action.
+              if (d) onDone();
+            });
+          }}
+        />
+        <Button
+          title="Not now"
+          variant="ghost"
+          disabled={busy}
+          testID="devtest-fail-prompt-dismiss"
+          onPress={onDone}
+        />
+      </View>
+    </View>
+  );
+}
 
 /** How long to wait before re-reading state after a deploy: the server checkout moves in a
  *  detached child a couple of seconds later, so an immediate re-read sees the old answer. */
@@ -1400,11 +1484,15 @@ interface ItemCardDraft {
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
 export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
-                          dispatchModel, activity, onExpandChange }: {
+                          dispatchModel, activity, onExpandChange, onFailRecorded }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
   /** Told when this card opens or closes, so the list can restore the reading position it
    *  had before all that content appeared. */
   onExpandChange?: (expanded: boolean, id: string) => void;
+  /** Told when a FAIL lands, so the sheet can raise the hand-it-over prompt. Raised there
+   *  rather than here because recording a verdict re-filters the list, which can unmount this
+   *  card in the same commit. */
+  onFailRecorded?: (id: string) => void;
   /** DR-118: "You opened it · 2h ago" and friends — what the "Last activity" sort ordered this
    *  card by. Undefined under every other sort, where it would be noise. */
   activity?: string;
@@ -1495,8 +1583,14 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
       // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
       // (which actually persists) instead, resetting only the ephemeral fields.
-      // A verdict closes the card, and it must close it the same way a header tap does.
+      // A FAIL is the one verdict that asks for work, so it raises a prompt to hand it over —
+      // but the prompt belongs to the SHEET, not to this card. Recording a verdict re-runs the
+      // list's filter, and under "Not reviewed" (the flow DR-077 exists for) that unmounts this
+      // card immediately, taking any local prompt with it before it could be seen. It also lets
+      // the card keep its ordinary collapse, so nothing about a fail is written to the
+      // persisted draft that a later mount would restore without the prompt that justified it.
       if (verdict !== 'remark') setExpanded(false);
+      if (verdict === 'fail') onFailRecorded?.(item.id);
       draft.setValue((v) => ({
         // A remark is a COMMENT, and the card used to collapse on submit with the history list
         // untouched — so the note you had just written vanished and nothing said it had landed.
@@ -1803,6 +1897,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
   dispatchRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.sm },
+  failPrompt: {
+    marginTop: space.sm,
+    padding: space.sm,
+    borderRadius: radius.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.amber,
+    backgroundColor: t.amberWash,
+    gap: space.xs,
+  },
+  failPromptRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   dispatchBanner: {
     marginTop: space.xs,
     paddingVertical: space.xs,

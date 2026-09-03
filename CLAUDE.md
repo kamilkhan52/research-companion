@@ -219,6 +219,13 @@ way they did. This is an index, not a substitute for reading them.
   stalled on him twice in one day). It may merge ONLY after that review approves and CI is
   green at the head sha. Poll `GET /api/devtest/dispatch` for its heartbeat; its log is
   `stream-json`, one record per line, under `.dev-feedback/dispatch/`.
+  **A Fail prompts to dispatch** (DR-122): recording a fail and acting on it used to be two
+  gestures a screen apart, and the gap is where a fail sits — one waited ten hours because
+  nothing carried it anywhere. The prompt is raised on the SHEET, beside the other banners,
+  never on the card: recording a verdict re-runs the list filter, and under "Not reviewed" that
+  unmounts the card in the same commit. It clears only on an ACCEPTED dispatch — `fireDispatch`
+  swallows its own errors, so dismissing on settle treated the single-flight 409 (the expected
+  answer while another session runs) as a hand-off.
   **A dispatch on an item a session already worked CONTINUES that session** (Kamil,
   2026-09-02): it holds the diagnosis and the code it already read, and a fresh one pays for
   all of it again and then answers his follow-up without knowing what it is a follow-up to. The
