@@ -1824,6 +1824,10 @@ function DiscussionThread({
     listRef,
     count: messages.length,
     animated: !reduceMotion,
+    // The header floats over the transcript, so the viewport's top edge is not where reading
+    // can start. Land every jump the same distance below it that the list's own visual-top
+    // padding already gives the oldest message.
+    topClearance: chromeLayout.topClearance,
   });
   // FlatList requires the viewability pair's identity never to change across renders, and two
   // consumers need it: DR-100's first-paint signal and the rail's top-of-viewport anchor. Both
@@ -1851,9 +1855,12 @@ function DiscussionThread({
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
       readerPin.onScroll(event);
+      // DR-115 — the navigator only records the offset, to tell a landing that clamped at the
+      // live edge from one that did not. Same event shape as DR-089's.
+      chatNav.onScroll(event);
       railRef.current?.wake();
     },
-    [readerPin.onScroll],
+    [chatNav.onScroll, readerPin.onScroll],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -2597,9 +2604,12 @@ function DiscussionThread({
     />
     </RevealPausedContext.Provider>
     ) : null}
-    {/* DR-115 — only once the transcript is actually on screen and there is more than one
-        message to move between; a single-response thread has no landmarks to step to. */}
-    {chatNavRail && mountTranscript && messages.length > 1 ? (
+    {/* DR-115 — once the transcript is actually on screen. ONE message is enough: a thread
+        that is only its summary is still several screens of prose, and its top is still a
+        landmark worth a tap (Kamil, 2026-09-02: "when the thread only has a summary and no
+        other message… I would still want the controls to scroll to the top of the summary").
+        The rail's two extremes resolve on a one-row thread; only an empty one has nothing. */}
+    {chatNavRail && mountTranscript && messages.length > 0 ? (
       <ChatNavRail
         ref={railRef}
         onOldest={chatNav.goOldest}

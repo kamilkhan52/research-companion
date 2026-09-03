@@ -23,9 +23,26 @@ test('overlay chrome clears both ends without double-counting the header for the
     // Inverted list: paddingTop is the visual composer edge; paddingBottom is the visual header.
     listContentPadding: { paddingTop: 92, paddingBottom: 92 },
     scrollButtonBottom: 92,
+    topClearance: 92,
     bottomFadeHeight: 156,
     bottomFadeTransparentInset: 64,
   });
+});
+
+test('a landmark jump clears the same header the oldest message already clears', () => {
+  // DR-115 round 2. The list's visual-top padding is what keeps the oldest message out from
+  // under the floating title; `topClearance` is that same distance, handed to the navigation
+  // rail so every OTHER landing matches it. If they ever drift apart, "start of thread" and
+  // "one message up" stop landing the same way — which is the report this exists to answer.
+  const layout = discussionChromeLayout({
+    topInset: 34,
+    headerHeight: 68,
+    composerHeight: 84,
+    headerOverlays: true,
+    listGap: 8,
+    headerGap: 24,
+  });
+  expect(layout.topClearance).toBe(layout.listContentPadding.paddingBottom);
 });
 
 test('an in-flow header remains part of the keyboard offset', () => {
@@ -40,6 +57,8 @@ test('an in-flow header remains part of the keyboard offset', () => {
     keyboardVerticalOffset: 102,
     listContentPadding: { paddingTop: 92, paddingBottom: 8 },
     scrollButtonBottom: 92,
+    // Nothing floats over the transcript, so a jump has no chrome to clear.
+    topClearance: 0,
     bottomFadeHeight: 156,
     bottomFadeTransparentInset: 64,
   });
