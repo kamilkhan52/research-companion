@@ -219,9 +219,12 @@ test('a running dispatch blocks the deploy, and the banner says so instead of of
   jest.mocked(api.getDeployState).mockResolvedValue({
     deploy: state({ device_behind: 1, device: 'old', active_dispatch: 'dispatch-abc' }),
   });
-  const { findByText, queryByText } = render(<DeployBanner />);
+  const { findByText, queryByTestId } = render(<DeployBanner />);
   await findByText(/Claude is still working/);
-  expect(queryByText('Deploy')).toBeNull();
+  // By testID, not by text: the button reads "Deploy and reload", so `queryByText('Deploy')`
+  // is exact-matched to nothing and could never have failed — the "instead of offering it"
+  // half of this test's own name was untested.
+  expect(queryByTestId('devtest-deploy-now')).toBeNull();
 });
 
 test('a dispatch is named ahead of a background job — they are different waits', async () => {
