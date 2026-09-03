@@ -205,11 +205,30 @@ export function useChatNavigator({
   // message's tail disappears behind the floating composer: the very chrome Kamil asked us to
   // respect in the same breath as the header.
   //
-  // The test for it is exact rather than a heuristic. The list issues `max(0, natural) +
-  // clearance`, so a SETTLED offset at or below the clearance can only mean `natural <= 0` —
-  // the clamp bound, and the true landing is the live edge. Settled matters: mid-travel the
-  // offset passes through that range on any jump away from the bottom, which is why this runs
-  // on a quiet period after the last scroll event rather than on a fixed delay.
+  // The test is exact about WHETHER the clamp bound. The list issues `max(0, natural) +
+  // clearance`, so a SETTLED offset at or below the clearance can only mean `natural <= 0`;
+  // and it never fires on a landing that did not clamp, because the list's visual-top padding
+  // IS `topClearance`, which makes `natural + clearance <= maxOffset` for every row — so a
+  // `natural > 0` landing always settles strictly above the band and cannot be truncated into
+  // it by the content end. (That property depends on the padding and the clearance staying the
+  // same number; `discussion-layout.test.ts` is what keeps them so.)
+  //
+  // It is APPROXIMATE about where to land, in one band. When `-clearance < natural <= 0` the
+  // ideal landing is `natural + clearance`, part-way, but the settled offset is `clearance` in
+  // that case too — indistinguishable from a full clamp with nothing to tell them apart. The
+  // correction goes to the live edge, which is what the un-cleared list did there anyway, so
+  // this restores base behaviour rather than regressing it. Do not read "exact" as "pixel
+  // perfect in every case".
+  //
+  // Settled matters: mid-travel the offset passes through the band on any jump away from the
+  // bottom, which is why this runs on a quiet period after the last scroll event rather than on
+  // a fixed delay. One residual race, named rather than fixed: both the forwarded scroll events
+  // and this timer run on the JS thread, so a >160 ms stall right after an in-band frame (this
+  // surface stalls exactly there — DR-100/DR-101) can let the timer win and snap a reader out
+  // of their own upward jump. Requiring two consecutive in-band samples is the obvious
+  // hardening and is WRONG: a jump landing on the band from ABOVE reports it once, at the end,
+  // so the guard would silently disable the correction for every downward jump — the P1 this
+  // exists for. One recoverable tap, against re-breaking the common case.
   const scheduleSnapCheck = useCallback(() => {
     if (snapTimer.current) clearTimeout(snapTimer.current);
     snapTimer.current = setTimeout(() => {
@@ -361,7 +380,7 @@ export function useChatNavigator({
       clearTimeout(oldestTimer.current);
       oldestTimer.current = null;
     }
-  }, []);
+  }, [cancelSnap]);
 
   /** `scrollToIndex` can only land exactly on a row the list has already measured, and this
    *  list deliberately renders a tiny window (DR-100). Approximate first so the cells around
