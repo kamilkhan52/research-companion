@@ -28,6 +28,7 @@ import base64
 import binascii
 import json
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -1089,6 +1090,127 @@ DISPATCH_GIT_TIMEOUT_S = 20.0
 PROBE_TIMEOUT_S = DISPATCH_GIT_TIMEOUT_S + 10.0
 
 
+#: Where to look for the CLI when it is not on the server's own PATH.
+#:
+#: The list is defensive breadth, not the fix for any particular outage: the uvicorn worker does
+#: not inherit an interactive shell's environment, so on a machine that installs the CLI
+#: somewhere the worker's PATH does not cover, this is the difference between working and a
+#: remote dead end. On THIS machine every entry but the first is absent and the first is already
+#: on the worker's PATH, so it changes nothing here. That is the intended state.
+CLAUDE_FALLBACK_PATHS = (
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    "~/.local/bin/claude",
+    "~/.claude/local/claude",
+    "~/.bun/bin/claude",
+)
+
+
+def _claude_binary() -> str | None:
+    """The claude CLI: `RC_CLAUDE_BIN`, then PATH, then the usual install locations.
+
+    The explicit override wins so a machine that keeps it somewhere unusual needs no code
+    change, and so a test can point this at a stub without touching PATH. An override that
+    names nothing executable REFUSES rather than falling through — it is a statement about
+    where the CLI is, and quietly spawning a different one would be worse than not running.
+
+    `isfile` as well as `X_OK`, because `os.access` says yes to a directory. `shutil.which`
+    excludes directories itself; without the guard the fallback would be weaker than the lookup
+    it falls back from, and would hand `Popen` a directory to raise `PermissionError` on.
+    """
+    import os
+
+    override = os.path.expanduser((os.environ.get("RC_CLAUDE_BIN") or "").strip())
+    if override:
+        return override if _is_executable_file(override) else None
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in CLAUDE_FALLBACK_PATHS:
+        resolved = os.path.expanduser(candidate)
+        if _is_executable_file(resolved):
+            return resolved
+    return None
+
+
+def _is_executable_file(path: str) -> bool:
+    import os
+
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+#: How long to wait for the CLI to come back before giving up, and how often to look.
+#:
+#: The CLI auto-updates itself and the update is not atomic. npm's reify log shows the order:
+#:
+#:     silly reify mark retired [ '…/bin/claude' ]
+#:     http fetch GET 200 …/claude-code-darwin-arm64-2.1.224.tgz 14877ms (cache miss)
+#:
+#: It UNLINKS the bin entry FIRST and downloads 190 MB second, so the whole download sits
+#: inside the gap and the gap scales with bandwidth. Measured at 5ms resolution:
+#:
+#:     warm cache   0.5s
+#:     cold cache  14.5s / 14.8s / 14.9s / 17.9s
+#:
+#: CACHE WARMTH is the determinant, not what changed: an auto-update always moves to a version
+#: whose tarball has never been fetched, so it is always the cold case and 15-18s is what
+#: matters. The 0.5s figure is a re-install of something already in the cache; sizing against
+#: it (as this first did) leaves the real outage uncovered. 30s is ~2x the measured worst
+#: case, which on a ~110 Mbit link is ~2.2x — below ~55 Mbit it would not be enough, which is
+#: why giving up says retry rather than pretending to a bound it cannot hold.
+#:
+#: The wait only engages when NO candidate exists anywhere. A machine carrying a second, stale
+#: install would spawn that one during a homebrew update rather than wait — not this machine,
+#: but it is why the fallback list should stay short.
+#:
+#: No constant covers an arbitrarily slow link, so giving up still says RETRY rather than
+#: naming `RC_CLAUDE_BIN`. An override is waited out like anything else — it is read inside
+#: this loop — so an update gap under one recovers; what it cannot survive is the CLI moving,
+#: because an override REFUSES rather than falling through. Advertising it on the phone as the
+#: answer to a transient would have people set it and then, on the next relocation, read a
+#: permanent-looking "not an executable file" instead of a lookup that would have found it.
+#:
+#: Blocking a POST for 30s is deliberate and does not cross invariant 1: `_via_public_tunnel`
+#: 403s tunnel requests before the wait, so the ~100s Cloudflare cap is structurally out of
+#: play, and the client shows the button busy throughout. The wait is taken BEFORE
+#: `_dispatch_lock`, so it never blocks the status endpoint.
+CLAUDE_LOOKUP_WAIT_S = 30.0
+CLAUDE_LOOKUP_POLL_S = 0.1
+
+
+def _await_claude_binary() -> str | None:
+    """`_claude_binary`, but tolerant of the CLI being mid-reinstall. See the constants above."""
+    deadline = time.monotonic() + CLAUDE_LOOKUP_WAIT_S
+    while True:
+        found = _claude_binary()
+        if found is not None or time.monotonic() >= deadline:
+            return found
+        time.sleep(CLAUDE_LOOKUP_POLL_S)
+
+
+def _claude_missing_detail() -> str:
+    """Why the CLI could not be found, in one line that fits a phone.
+
+    This is delivered to a `numberOfLines={1}` toast for 2.2 seconds, so roughly the first 45
+    characters are all Kamil will ever see — a longer, more complete message is not a more
+    informative one, it is a truncated one. The diagnosis goes to the server log, where the
+    person who can act on a filesystem path is; the toast gets the action.
+    """
+    import os
+
+    override = os.path.expanduser((os.environ.get("RC_CLAUDE_BIN") or "").strip())
+    if override:
+        log.warning("devtest dispatch: RC_CLAUDE_BIN=%s is not an executable file", override)
+        return "RC_CLAUDE_BIN is not an executable file."
+    # WHICH path, spelled out: this list exists because the worker's PATH is not an
+    # interactive shell's, so "looked on PATH" is the one detail a debugger cannot assume.
+    log.warning("devtest dispatch: no claude CLI after %.0fs; looked in %s and on PATH=%s",
+                CLAUDE_LOOKUP_WAIT_S,
+                ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS),
+                os.environ.get("PATH", ""))
+    return "claude CLI missing — retry, or see log."
+
+
 def _dispatch_dir() -> Path:
     d = _dir() / "dispatch"
     d.mkdir(exist_ok=True)
@@ -1966,7 +2088,6 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     `Bash(gh:*)` and could `gh pr merge` at any point. That is inherent to giving it the loop;
     do not read the allowlist as enforcing it.
     """
-    import shutil
     import subprocess
 
     _require_dev()
@@ -2015,10 +2136,11 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             # once — a mystery failure rather than an obviously stale record.
             if resume_of.get("model") in DISPATCH_MODELS:
                 model = resume_of["model"]
-    binary = shutil.which("claude")
+    binary = _await_claude_binary()
     if not binary:
-        raise HTTPException(status_code=503,
-                            detail="The claude CLI is not on the dev server's PATH.")
+        raise HTTPException(
+            status_code=503,
+            detail=_claude_missing_detail())
     with _dispatch_lock:
         running = _dispatch_running()
         if running:
@@ -2051,29 +2173,44 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             argv = [binary, "-p", _dispatch_prompt(item_id, mode=mode)]
             if session_id:
                 argv += ["--resume", session_id]
-            process = subprocess.Popen(
-                argv +
-                ["--model", model, "--permission-mode", "acceptEdits",
-                 # One JSON record per line, written AS THE SESSION RUNS. The default text
-                 # format emits only the closing recap, so the log sat at 0 bytes for the whole
-                 # run and there was no way — from the phone or the Mac — to tell a session
-                 # thinking hard from one that died on its first tool call. `--verbose` is not
-                 # optional: the CLI refuses `--output-format stream-json` in print mode
-                 # without it. `_dispatch_progress` parses the tail.
-                 "--output-format", "stream-json", "--verbose",
-                 # Kamil, 2026-09-02: "set Dispatch sessions to auto compact at 400k context to
-                 # avoid accumulating too much context." It matters more now that sessions are
-                 # CONTINUED across follow-ups rather than started clean each time — the whole
-                 # point of continuing is that context accumulates, so it needs a ceiling.
-                 "--autocompact", str(DISPATCH_AUTOCOMPACT_TOKENS),
-                 # The inbox lives in the MAIN checkout while the session runs in the
-                 # dedicated dispatch worktree; without this the headless session's reads of
-                 # feedback.jsonl / screenshots are refused as outside its working directory.
-                 "--add-dir", str(_dir()),
-                 "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
-                cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, start_new_session=True,
-            )
+            # Waiting shrinks the auto-update race but cannot close it: the CLI can vanish
+            # between the lookup and the spawn. Unwrapped, that surfaces as an opaque 500 and
+            # a zero-byte log — the exact shape of failure this whole path exists to remove.
+            try:
+                process = subprocess.Popen(
+                    argv +
+                    ["--model", model, "--permission-mode", "acceptEdits",
+                     # One JSON record per line, written AS THE SESSION RUNS. The default text
+                     # format emits only the closing recap, so the log sat at 0 bytes for the whole
+                     # run and there was no way — from the phone or the Mac — to tell a session
+                     # thinking hard from one that died on its first tool call. `--verbose` is not
+                     # optional: the CLI refuses `--output-format stream-json` in print mode
+                     # without it. `_dispatch_progress` parses the tail.
+                     "--output-format", "stream-json", "--verbose",
+                     # Kamil, 2026-09-02: "set Dispatch sessions to auto compact at 400k context to
+                     # avoid accumulating too much context." It matters more now that sessions are
+                     # CONTINUED across follow-ups rather than started clean each time — the whole
+                     # point of continuing is that context accumulates, so it needs a ceiling.
+                     "--autocompact", str(DISPATCH_AUTOCOMPACT_TOKENS),
+                     # The inbox lives in the MAIN checkout while the session runs in the
+                     # dedicated dispatch worktree; without this the headless session's reads of
+                     # feedback.jsonl / screenshots are refused as outside its working directory.
+                     "--add-dir", str(_dir()),
+                     "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
+                    cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, start_new_session=True,
+                )
+            except OSError as exc:
+                # Deliberately not "the CLI is broken": the same OSError covers a worktree that
+                # vanished under us, and naming the wrong one sends the next debugger the wrong
+                # way — which is how this PR started. The log carries which.
+                log.warning("devtest dispatch: could not spawn %s in %s: %s", binary, cwd, exc)
+                # Nothing has been recorded yet, so the only trace is an empty log file in a
+                # directory whose own DR-118 note says it only grows. Take it back out.
+                log_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Dispatch could not start — try again.") from exc
         info = {"id": dispatch_id, "pid": process.pid, "model": model,
                 "item_id": item_id, "log": str(log_path),
                 "resumed_from": resume_of.get("id") if resume_of else None,

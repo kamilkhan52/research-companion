@@ -3,7 +3,9 @@ feedback inbox; the app records, the /device-feedback skill triages into the led
 from __future__ import annotations
 
 import base64
+import itertools
 import json
+import time
 
 import pytest
 from app import config
@@ -14,6 +16,10 @@ from starlette.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    # A real RC_CLAUDE_BIN in the developer's environment short-circuits the whole lookup, so
+    # every dispatch test that stubs `shutil.which` would 503 on a machine that happens to set
+    # it. The tests that care set it themselves.
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(config, "dev_mode", lambda: True)
     from app.main import app
 
@@ -2585,3 +2591,194 @@ def _dispatch_dir_for_tests():
     d = dt._dispatch_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# --- finding the CLI when the server's PATH does not have it (2026-09-03) ----------------------
+
+def test_the_cli_is_found_in_its_usual_home_when_PATH_lacks_it(monkeypatch, tmp_path):
+    """The uvicorn worker does not inherit an interactive shell's environment, so on a machine
+    that installs the CLI outside the worker's PATH this is the difference between working and a
+    dead end Kamil cannot clear from his phone. Defensive breadth: on THIS Mac the worker's PATH
+    does cover the install, so the fallback never fires here."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)          # not on PATH
+    installed = tmp_path / "claude"
+    installed.write_text("#!/bin/sh\n")
+    installed.chmod(0o755)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude", str(installed)))
+    assert dt._claude_binary() == str(installed)
+
+    # Nothing anywhere is still None, so the route can 503 with somewhere to look.
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude",))
+    assert dt._claude_binary() is None
+    assert not os.path.exists("/nowhere/claude")
+
+
+def test_an_explicit_override_wins_over_both(monkeypatch, tmp_path):
+    """So a machine that keeps it somewhere unusual needs no code change."""
+    from app.routers import devtest as dt
+
+    chosen = tmp_path / "mine"
+    chosen.write_text("#!/bin/sh\n")
+    chosen.chmod(0o755)
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(chosen))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    assert dt._claude_binary() == str(chosen)
+
+    # An override pointing at nothing does NOT silently fall back — it is an explicit statement
+    # about where the CLI is, and quietly using a different one would be worse than refusing.
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "absent"))
+    assert dt._claude_binary() is None
+
+    # `~` is expanded, because the 503 that tells you to set this prints tilde paths and
+    # `run.sh`'s .env parser does not expand them either — so the value copied straight out of
+    # our own error message must work.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RC_CLAUDE_BIN", "~/mine")
+    assert dt._claude_binary() == str(chosen)
+
+
+def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
+    """A leftover file where the CLI used to be would otherwise be spawned and fail obscurely."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    stale = tmp_path / "claude"
+    stale.write_text("not executable")
+    stale.chmod(0o644)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(stale),))
+    assert dt._claude_binary() is None
+
+    # And a DIRECTORY named `claude`: `os.access(dir, X_OK)` is True, so an X_OK-only test would
+    # return it and hand `Popen` something that raises PermissionError. `shutil.which` excludes
+    # directories itself — the fallback must not be weaker than the lookup it falls back from.
+    d = tmp_path / "dir" / "claude"
+    d.mkdir(parents=True)
+    assert os.access(d, os.X_OK)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(d),))
+    assert dt._claude_binary() is None
+
+
+def test_a_dispatch_survives_the_CLI_reinstalling_itself(monkeypatch, tmp_path):
+    """The outage, reproduced as measured rather than as I first guessed it.
+
+    The CLI auto-updates itself and `npm i -g` is not atomic. Its reify log shows it retire the
+    bin entry FIRST and download 190 MB second, so for the length of that download there is no
+    `claude` on PATH at all — not a dangling symlink, nothing. (My first fix keyed on a dangling
+    symlink, a state npm never produces, so it never fired.) Nothing is misconfigured for that
+    window, so the route waits rather than 503ing with advice.
+
+    Both arms, because the real machine recovers through PATH and only a differently-laid-out
+    one recovers through the fallback list.
+    """
+    from app.routers import devtest as dt
+
+    ABSENT_LOOKS = 4
+    installed = tmp_path / "claude"
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 2.0)   # so a regression fails, not hangs
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+
+    for arm in ("PATH", "fallback"):
+        looks = itertools.count()
+        installed.unlink(missing_ok=True)
+
+        def relinks_partway(*_a, _looks=looks, **_k):
+            # Absent for the first few looks, then back — the unlink/relink sequence.
+            if next(_looks) >= ABSENT_LOOKS and not installed.exists():
+                installed.write_text("#!/bin/sh\nexit 0\n")
+                installed.chmod(0o755)
+            return str(installed) if installed.exists() else None
+
+        if arm == "PATH":
+            monkeypatch.setattr("shutil.which", relinks_partway)
+            monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ())
+        else:
+            monkeypatch.setattr("shutil.which", lambda name: None)
+            monkeypatch.setattr(dt, "_is_executable_file",
+                                lambda p, _f=relinks_partway: _f() is not None)
+            monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(installed),))
+
+        assert dt._await_claude_binary() == str(installed), arm
+        # It cannot have succeeded on the first look — the file did not exist yet.
+        assert next(looks) > ABSENT_LOOKS, arm
+
+
+def test_the_wait_is_bounded_and_says_to_retry(client, monkeypatch):
+    """A CLI that never comes back is a real absence — but even then the toast says RETRY.
+
+    No constant covers an arbitrarily slow link (the gap is a 190 MB download, so it scales
+    with bandwidth), and the obvious alternative advice is worse than useless on a phone: an
+    override is waited out like anything else, so it does not help with a transient, and
+    because it REFUSES rather than falling through it turns a later relocation of the CLI into
+    a permanent-looking "not an executable file" instead of a lookup that would have found
+    it.
+
+    The bound is the other half. This runs inside a POST, and waiting forever would hang the
+    phone rather than answer it.
+    """
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude",))
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 0.05)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+
+    started = time.monotonic()
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    assert time.monotonic() - started < 5, "the wait must be bounded, not the full default"
+    # Short enough to survive a one-line, 2.2s toast: the client renders this through
+    # `showToast`, where ~45 characters is all Kamil ever sees. The paths go to the log, where
+    # whoever can act on a filesystem path actually is.
+    detail = r.json()["detail"]
+    assert len(detail) <= 45, detail
+    assert "retry" in detail
+
+
+def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
+    """A wrong override must say so by name. It is the one setting that makes the lookup skip
+    PATH and the fallbacks entirely, so reporting it as a general "could not find the CLI"
+    would point at everything except the thing that is actually wrong."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "typo"))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 0.05)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert len(detail) <= 45, detail
+    assert "RC_CLAUDE_BIN" in detail
+    assert dt._claude_binary() is None          # and it really did refuse, not just report
+
+
+def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeypatch, tmp_path):
+    """Waiting shrinks the race; it cannot close it. Unwrapped, `Popen` on a path that has just
+    been unlinked raises inside the log-file context manager — an opaque 500 and a zero-byte
+    log, which is the exact failure shape this path exists to remove."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_await_claude_binary", lambda *a, **k: str(tmp_path / "claude"))
+    monkeypatch.setattr(dt, "_dispatch_cwd", lambda **k: str(tmp_path))
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert len(detail) <= 45, detail          # same one-line toast as the others
+    assert "try again" in detail
+    # `_dispatch_dir()`, not `tmp_path`: the route writes under the inbox dir the fixture sets,
+    # so asserting on tmp_path passed even with a real regression injected — a phantom
+    # "running" record whose pid `_dispatch_running` reads as alive, 409ing every dispatch
+    # after it, forever.
+    assert not (dt._dispatch_dir() / "current.json").exists()
+    # And no orphan log: the spawn never happened, so there is nothing for one to hold.
+    assert not list(dt._dispatch_dir().glob("*.log"))
