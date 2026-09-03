@@ -3,7 +3,10 @@ feedback inbox; the app records, the /device-feedback skill triages into the led
 from __future__ import annotations
 
 import base64
+import itertools
 import json
+import os
+import time
 
 import pytest
 from app import config
@@ -2660,34 +2663,55 @@ def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
     assert dt._claude_binary() is None
 
 
-def test_the_503_distinguishes_mid_update_from_not_installed(client, monkeypatch, tmp_path):
-    """"not on the dev server's PATH" sent me to fix a PATH that was fine. The CLI was being
-    replaced by its own auto-updater at that moment (2.1.246 -> 2.1.259, 22:48 on 2026-09-02),
-    so its symlink pointed into a package tree that briefly did not exist. No fallback list can
-    help with that — every candidate resolves into the same vanished tree — which is exactly
-    why the message has to say so instead of implying a misconfiguration."""
+def test_a_dispatch_survives_the_CLI_reinstalling_itself(client, monkeypatch, tmp_path):
+    """The outage, reproduced as measured rather than as I first guessed it.
+
+    The CLI auto-updates itself and `npm i -g` is not atomic: it UNLINKS the bin entry and
+    relinks it after unpacking, so for ~0.6s of a ~5s install there is no `claude` on PATH at
+    all — not a dangling symlink, nothing. (My first fix keyed on a dangling symlink, a state
+    npm never produces, so it never fired.) Nothing is misconfigured for that 0.6s, so the
+    route waits rather than 503ing with advice.
+    """
+    from app.routers import devtest as dt
+
+    installed = tmp_path / "claude"
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(installed),))
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+
+    looks = itertools.count()
+
+    def which_relinks_partway(path):
+        # Absent for the first few looks, exactly as during the unlink/relink gap.
+        if next(looks) >= 3 and not installed.exists():
+            installed.write_text("#!/bin/sh\nexit 0\n")
+            installed.chmod(0o755)
+        return os.path.isfile(path) and os.access(path, os.X_OK)
+
+    monkeypatch.setattr(dt, "_is_executable_file", which_relinks_partway)
+    assert dt._await_claude_binary() == str(installed)
+    assert next(looks) > 3, "should have looked more than once"
+
+
+def test_the_wait_is_bounded_and_then_says_where_it_looked(client, monkeypatch):
+    """A CLI that never comes back is a real absence, and by then `RC_CLAUDE_BIN` IS the answer
+    — an update gap is under a second and we have just waited seconds. The bound matters: this
+    runs inside a POST, and waiting forever would hang the phone instead of answering it."""
     from app.routers import devtest as dt
 
     monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: None)
-
-    # Not installed anywhere: name the places, and the override that fixes it.
     monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude",))
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 0.05)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+
+    started = time.monotonic()
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
+    assert time.monotonic() - started < 5, "the wait must be bounded, not the full default"
     detail = r.json()["detail"]
     assert "RC_CLAUDE_BIN" in detail and "/nowhere/claude" in detail
-
-    # Mid-update: a candidate that exists as a broken symlink. Retrying is the whole remedy, so
-    # the message must not send anyone to edit PATH or set an env var.
-    dangling = tmp_path / "claude"
-    dangling.symlink_to(tmp_path / "gone")
-    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(dangling),))
-    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
-    assert r.status_code == 503
-    detail = r.json()["detail"]
-    assert "mid-update" in detail and "again in a minute" in detail
-    assert "RC_CLAUDE_BIN" not in detail and "PATH" not in detail
 
 
 def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
@@ -2697,9 +2721,25 @@ def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
 
     monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "typo"))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 0.05)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
     detail = r.json()["detail"]
     assert "RC_CLAUDE_BIN" in detail and str(tmp_path / "typo") in detail
     assert "/opt/homebrew" not in detail
     assert dt._claude_binary() is None          # and it really did refuse, not just report
+
+
+def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeypatch, tmp_path):
+    """Waiting shrinks the race; it cannot close it. Unwrapped, `Popen` on a path that has just
+    been unlinked raises inside the log-file context manager — an opaque 500 and a zero-byte
+    log, which is the exact failure shape this path exists to remove."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setattr(dt, "_await_claude_binary", lambda *a, **k: str(tmp_path / "claude"))
+    monkeypatch.setattr(dt, "_dispatch_cwd", lambda **k: str(tmp_path))
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    assert "try Dispatch again" in r.json()["detail"]
+    assert not (tmp_path / "current.json").exists()

@@ -1139,19 +1139,41 @@ def _is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+#: How long to wait for the CLI to come back before giving up, and how often to look.
+#:
+#: The CLI auto-updates itself, and the update is not atomic: `npm i -g` UNLINKS
+#: `/opt/homebrew/bin/claude` and relinks it after unpacking, so for a moment there is no
+#: `claude` on the server's PATH at all. Measured against a live upgrade, that gap is ~0.6s
+#: inside a ~5s install. It is the whole outage — nothing is misconfigured, and a second later
+#: it is fine.
+#:
+#: So the route WAITS rather than explaining. Five seconds is ~8x the measured gap and costs
+#: nothing in the normal case, where the first look succeeds; a dispatch that is about to run
+#: for forty minutes can afford to spend it. Narrating the gap instead was the wrong shape
+#: twice over: it told Kamil to set `RC_CLAUDE_BIN`, and because an explicit override REFUSES
+#: rather than falling through, taking that advice would turn every future 0.6s gap into a
+#: permanent-looking "RC_CLAUDE_BIN is not an executable file".
+CLAUDE_LOOKUP_WAIT_S = 5.0
+CLAUDE_LOOKUP_POLL_S = 0.1
+
+
+def _await_claude_binary(wait_s: float | None = None) -> str | None:
+    """`_claude_binary`, but tolerant of the CLI being mid-reinstall. See the constants above."""
+    deadline = time.monotonic() + (CLAUDE_LOOKUP_WAIT_S if wait_s is None else wait_s)
+    while True:
+        found = _claude_binary()
+        if found is not None or time.monotonic() >= deadline:
+            return found
+        time.sleep(CLAUDE_LOOKUP_POLL_S)
+
+
 def _claude_missing_detail() -> str:
-    """Why the CLI could not be found, in the terms that decide what to do about it.
+    """Why the CLI could not be found — after `_await_claude_binary` has already waited.
 
-    The two causes want opposite responses and are trivially distinguishable, so it is worth
-    saying which one happened. A candidate that exists as a BROKEN SYMLINK means the CLI is
-    being replaced right now: the auto-updater rewrites the npm-global package tree, and for as
-    long as that takes, the `bin/claude` its symlink points at does not exist. Nothing is
-    misconfigured and no fallback list can help — every path resolves into the same vanished
-    tree — so the answer is simply to tap Dispatch again shortly. That is what took dispatch
-    down at 22:48 on 2026-09-02, mid-update from 2.1.246, while the old 503 blamed PATH.
-
-    Nothing anywhere means the CLI genuinely is not installed where the server can see it,
-    which is the case `RC_CLAUDE_BIN` exists for.
+    A bad `RC_CLAUDE_BIN` reports itself, because nothing else was looked at and the generic
+    "looked everywhere" list would be a lie. Otherwise the CLI genuinely is not installed
+    anywhere the server can see: an auto-update gap is ~0.6s and we have just waited seconds,
+    so by this point "try again" is no longer the answer and `RC_CLAUDE_BIN` is.
     """
     import os
 
@@ -1159,13 +1181,9 @@ def _claude_missing_detail() -> str:
     if override:
         return (f"RC_CLAUDE_BIN is set to {override}, which is not an executable file. "
                 "Point it at the claude CLI, or unset it to search PATH.")
-    looked = [os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS]
-    if any(os.path.islink(p) and not os.path.exists(p) for p in looked):
-        return ("The claude CLI is mid-update — its install is a broken symlink, which is what "
-                "the auto-updater leaves while it replaces the package. Nothing is wrong with "
-                "the server; try Dispatch again in a minute.")
-    return ("Could not find the claude CLI. Looked on the server's PATH and in "
-            f"{', '.join(looked)}. Set RC_CLAUDE_BIN to its full path.")
+    looked = ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS)
+    return (f"Could not find the claude CLI. Waited {CLAUDE_LOOKUP_WAIT_S:.0f}s for it on the "
+            f"server's PATH and in {looked}. Set RC_CLAUDE_BIN to its full path.")
 
 
 def _dispatch_dir() -> Path:
@@ -2093,7 +2111,7 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             # once — a mystery failure rather than an obviously stale record.
             if resume_of.get("model") in DISPATCH_MODELS:
                 model = resume_of["model"]
-    binary = _claude_binary()
+    binary = _await_claude_binary()
     if not binary:
         raise HTTPException(
             status_code=503,
@@ -2130,29 +2148,38 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             argv = [binary, "-p", _dispatch_prompt(item_id, mode=mode)]
             if session_id:
                 argv += ["--resume", session_id]
-            process = subprocess.Popen(
-                argv +
-                ["--model", model, "--permission-mode", "acceptEdits",
-                 # One JSON record per line, written AS THE SESSION RUNS. The default text
-                 # format emits only the closing recap, so the log sat at 0 bytes for the whole
-                 # run and there was no way — from the phone or the Mac — to tell a session
-                 # thinking hard from one that died on its first tool call. `--verbose` is not
-                 # optional: the CLI refuses `--output-format stream-json` in print mode
-                 # without it. `_dispatch_progress` parses the tail.
-                 "--output-format", "stream-json", "--verbose",
-                 # Kamil, 2026-09-02: "set Dispatch sessions to auto compact at 400k context to
-                 # avoid accumulating too much context." It matters more now that sessions are
-                 # CONTINUED across follow-ups rather than started clean each time — the whole
-                 # point of continuing is that context accumulates, so it needs a ceiling.
-                 "--autocompact", str(DISPATCH_AUTOCOMPACT_TOKENS),
-                 # The inbox lives in the MAIN checkout while the session runs in the
-                 # dedicated dispatch worktree; without this the headless session's reads of
-                 # feedback.jsonl / screenshots are refused as outside its working directory.
-                 "--add-dir", str(_dir()),
-                 "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
-                cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, start_new_session=True,
-            )
+            # Waiting shrinks the auto-update race but cannot close it: the CLI can vanish
+            # between the lookup and the spawn. Unwrapped, that surfaces as an opaque 500 and
+            # a zero-byte log — the exact shape of failure this whole path exists to remove.
+            try:
+                process = subprocess.Popen(
+                    argv +
+                    ["--model", model, "--permission-mode", "acceptEdits",
+                     # One JSON record per line, written AS THE SESSION RUNS. The default text
+                     # format emits only the closing recap, so the log sat at 0 bytes for the whole
+                     # run and there was no way — from the phone or the Mac — to tell a session
+                     # thinking hard from one that died on its first tool call. `--verbose` is not
+                     # optional: the CLI refuses `--output-format stream-json` in print mode
+                     # without it. `_dispatch_progress` parses the tail.
+                     "--output-format", "stream-json", "--verbose",
+                     # Kamil, 2026-09-02: "set Dispatch sessions to auto compact at 400k context to
+                     # avoid accumulating too much context." It matters more now that sessions are
+                     # CONTINUED across follow-ups rather than started clean each time — the whole
+                     # point of continuing is that context accumulates, so it needs a ceiling.
+                     "--autocompact", str(DISPATCH_AUTOCOMPACT_TOKENS),
+                     # The inbox lives in the MAIN checkout while the session runs in the
+                     # dedicated dispatch worktree; without this the headless session's reads of
+                     # feedback.jsonl / screenshots are refused as outside its working directory.
+                     "--add-dir", str(_dir()),
+                     "--allowedTools", *DISPATCH_ALLOWED_TOOLS],
+                    cwd=cwd, stdout=log_file, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, start_new_session=True,
+                )
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"The claude CLI at {binary} could not be started ({exc.strerror}). "
+                           "If it is updating itself, try Dispatch again in a moment.") from exc
         info = {"id": dispatch_id, "pid": process.pid, "model": model,
                 "item_id": item_id, "log": str(log_path),
                 "resumed_from": resume_of.get("id") if resume_of else None,
