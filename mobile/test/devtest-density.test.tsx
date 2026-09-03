@@ -14,8 +14,7 @@
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
-import { ItemCard, cardMeta, shortState } from '@/components/DevTestBubble';
-import { DevTestBubble } from '@/components/DevTestBubble';
+import { DevTestBubble, ItemCard, cardMeta, optionsNote, shortState } from '@/components/DevTestBubble';
 import { control } from '@/theme/tokens';
 import type { DevTestItem } from '@/api/endpoints';
 
@@ -110,6 +109,37 @@ test('a narrowing is announced without opening the menu', async () => {
   expect(screen.getByLabelText(/A filter or search is narrowing the list/)).toBeTruthy();
 });
 
+// The harder half of the same guarantee, and the one that nearly shipped broken. Sort narrows
+// NOTHING, so it raises no count caption by design — which meant that once the chips went behind
+// a menu, a persisted "Recently reviewed" was the only toolbar choice with no trace on screen at
+// all. DR-118's own ledger row predicted exactly this: "nothing on screen would have explained
+// the order." The ⋮ therefore announces a non-default sort as well as a narrowing, while the
+// caption still keys on narrowing alone (Opus review, PR #479).
+test('a non-default sort is announced by the ⋮, without raising a "narrowed by" caption', async () => {
+  const screen = await openBubble();
+  fireEvent.press(screen.getByTestId('devtest-options-toggle'));
+  fireEvent.press(screen.getByLabelText('Recently reviewed'));
+
+  await waitFor(() => expect(
+    screen.getByLabelText(/Sorted by Recently reviewed\./)).toBeTruthy());
+  // …and it is still not a narrowing: nothing is hidden, so nothing claims anything is.
+  expect(screen.queryByTestId('devtest-match-row')).toBeNull();
+});
+
+test('the ⋮ says nothing while every option is at its default', async () => {
+  const screen = await openBubble();
+  expect(screen.getByLabelText('Options — filter, sort and dispatch')).toBeTruthy();
+});
+
+test('optionsNote covers a narrowing, a sort, both, and neither', () => {
+  expect(optionsNote([], 'default')).toBe('');
+  expect(optionsNote([], 'az')).toBe('Sorted by A–Z.');
+  expect(optionsNote(['filter “Failed”'], 'default'))
+    .toBe('A filter or search is narrowing the list.');
+  expect(optionsNote(['filter “Failed”'], 'activity'))
+    .toBe('A filter or search is narrowing the list. Sorted by Last activity.');
+});
+
 test('Dispatch all still works from inside the menu, and closes it', async () => {
   const screen = await openBubble();
   fireEvent.press(screen.getByTestId('devtest-options-toggle'));
@@ -121,24 +151,53 @@ test('Dispatch all still works from inside the menu, and closes it', async () =>
 
 // --- smaller controls, same touch target -------------------------------------------------------
 
-// `control.minTouch` is the floor the density tokens state outright ("it must never make an
-// interactive control harder to hit"), and shrinking a 50px pill to 32 is precisely the change
-// that would cross it. The hitSlop is derived from that constant rather than eyeballed, so this
-// asserts the property — visible pill + slop on both sides ≥ the floor — not the two numbers.
+// `control.minTouch` is the floor the density tokens state outright ("Density may tighten rhythm,
+// but it must never make an interactive control harder to hit"), and shrinking a 50px pill to 32
+// is precisely the change that would cross it.
+//
+// This asserts the LAID-OUT box, not a hitSlop. The first version of this change used slop and
+// this test asserted `height + 2 * slop >= minTouch` — arithmetic on two props, true whatever the
+// app renders. It was also wrong: RN clips a touch area to the parent's bounds, and every row
+// these pills sit in hugs its children's height, so the slop bought nothing (Opus review, PR
+// #479). The target is now a real element, so the test can measure a real element: the pressable
+// is at least the floor tall, and the pill inside it is genuinely smaller.
+function flatten(node: { props: { style?: unknown } }) {
+  const style = node.props.style;
+  return StyleSheet.flatten(
+    typeof style === 'function' ? (style as (s: object) => unknown)({ pressed: false }) : style,
+  ) as { height?: number; minHeight?: number };
+}
+
 test('the compact buttons keep a full-size touch target', async () => {
   const screen = render(
     <ItemCard item={ITEMS[0]} shot={null} route="/" startExpanded dispatchModel="sonnet" />);
   for (const label of ['Pass', 'Fail', 'Comment']) {
     const pressable = await screen.findByRole('button', { name: label });
-    const style = StyleSheet.flatten(
-      typeof pressable.props.style === 'function'
-        ? pressable.props.style({ pressed: false })
-        : pressable.props.style,
-    ) as { height?: number };
-    const slop = pressable.props.hitSlop as number;
-    expect(style.height).toBeLessThan(control.minTouch);          // it really did shrink
-    expect(style.height! + 2 * slop).toBeGreaterThanOrEqual(control.minTouch);
+    const target = flatten(pressable);
+    expect(target.minHeight ?? target.height).toBeGreaterThanOrEqual(control.minTouch);
+    // …and it is a real box rather than a hitSlop, which RN would clip to the row above it.
+    expect(pressable.props.hitSlop).toBeUndefined();
+
+    // The visible pill really did shrink — otherwise "the buttons are too big" is unaddressed
+    // and this test would be satisfied by simply not changing anything.
+    const pill = flatten(pressable.children[0] as { props: { style?: unknown } });
+    expect(pill.minHeight ?? pill.height).toBeLessThan(control.minTouch);
   }
+});
+
+test('the header icons are full-size targets too, and are spaced apart', async () => {
+  const screen = await openBubble();
+  for (const label of ['New issue', 'Close']) {
+    const box = flatten(screen.getByLabelText(label));
+    expect(box.height).toBeGreaterThanOrEqual(control.minTouch);
+  }
+  const box = flatten(screen.getByTestId('devtest-options-toggle'));
+  expect(box.height).toBeGreaterThanOrEqual(control.minTouch);
+  // Edge to edge, IconButton's own hitSlop regions overlap inside the row, and RN hands an
+  // overlap to the LATER sibling — which is Close, which also drops the DR-063 "Just added" pin.
+  // A near-miss on ⋮ would have dismissed the sheet and discarded a just-filed item.
+  const actions = flatten(screen.getByTestId('devtest-header-actions')) as { gap?: number };
+  expect(actions.gap).toBeGreaterThan(0);
 });
 
 test('the description and the replies are rendered below their normal reading size', async () => {
@@ -160,12 +219,15 @@ test('shortState abbreviates the ledger states and passes an unknown one through
   expect(shortState('escalated — pending Kamil')).toBe('escalated — pending Kamil');
 });
 
-test('cardMeta states only what is true, in one line', () => {
+test('cardMeta states only what is true, and leads with the verdict', () => {
   expect(cardMeta(ITEMS[1], undefined)).toBe('Open');
   expect(cardMeta(ITEMS[0], undefined)).toBe('Verify · 2 from you · 1 reply');
-  expect(cardMeta(ITEMS[0], 'fail')).toBe('Verify · 2 from you · 1 reply · Failed');
   expect(cardMeta({ ...ITEMS[0], response_count: 2 }, undefined))
     .toBe('Verify · 2 from you · 2 replies');
+  // The verdict FIRST, because the line is bounded and whatever is last is what an OS font scale
+  // truncates — and the verdict is the token DR-075 exists to keep visible.
+  expect(cardMeta(ITEMS[0], 'fail')).toBe('Failed · Verify · 2 from you · 1 reply');
+  expect(cardMeta(ITEMS[1], 'pass')).toBe('Passed · Open');
 });
 
 test('the full state still reaches a screen reader, short as it reads on screen', () => {

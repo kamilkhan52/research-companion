@@ -40,6 +40,7 @@ import { relativeAge } from '@/components/NeighbourhoodLine';
 // the prose with the markdown syntax removed rather than the raw cell.
 import { markdownToPlain } from '@/lib/markdownPlain';
 import { showToast } from '@/ui/Toast';
+import { impactTap } from '@/lib/haptics';
 import { Chip, Icon, IconButton, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -285,11 +286,20 @@ function ToggleChip({ label, active, onPress, onLayout }: {
  *  might consider for the rest of the app later"), and this surface is dev-only, so the rest of the
  *  app must not move underneath him as a side effect.
  *
- *  What shrinks is the PILL, not the target: `control.minTouch` is the floor the density tokens
- *  say compactness may never cross ("it must never make an interactive control harder to hit"), so
- *  the hitSlop is derived from that floor rather than picked by eye. */
+ *  What shrinks is the PILL, not the target. `control.minTouch` is the floor the density tokens
+ *  state outright ("Density may tighten rhythm, but it must never make an interactive control
+ *  harder to hit"), so the PRESSABLE stays that tall and the visible pill is a shorter child
+ *  centred inside it.
+ *
+ *  That structure, and not a `hitSlop`, because a hitSlop would not have worked and would have
+ *  been hard to notice: RN documents that "the touch area never extends past the parent view
+ *  bounds" (`ViewPropTypes.d.ts`), and every row these sit in — the verdict row, the header
+ *  actions, the banner rows — hugs its children's height. Slop of 8 around a 32px pill inside a
+ *  32px row is clipped straight back to 32. The first version of this did exactly that, and the
+ *  test written for it asserted `height + 2 * slop >= minTouch`, which is arithmetic on props and
+ *  true regardless of what the app renders (Opus review, PR #479). The target is now a real
+ *  laid-out box, and the test measures that box. */
 const SMALL_BTN_HEIGHT = 32;
-const SMALL_BTN_SLOP = Math.max(0, Math.round((control.minTouch - SMALL_BTN_HEIGHT) / 2));
 
 function SmallButton({ title, icon, variant = 'ghost', loading, disabled, onPress, style, ...rest }: {
   title: string;
@@ -308,26 +318,35 @@ function SmallButton({ title, icon, variant = 'ghost', loading, disabled, onPres
   const fg = variant === 'primary' ? t.mintInk : t.text;
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => {
+        // The shared `Button` fires this on its primary variant, and Pass / Create / the fail
+        // prompt's Dispatch were primary Buttons before this — recording a verdict should still
+        // feel like it landed (Opus review, PR #479).
+        if (variant === 'primary') impactTap();
+        onPress?.();
+      }}
       disabled={isDisabled}
-      hitSlop={SMALL_BTN_SLOP}
       accessibilityRole="button"
       style={({ pressed }) => [
-        styles.smallBtn,
-        variant === 'primary' ? styles.smallBtnPrimary : styles.smallBtnGhost,
+        styles.smallBtnTarget,
         pressed && !isDisabled && { opacity: 0.82 },
         isDisabled && { opacity: 0.45 },
         style,
       ]}
       {...rest}>
-      {loading ? (
-        <ActivityIndicator size="small" color={variant === 'primary' ? t.mintInk : t.mint} />
-      ) : (
-        <>
-          {icon ? <Icon name={icon} size={14} color={fg} /> : null}
-          <Text variant="label" color={fg} numberOfLines={1}>{title}</Text>
-        </>
-      )}
+      <View style={[
+        styles.smallBtn,
+        variant === 'primary' ? styles.smallBtnPrimary : styles.smallBtnGhost,
+      ]}>
+        {loading ? (
+          <ActivityIndicator size="small" color={variant === 'primary' ? t.mintInk : t.mint} />
+        ) : (
+          <>
+            {icon ? <Icon name={icon} size={14} color={fg} /> : null}
+            <Text variant="label" color={fg} numberOfLines={1}>{title}</Text>
+          </>
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -374,12 +393,18 @@ function stateTone(state: string, t: ThemePalette): string {
  *  comments — a bare Pass is one), the agent's are "replies", and the thing that holds both is the
  *  "conversation". */
 export function cardMeta(item: DevTestItem, verdict: 'pass' | 'fail' | undefined): string {
-  const parts = [shortState(item.state)];
+  const parts: string[] = [];
+  // The verdict leads, and it is the one ordering decision here worth explaining. This line is
+  // bounded, so whatever is last is what an OS font scale truncates away — and the verdict is
+  // both the shortest token and the one DR-075 exists for ("this helps me see what next to
+  // test"). Colour alone would not carry it: the line takes the verdict's colour, but colour is
+  // not an accessible signal (Opus review, PR #479).
+  if (verdict) parts.push(verdict === 'fail' ? 'Failed' : 'Passed');
+  parts.push(shortState(item.state));
   if (item.feedback_count) parts.push(`${item.feedback_count} from you`);
   if (item.response_count) {
     parts.push(`${item.response_count} repl${item.response_count === 1 ? 'y' : 'ies'}`);
   }
-  if (verdict) parts.push(verdict === 'fail' ? 'Failed' : 'Passed');
   return parts.join(' · ');
 }
 
@@ -399,6 +424,23 @@ export function narrowingReasons(query: string, filter: ReviewFilter): string[] 
   }
   if (query.trim()) reasons.push(`search “${query.trim()}”`);
   return reasons;
+}
+
+/** DR-123 — what the ⋮ says about the settings hidden behind it, or `''` when they are all at
+ *  their defaults and the icon should stay quiet.
+ *
+ *  Sort is included HERE and still excluded from `narrowingReasons`, and the difference is the
+ *  point. The count caption answers "why is this list short", which sort never causes; this
+ *  answers "is anything set in there", which sort certainly is. Leaving sort out of both would
+ *  make a restored "Recently reviewed" the one persisted choice with nothing on screen — the
+ *  state DR-118's row warned about in advance, now that the chips are behind a menu. */
+export function optionsNote(narrowedBy: string[], sort: SortMode): string {
+  const parts: string[] = [];
+  if (narrowedBy.length) parts.push('A filter or search is narrowing the list.');
+  if (sort !== 'default') {
+    parts.push(`Sorted by ${SORT_MODES.find((s) => s.key === sort)?.label ?? sort}.`);
+  }
+  return parts.join(' ');
 }
 
 /** DR-116, generalised by DR-118: keep the SELECTED chip of a horizontal chip row on screen.
@@ -533,6 +575,14 @@ export function DevTestBubble() {
   // is complete and no caption/reset is warranted.
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
   const narrowed = narrowedBy.length > 0;
+  // DR-123: what the ⋮ has to announce, which is NOT the same set as what narrows the list.
+  // Sort hides nothing, so it is deliberately absent from `narrowingReasons` and from the count
+  // caption — but it is persisted, and with the chips behind a menu it became the one toolbar
+  // choice with no trace on screen at all. DR-118's own row predicted this exactly: "nothing on
+  // screen would have explained the order" (Opus review, PR #479).
+  const optionsSummary = useMemo(
+    () => optionsNote(narrowedBy, sort), [narrowedBy, sort],
+  );
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
 
   // DR-116's chip reveal, for BOTH rows. DR-118 made this general rather than filter-only: adding
@@ -718,7 +768,7 @@ export function DevTestBubble() {
               he named lives behind the ⋮, closed on every open. */}
           <View style={styles.header}>
             <Text variant="heading" style={styles.headerTitle} numberOfLines={1}>Device tests</Text>
-            <View style={styles.headerActions}>
+            <View style={styles.headerActions} testID="devtest-header-actions">
               <IconButton
                 name="plus"
                 size={18}
@@ -729,20 +779,21 @@ export function DevTestBubble() {
                 style={styles.headerIcon}
                 onPress={() => setCreating(true)}
               />
-              {/* Mint, not muted, while something is narrowing the list: DR-116 was filed because
-                  a filter restored from days ago was hiding rows with nothing on screen saying so,
-                  and putting the chips behind a menu is exactly the move that could bring that
-                  back. The count row below names the narrowing in words; this says "it is in
-                  here" from the one control that is always visible. */}
+              {/* Mint, not muted, whenever anything behind it is off its default: DR-116 was
+                  filed because a filter restored from days ago was hiding rows with nothing on
+                  screen saying so, and putting the chips behind a menu is exactly the move that
+                  could bring that back. The count row below names a NARROWING in words; this one
+                  also covers a non-default SORT, which narrows nothing and so has no caption —
+                  the case DR-118's row called out as the harder one to diagnose. */}
               <IconButton
                 name="more-vertical"
                 size={18}
                 filled={false}
-                color={narrowed ? t.mint : t.text}
+                color={optionsSummary ? t.mint : t.text}
                 accessibilityRole="button"
                 accessibilityState={{ expanded: menuOpen }}
-                accessibilityLabel={narrowed
-                  ? 'Options — filter, sort and dispatch. A filter or search is narrowing the list.'
+                accessibilityLabel={optionsSummary
+                  ? `Options — filter, sort and dispatch. ${optionsSummary}`
                   : 'Options — filter, sort and dispatch'}
                 testID="devtest-options-toggle"
                 style={styles.headerIcon}
@@ -764,6 +815,15 @@ export function DevTestBubble() {
             </View>
           </View>
           {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
+          {/* The one capture state that must not be behind the menu: with no native module there
+              is no "Attach the captured screen" checkbox on any card, so a tester looking for it
+              finds an absence and nothing explaining it (Opus review, PR #479). The other two
+              states are reported inside the ⋮ — one of them is the checkbox itself. */}
+          {!canScreenshot() ? (
+            <Text variant="caption" color={t.muted}>
+              Screenshots need a rebuilt dev client (react-native-view-shot).
+            </Text>
+          ) : null}
 
           {/* DR-077 — search stays in the header rather than moving into the menu with the rest:
               it is the one control he did not name, and it is how a specific row gets found in a
@@ -887,13 +947,14 @@ export function DevTestBubble() {
                 />
               </View>
               {/* Was a permanent caption under the title. It answers one question — can this
-                  sitting attach a screenshot — and the answer is already visible as the "Attach
-                  the captured screen" checkbox on every card when it is yes. It only has to be
-                  READABLE when it is no, which is what this line is for. */}
+                  sitting attach a screenshot — and when the answer is yes that is already visible
+                  as the "Attach the captured screen" checkbox on every card. The one branch that
+                  has to be readable WITHOUT opening this menu (the dev client cannot capture at
+                  all, so the checkbox he is looking for is missing rather than unticked) is
+                  rendered in the header instead — see below. */}
               <Text variant="caption" color={t.muted} style={styles.menuNote}>
-                {shot ? 'Screen captured — attach it to any comment below.' : canScreenshot()
-                  ? 'No capture this time.'
-                  : 'Screenshots need a rebuilt dev client (react-native-view-shot).'}
+                {shot ? 'Screen captured — attach it to any comment below.'
+                  : 'No capture this time.'}
               </Text>
             </View>
           ) : null}
@@ -1839,7 +1900,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
           variant="caption"
           color={verdictColor ?? stateTone(item.state, t)}
           style={styles.cardMeta}
-          numberOfLines={1}>
+          // Two, not one: at a large OS font scale a fully populated line outruns a 360dp card,
+          // and one line would drop its tail. It only ever takes the second line when it needs it.
+          numberOfLines={2}>
           {cardMeta(item, lastVerdict)}
         </Text>
         {activity ? (
@@ -2054,10 +2117,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   sheet: { flex: 1, backgroundColor: t.bg, paddingHorizontal: space.sm },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerTitle: { flex: 1 },
-  headerActions: { flexDirection: 'row', alignItems: 'center' },
-  // Narrower than IconButton's default 42px circle: four of them share this row with the title,
-  // and the 8px hitSlop IconButton applies itself keeps each target past 44.
-  headerIcon: { width: 34, height: 34 },
+  // The `gap` is not cosmetic. `IconButton` carries its own `hitSlop`, which RN clips to the
+  // PARENT's bounds — so with the icons edge to edge, adjacent slop regions overlap inside this
+  // row and RN resolves an overlap in favour of the later sibling. The later sibling here is
+  // Close, which also drops the DR-063 "Just added" pin, so a thumb that missed ⋮ by a few dp
+  // dismissed the sheet and discarded the item he had just filed (Opus review, PR #479).
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  // A real `control.minTouch` box, not a hitSlop: same reasoning as `smallBtnTarget`. Only the
+  // glyph is visible (`filled={false}`), so the box costs nothing but the row's own height —
+  // which the four rows this header replaced cost many times over.
+  headerIcon: { width: control.minTouch, height: control.minTouch },
   scroll: { paddingBottom: space.xl },
   card: {
     backgroundColor: t.elevated,
@@ -2134,10 +2203,15 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     backgroundColor: t.surface,
   },
   menuNote: { marginTop: space.xs },
+  // The TARGET: `control.minTouch` tall, invisible. `minHeight` rather than `height` so a label
+  // that grows past it at a large OS font scale takes the room instead of being clipped.
+  smallBtnTarget: { minHeight: control.minTouch, justifyContent: 'center' },
+  // The PILL: what he actually sees, and the only part that shrank.
   smallBtn: {
-    height: SMALL_BTN_HEIGHT,
+    minHeight: SMALL_BTN_HEIGHT,
     borderRadius: radius.pill,
     paddingHorizontal: space.md,
+    paddingVertical: 4,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

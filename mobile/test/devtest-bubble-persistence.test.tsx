@@ -193,8 +193,9 @@ test('reopening the bubble restores the persisted scroll offset', async () => {
 // his own entries; a pass/fail verdict given this session gets the same visibility, and it must
 // survive the card unmounting and remounting the same way DR-065's other state does.
 //
-// DR-123 moved all of that from five bordered chips into ONE muted line — `Open · Passed` — so
-// these match within the line rather than expecting a standalone chip.
+// DR-123 moved all of that from five bordered chips into ONE muted line — `Passed · Open` — so
+// these match within the line rather than expecting a standalone chip. The verdict LEADS that
+// line, because it is bounded and whatever is last is what a large OS font scale truncates away.
 
 test('a passed verdict is still visible after the card unmounts and remounts', async () => {
   const item = { ...ITEM, id: 'DR-997' };
@@ -213,7 +214,7 @@ test('a passed verdict is still visible after the card unmounts and remounts', a
   first.unmount();
 
   const second = render(<ItemCard item={item} shot={null} route="/discover" />);
-  await waitFor(() => expect(second.getByText(/· Passed/)).toBeTruthy());
+  await waitFor(() => expect(second.getByText(/^Passed · /)).toBeTruthy());
 });
 
 // Opus review, PR #380: `setValue`'s write is debounced 300ms, and closing the sheet unmounts
@@ -236,7 +237,7 @@ test('a verdict is persisted immediately, before the write-debounce would otherw
   expect(raw).toContain('"verdict":"pass"');
 
   const second = render(<ItemCard item={item} shot={null} route="/discover" />);
-  await waitFor(() => expect(second.getByText(/· Passed/)).toBeTruthy());
+  await waitFor(() => expect(second.getByText(/^Passed · /)).toBeTruthy());
 });
 
 test('a fail verdict, then a separate remark, keeps the Failed indication', async () => {
@@ -244,7 +245,7 @@ test('a fail verdict, then a separate remark, keeps the Failed indication', asyn
   const screen = render(<ItemCard item={item} shot={null} route="/discover" />);
   fireEvent.press(screen.getByText(item.title));
   fireEvent.press(screen.getByText('Fail'));
-  await waitFor(() => expect(screen.getByText(/· Failed/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/^Failed · /)).toBeTruthy());
 
   // A later comment on the same item is not a new verdict — it must not clear or overwrite the
   // Failed marker.
@@ -253,5 +254,5 @@ test('a fail verdict, then a separate remark, keeps the Failed indication', asyn
   fireEvent.changeText(input, 'Adding more context.');
   fireEvent.press(screen.getByText('Comment'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalledTimes(2));
-  expect(screen.getByText(/· Failed/)).toBeTruthy();
+  expect(screen.getByText(/^Failed · /)).toBeTruthy();
 });
