@@ -2590,11 +2590,10 @@ def _dispatch_dir_for_tests():
 # --- finding the CLI when the server's PATH does not have it (2026-09-03) ----------------------
 
 def test_the_cli_is_found_in_its_usual_home_when_PATH_lacks_it(monkeypatch, tmp_path):
-    """The uvicorn worker's PATH is whatever launched it, which on this Mac has no
-    `/opt/homebrew/bin`. Dispatch worked only because a second copy sat in `~/.local/bin`, and a
-    CLI update removed that copy — taking the feature down with a 503 naming PATH as the
-    problem. Dispatch is driven from the phone, so "fix the Mac's PATH" is not a recovery Kamil
-    can perform from where he is."""
+    """The uvicorn worker does not inherit an interactive shell's environment, so on a machine
+    that installs the CLI outside the worker's PATH this is the difference between working and a
+    dead end Kamil cannot clear from his phone. Defensive breadth: on THIS Mac the worker's PATH
+    does cover the install, so the fallback never fires here."""
     import os
 
     from app.routers import devtest as dt
@@ -2629,9 +2628,18 @@ def test_an_explicit_override_wins_over_both(monkeypatch, tmp_path):
     monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "absent"))
     assert dt._claude_binary() is None
 
+    # `~` is expanded, because the 503 that tells you to set this prints tilde paths and
+    # `run.sh`'s .env parser does not expand them either — so the value copied straight out of
+    # our own error message must work.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RC_CLAUDE_BIN", "~/mine")
+    assert dt._claude_binary() == str(chosen)
+
 
 def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
     """A leftover file where the CLI used to be would otherwise be spawned and fail obscurely."""
+    import os
+
     from app.routers import devtest as dt
 
     monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
@@ -2642,15 +2650,56 @@ def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
     monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(stale),))
     assert dt._claude_binary() is None
 
+    # And a DIRECTORY named `claude`: `os.access(dir, X_OK)` is True, so an X_OK-only test would
+    # return it and hand `Popen` something that raises PermissionError. `shutil.which` excludes
+    # directories itself — the fallback must not be weaker than the lookup it falls back from.
+    d = tmp_path / "dir" / "claude"
+    d.mkdir(parents=True)
+    assert os.access(d, os.X_OK)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(d),))
+    assert dt._claude_binary() is None
 
-def test_the_503_says_where_it_looked(client, monkeypatch):
-    """"not on the dev server's PATH" sent me to fix PATH; the CLI was installed the whole
-    time, just not there."""
+
+def test_the_503_distinguishes_mid_update_from_not_installed(client, monkeypatch, tmp_path):
+    """"not on the dev server's PATH" sent me to fix a PATH that was fine. The CLI was being
+    replaced by its own auto-updater at that moment (2.1.246 -> 2.1.259, 22:48 on 2026-09-02),
+    so its symlink pointed into a package tree that briefly did not exist. No fallback list can
+    help with that — every candidate resolves into the same vanished tree — which is exactly
+    why the message has to say so instead of implying a misconfiguration."""
     from app.routers import devtest as dt
 
     monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(dt, "_claude_binary", lambda: None)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    # Not installed anywhere: name the places, and the override that fixes it.
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude",))
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
     detail = r.json()["detail"]
-    assert "RC_CLAUDE_BIN" in detail and "/opt/homebrew/bin/claude" in detail
+    assert "RC_CLAUDE_BIN" in detail and "/nowhere/claude" in detail
+
+    # Mid-update: a candidate that exists as a broken symlink. Retrying is the whole remedy, so
+    # the message must not send anyone to edit PATH or set an env var.
+    dangling = tmp_path / "claude"
+    dangling.symlink_to(tmp_path / "gone")
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(dangling),))
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "mid-update" in detail and "again in a minute" in detail
+    assert "RC_CLAUDE_BIN" not in detail and "PATH" not in detail
+
+
+def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
+    """The override is the one thing the message tells you to set, so getting it wrong must not
+    print the generic "looked everywhere" list — nothing was looked at but the override."""
+    from app.routers import devtest as dt
+
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "typo"))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "RC_CLAUDE_BIN" in detail and str(tmp_path / "typo") in detail
+    assert "/opt/homebrew" not in detail
+    assert dt._claude_binary() is None          # and it really did refuse, not just report

@@ -1092,15 +1092,11 @@ PROBE_TIMEOUT_S = DISPATCH_GIT_TIMEOUT_S + 10.0
 
 #: Where to look for the CLI when it is not on the server's own PATH.
 #:
-#: The server does not inherit an interactive shell's environment — the uvicorn worker's PATH is
-#: whatever launched it, which here lacks `/opt/homebrew/bin` entirely. Dispatch worked anyway
-#: only because a second copy happened to sit in `~/.local/bin`, and when a CLI update removed
-#: that copy on 2026-09-02 the feature went down with a 503 that named PATH as the problem.
-#:
-#: That failure is the wrong shape for this feature: dispatch is driven from Kamil's phone, so
-#: "fix the dev Mac's PATH and restart the server" is not a recovery he can perform from where
-#: he is. Looking in the handful of places the CLI is actually installed costs four `os.access`
-#: calls and removes an entire class of remote dead end.
+#: The list is defensive breadth, not the fix for any particular outage: the uvicorn worker does
+#: not inherit an interactive shell's environment, so on a machine that installs the CLI
+#: somewhere the worker's PATH does not cover, this is the difference between working and a
+#: remote dead end. On THIS machine every entry but the first is absent and the first is already
+#: on the worker's PATH, so it changes nothing here. That is the intended state.
 CLAUDE_FALLBACK_PATHS = (
     "/opt/homebrew/bin/claude",
     "/usr/local/bin/claude",
@@ -1114,21 +1110,62 @@ def _claude_binary() -> str | None:
     """The claude CLI: `RC_CLAUDE_BIN`, then PATH, then the usual install locations.
 
     The explicit override wins so a machine that keeps it somewhere unusual needs no code
-    change, and so a test can point this at a stub without touching PATH.
+    change, and so a test can point this at a stub without touching PATH. An override that
+    names nothing executable REFUSES rather than falling through — it is a statement about
+    where the CLI is, and quietly spawning a different one would be worse than not running.
+
+    `isfile` as well as `X_OK`, because `os.access` says yes to a directory. `shutil.which`
+    excludes directories itself; without the guard the fallback would be weaker than the lookup
+    it falls back from, and would hand `Popen` a directory to raise `PermissionError` on.
     """
     import os
 
-    override = (os.environ.get("RC_CLAUDE_BIN") or "").strip()
+    override = os.path.expanduser((os.environ.get("RC_CLAUDE_BIN") or "").strip())
     if override:
-        return override if os.access(override, os.X_OK) else None
+        return override if _is_executable_file(override) else None
     found = shutil.which("claude")
     if found:
         return found
     for candidate in CLAUDE_FALLBACK_PATHS:
         resolved = os.path.expanduser(candidate)
-        if os.access(resolved, os.X_OK):
+        if _is_executable_file(resolved):
             return resolved
     return None
+
+
+def _is_executable_file(path: str) -> bool:
+    import os
+
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _claude_missing_detail() -> str:
+    """Why the CLI could not be found, in the terms that decide what to do about it.
+
+    The two causes want opposite responses and are trivially distinguishable, so it is worth
+    saying which one happened. A candidate that exists as a BROKEN SYMLINK means the CLI is
+    being replaced right now: the auto-updater rewrites the npm-global package tree, and for as
+    long as that takes, the `bin/claude` its symlink points at does not exist. Nothing is
+    misconfigured and no fallback list can help — every path resolves into the same vanished
+    tree — so the answer is simply to tap Dispatch again shortly. That is what took dispatch
+    down at 22:48 on 2026-09-02, mid-update from 2.1.246, while the old 503 blamed PATH.
+
+    Nothing anywhere means the CLI genuinely is not installed where the server can see it,
+    which is the case `RC_CLAUDE_BIN` exists for.
+    """
+    import os
+
+    override = os.path.expanduser((os.environ.get("RC_CLAUDE_BIN") or "").strip())
+    if override:
+        return (f"RC_CLAUDE_BIN is set to {override}, which is not an executable file. "
+                "Point it at the claude CLI, or unset it to search PATH.")
+    looked = [os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS]
+    if any(os.path.islink(p) and not os.path.exists(p) for p in looked):
+        return ("The claude CLI is mid-update — its install is a broken symlink, which is what "
+                "the auto-updater leaves while it replaces the package. Nothing is wrong with "
+                "the server; try Dispatch again in a minute.")
+    return ("Could not find the claude CLI. Looked on the server's PATH and in "
+            f"{', '.join(looked)}. Set RC_CLAUDE_BIN to its full path.")
 
 
 def _dispatch_dir() -> Path:
@@ -2060,8 +2097,7 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     if not binary:
         raise HTTPException(
             status_code=503,
-            detail="Could not find the claude CLI. Looked on the server's PATH and in "
-                   f"{', '.join(CLAUDE_FALLBACK_PATHS)}. Set RC_CLAUDE_BIN to its full path.")
+            detail=_claude_missing_detail())
     with _dispatch_lock:
         running = _dispatch_running()
         if running:
