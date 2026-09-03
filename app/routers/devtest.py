@@ -28,6 +28,7 @@ import base64
 import binascii
 import json
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -1089,6 +1090,47 @@ DISPATCH_GIT_TIMEOUT_S = 20.0
 PROBE_TIMEOUT_S = DISPATCH_GIT_TIMEOUT_S + 10.0
 
 
+#: Where to look for the CLI when it is not on the server's own PATH.
+#:
+#: The server does not inherit an interactive shell's environment — the uvicorn worker's PATH is
+#: whatever launched it, which here lacks `/opt/homebrew/bin` entirely. Dispatch worked anyway
+#: only because a second copy happened to sit in `~/.local/bin`, and when a CLI update removed
+#: that copy on 2026-09-02 the feature went down with a 503 that named PATH as the problem.
+#:
+#: That failure is the wrong shape for this feature: dispatch is driven from Kamil's phone, so
+#: "fix the dev Mac's PATH and restart the server" is not a recovery he can perform from where
+#: he is. Looking in the handful of places the CLI is actually installed costs four `os.access`
+#: calls and removes an entire class of remote dead end.
+CLAUDE_FALLBACK_PATHS = (
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    "~/.local/bin/claude",
+    "~/.claude/local/claude",
+    "~/.bun/bin/claude",
+)
+
+
+def _claude_binary() -> str | None:
+    """The claude CLI: `RC_CLAUDE_BIN`, then PATH, then the usual install locations.
+
+    The explicit override wins so a machine that keeps it somewhere unusual needs no code
+    change, and so a test can point this at a stub without touching PATH.
+    """
+    import os
+
+    override = (os.environ.get("RC_CLAUDE_BIN") or "").strip()
+    if override:
+        return override if os.access(override, os.X_OK) else None
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in CLAUDE_FALLBACK_PATHS:
+        resolved = os.path.expanduser(candidate)
+        if os.access(resolved, os.X_OK):
+            return resolved
+    return None
+
+
 def _dispatch_dir() -> Path:
     d = _dir() / "dispatch"
     d.mkdir(exist_ok=True)
@@ -1966,7 +2008,6 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
     `Bash(gh:*)` and could `gh pr merge` at any point. That is inherent to giving it the loop;
     do not read the allowlist as enforcing it.
     """
-    import shutil
     import subprocess
 
     _require_dev()
@@ -2015,10 +2056,12 @@ def dispatch_to_claude(req: DispatchReq, request: Request):
             # once — a mystery failure rather than an obviously stale record.
             if resume_of.get("model") in DISPATCH_MODELS:
                 model = resume_of["model"]
-    binary = shutil.which("claude")
+    binary = _claude_binary()
     if not binary:
-        raise HTTPException(status_code=503,
-                            detail="The claude CLI is not on the dev server's PATH.")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not find the claude CLI. Looked on the server's PATH and in "
+                   f"{', '.join(CLAUDE_FALLBACK_PATHS)}. Set RC_CLAUDE_BIN to its full path.")
     with _dispatch_lock:
         running = _dispatch_running()
         if running:

@@ -2585,3 +2585,72 @@ def _dispatch_dir_for_tests():
     d = dt._dispatch_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# --- finding the CLI when the server's PATH does not have it (2026-09-03) ----------------------
+
+def test_the_cli_is_found_in_its_usual_home_when_PATH_lacks_it(monkeypatch, tmp_path):
+    """The uvicorn worker's PATH is whatever launched it, which on this Mac has no
+    `/opt/homebrew/bin`. Dispatch worked only because a second copy sat in `~/.local/bin`, and a
+    CLI update removed that copy — taking the feature down with a 503 naming PATH as the
+    problem. Dispatch is driven from the phone, so "fix the Mac's PATH" is not a recovery Kamil
+    can perform from where he is."""
+    import os
+
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)          # not on PATH
+    installed = tmp_path / "claude"
+    installed.write_text("#!/bin/sh\n")
+    installed.chmod(0o755)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude", str(installed)))
+    assert dt._claude_binary() == str(installed)
+
+    # Nothing anywhere is still None, so the route can 503 with somewhere to look.
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", ("/nowhere/claude",))
+    assert dt._claude_binary() is None
+    assert not os.path.exists("/nowhere/claude")
+
+
+def test_an_explicit_override_wins_over_both(monkeypatch, tmp_path):
+    """So a machine that keeps it somewhere unusual needs no code change."""
+    from app.routers import devtest as dt
+
+    chosen = tmp_path / "mine"
+    chosen.write_text("#!/bin/sh\n")
+    chosen.chmod(0o755)
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(chosen))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    assert dt._claude_binary() == str(chosen)
+
+    # An override pointing at nothing does NOT silently fall back — it is an explicit statement
+    # about where the CLI is, and quietly using a different one would be worse than refusing.
+    monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "absent"))
+    assert dt._claude_binary() is None
+
+
+def test_a_non_executable_candidate_is_not_chosen(monkeypatch, tmp_path):
+    """A leftover file where the CLI used to be would otherwise be spawned and fail obscurely."""
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    stale = tmp_path / "claude"
+    stale.write_text("not executable")
+    stale.chmod(0o644)
+    monkeypatch.setattr(dt, "CLAUDE_FALLBACK_PATHS", (str(stale),))
+    assert dt._claude_binary() is None
+
+
+def test_the_503_says_where_it_looked(client, monkeypatch):
+    """"not on the dev server's PATH" sent me to fix PATH; the CLI was installed the whole
+    time, just not there."""
+    from app.routers import devtest as dt
+
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(dt, "_claude_binary", lambda: None)
+    r = client.post("/api/devtest/dispatch", json={"model": "opus"})
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert "RC_CLAUDE_BIN" in detail and "/opt/homebrew/bin/claude" in detail
