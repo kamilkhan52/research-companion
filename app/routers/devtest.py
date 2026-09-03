@@ -1149,13 +1149,19 @@ def _is_executable_file(path: str) -> bool:
 #: It UNLINKS the bin entry FIRST and downloads 190 MB second, so the whole download sits
 #: inside the gap and the gap scales with bandwidth. Measured at 5ms resolution:
 #:
-#:     same version, warm cache   0.5s
-#:     same version, cold cache  14.8s
-#:     version change, uncached  14.9s / 17.9s
+#:     warm cache   0.5s
+#:     cold cache  14.5s / 14.8s / 14.9s / 17.9s
 #:
-#: An auto-update always changes version, so its tarball is never cached and 15-18s is the
-#: case that matters — the 0.5s figure is a no-op reinstall and sizing against it (as this
-#: first did) leaves the real outage uncovered. 30s is ~2x the measured worst case.
+#: CACHE WARMTH is the determinant, not what changed: an auto-update always moves to a version
+#: whose tarball has never been fetched, so it is always the cold case and 15-18s is what
+#: matters. The 0.5s figure is a re-install of something already in the cache; sizing against
+#: it (as this first did) leaves the real outage uncovered. 30s is ~2x the measured worst
+#: case, which on a ~110 Mbit link is ~2.2x — below ~55 Mbit it would not be enough, which is
+#: why giving up says retry rather than pretending to a bound it cannot hold.
+#:
+#: The wait only engages when NO candidate exists anywhere. A machine carrying a second, stale
+#: install would spawn that one during a homebrew update rather than wait — not this machine,
+#: but it is why the fallback list should stay short.
 #:
 #: No constant covers an arbitrarily slow link, so giving up still says RETRY. That is not a
 #: hedge: the alternative advice is a trap, because an explicit `RC_CLAUDE_BIN` refuses rather
@@ -1170,9 +1176,9 @@ CLAUDE_LOOKUP_WAIT_S = 30.0
 CLAUDE_LOOKUP_POLL_S = 0.1
 
 
-def _await_claude_binary(wait_s: float | None = None) -> str | None:
+def _await_claude_binary() -> str | None:
     """`_claude_binary`, but tolerant of the CLI being mid-reinstall. See the constants above."""
-    deadline = time.monotonic() + (CLAUDE_LOOKUP_WAIT_S if wait_s is None else wait_s)
+    deadline = time.monotonic() + CLAUDE_LOOKUP_WAIT_S
     while True:
         found = _claude_binary()
         if found is not None or time.monotonic() >= deadline:
@@ -1194,9 +1200,12 @@ def _claude_missing_detail() -> str:
     if override:
         log.warning("devtest dispatch: RC_CLAUDE_BIN=%s is not an executable file", override)
         return "RC_CLAUDE_BIN is not an executable file."
-    log.warning("devtest dispatch: no claude CLI after %.0fs; looked on PATH and in %s",
+    # WHICH path, spelled out: this list exists because the worker's PATH is not an
+    # interactive shell's, so "looked on PATH" is the one detail a debugger cannot assume.
+    log.warning("devtest dispatch: no claude CLI after %.0fs; looked in %s and on PATH=%s",
                 CLAUDE_LOOKUP_WAIT_S,
-                ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS))
+                ", ".join(os.path.expanduser(c) for c in CLAUDE_FALLBACK_PATHS),
+                os.environ.get("PATH", ""))
     return "claude CLI missing — retry, or see log."
 
 

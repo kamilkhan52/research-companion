@@ -16,6 +16,10 @@ from starlette.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
+    # A real RC_CLAUDE_BIN in the developer's environment short-circuits the whole lookup, so
+    # every dispatch test that stubs `shutil.which` would 503 on a machine that happens to set
+    # it. The tests that care set it themselves.
+    monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(config, "dev_mode", lambda: True)
     from app.main import app
 
@@ -2679,6 +2683,7 @@ def test_a_dispatch_survives_the_CLI_reinstalling_itself(monkeypatch, tmp_path):
     ABSENT_LOOKS = 4
     installed = tmp_path / "claude"
     monkeypatch.setattr(dt, "CLAUDE_LOOKUP_POLL_S", 0.01)
+    monkeypatch.setattr(dt, "CLAUDE_LOOKUP_WAIT_S", 2.0)   # so a regression fails, not hangs
     monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
 
     for arm in ("PATH", "fallback"):
@@ -2706,10 +2711,17 @@ def test_a_dispatch_survives_the_CLI_reinstalling_itself(monkeypatch, tmp_path):
         assert next(looks) > ABSENT_LOOKS, arm
 
 
-def test_the_wait_is_bounded_and_then_says_where_it_looked(client, monkeypatch):
-    """A CLI that never comes back is a real absence, and by then `RC_CLAUDE_BIN` IS the answer
-    — an update gap is under a second and we have just waited seconds. The bound matters: this
-    runs inside a POST, and waiting forever would hang the phone instead of answering it."""
+def test_the_wait_is_bounded_and_says_to_retry(client, monkeypatch):
+    """A CLI that never comes back is a real absence — but even then the toast says RETRY.
+
+    No constant covers an arbitrarily slow link (the gap is a 190 MB download, so it scales
+    with bandwidth), and the obvious alternative advice is a trap: an explicit `RC_CLAUDE_BIN`
+    refuses rather than falling through, so pointing it at the homebrew symlink converts every
+    future update gap into a permanent-looking "not an executable file".
+
+    The bound is the other half. This runs inside a POST, and waiting forever would hang the
+    phone rather than answer it.
+    """
     from app.routers import devtest as dt
 
     monkeypatch.delenv("RC_CLAUDE_BIN", raising=False)
@@ -2731,8 +2743,9 @@ def test_the_wait_is_bounded_and_then_says_where_it_looked(client, monkeypatch):
 
 
 def test_a_broken_override_is_reported_as_such(client, monkeypatch, tmp_path):
-    """The override is the one thing the message tells you to set, so getting it wrong must not
-    print the generic "looked everywhere" list — nothing was looked at but the override."""
+    """A wrong override must say so by name. It is the one setting that makes the lookup skip
+    PATH and the fallbacks entirely, so reporting it as a general "could not find the CLI"
+    would point at everything except the thing that is actually wrong."""
     from app.routers import devtest as dt
 
     monkeypatch.setenv("RC_CLAUDE_BIN", str(tmp_path / "typo"))
@@ -2757,7 +2770,9 @@ def test_the_CLI_vanishing_between_lookup_and_spawn_is_not_a_500(client, monkeyp
     monkeypatch.setattr(dt, "_dispatch_cwd", lambda **k: str(tmp_path))
     r = client.post("/api/devtest/dispatch", json={"model": "opus"})
     assert r.status_code == 503
-    assert "try again" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert len(detail) <= 45, detail          # same one-line toast as the others
+    assert "try again" in detail
     # `_dispatch_dir()`, not `tmp_path`: the route writes under the inbox dir the fixture sets,
     # so asserting on tmp_path passed even with a real regression injected — a phantom
     # "running" record whose pid `_dispatch_running` reads as alive, 409ing every dispatch
