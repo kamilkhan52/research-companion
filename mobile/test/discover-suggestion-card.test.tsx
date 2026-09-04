@@ -131,9 +131,14 @@ test('a long institution list is summarised rather than listed', async () => {
   });
   expect(screen.getByTestId('suggestion-affiliations').props.children)
     .toBe('A University · B Institute +2');
-  // The full list still reaches a screen reader, which has no width limit.
-  expect(screen.getByTestId('suggestion-affiliations').props.accessibilityLabel)
-    .toBe('Affiliations: A University, B Institute, C Lab, D Centre');
+  // The full list still reaches a screen reader, which has no width limit, and it is still NAMED
+  // as affiliations. Both ride on the meta line since DR-129 folded the institutions into it: a
+  // nested Text inside a Text is flattened, so a label of its own would never be announced. The
+  // prefix is load-bearing rather than decoration (Opus review): once the institutions share the
+  // meta line's ` · ` separator, colour is the only cue a sighted reader has left, and a screen
+  // reader has no colour.
+  expect(screen.getByTestId('suggestion-meta').props.accessibilityLabel)
+    .toBe('A. Author · 2024 · Affiliations: A University, B Institute, C Lab, D Centre · ~12 citations');
 });
 
 test('a suggestion with no known affiliation draws no empty row', async () => {
@@ -152,4 +157,53 @@ test('a blank among real institutions is dropped, not counted', async () => {
   await renderCard({ ...BASE, affiliations: ['Cornell University', '', 'MIT'] });
   expect(screen.getByTestId('suggestion-affiliations').props.children)
     .toBe('Cornell University · MIT');
+});
+
+// DR-129 — Kamil, on his DR-112 pass: "remove DOI from the details shown, and affiliation can go
+// after authors and before venue. Citations last. No doi like I said." The identifier was ONE
+// slot rendering `arXiv:…` when an arXiv id existed and `DOI:…` otherwise, and it sat after the
+// citations he wants last — so both halves go, and the institutions move into the run.
+
+/** The meta line is nested Texts (the institutions keep their own colour), so its rendered text
+ *  has to be flattened rather than read off `props.children`. */
+function flatText(node: unknown): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(flatText).join('');
+  const children = (node as { children?: unknown })?.children;
+  return children === undefined ? '' : flatText(children);
+}
+
+test('the meta line drops the DOI', async () => {
+  await renderCard({ ...BASE, arxiv_id: '', doi: '10.1145/3725843.3756127', venue: 'Micro' });
+  expect(flatText(screen.getByTestId('suggestion-meta'))).not.toContain('10.1145/3725843.3756127');
+  expect(flatText(screen.getByTestId('suggestion-meta'))).not.toContain('DOI');
+});
+
+test('the meta line drops the arXiv id too — it occupied the same slot, after the citations', async () => {
+  await renderCard({ ...BASE, arxiv_id: '2401.00001', venue: 'Micro' });
+  expect(flatText(screen.getByTestId('suggestion-meta'))).not.toContain('2401.00001');
+  expect(flatText(screen.getByTestId('suggestion-meta'))).not.toContain('arXiv');
+});
+
+test('the details read authors, affiliation, venue, citations, in that order', async () => {
+  await renderCard({
+    ...BASE,
+    authors: ['C. Shin'],
+    year: 2025,
+    affiliations: ['Seoul National University'],
+    venue: 'Micro',
+    citation_count: 5,
+    doi: '10.1145/3725843.3756127',
+  });
+  expect(flatText(screen.getByTestId('suggestion-meta')))
+    .toBe('C. Shin · 2025 · Seoul National University · Micro · ~5 citations');
+});
+
+test('a card with no institution still reads authors, venue, citations without a dangling separator', async () => {
+  await renderCard({
+    ...BASE, authors: ['C. Shin'], year: 2025, affiliations: [], venue: 'Micro', citation_count: 5,
+  });
+  expect(flatText(screen.getByTestId('suggestion-meta')))
+    .toBe('C. Shin · 2025 · Micro · ~5 citations');
 });
