@@ -7,7 +7,8 @@ based on options or context." Status: **BUILT — all four delivery PRs merged b
 (#407 substrate, #409 delta lane, #431/#432 significance + lane-3 primitives, #436 client
 convergence). The open questions below were resolved in
 [`corpus-neighbourhood-spec.md`](corpus-neighbourhood-spec.md) §1; this file remains the
-architectural record. One correction learned at PR 4: the freshness line is DISCOVERY's (the
+architectural record, and §"The surface" below is the 2026-09-04
+continuation. One correction learned at PR 4: the freshness line is DISCOVERY's (the
 forward sweep), shown read-only on the Map — the Map build never writes forward records.*
 
 ## Why they merge: the shared spine
@@ -105,3 +106,137 @@ loss.
    automatically when the substrate is absent, ask when it is merely stale.
 2. Does the Map's "rebuild" button survive, or become "refresh neighbourhood" with the layout
    derivation always implied?
+
+---
+
+# The surface (agreed 2026-09-04)
+
+## What he asked for
+
+> "I think we keep all features of Map and the tab, and we integrate Discover. And we shouldn't
+> be differentiating or have boundaries between the two when possible."
+> — Kamil, 2026-09-04, choosing **one tab, no mode switch**
+
+With three follow-ups settled the same day: **the graph leads** and the list sits below it; a
+query **highlights matching nodes already in the graph** rather than injecting new ones; and the
+tab **stays "Map"**. On scope: *"Both the query and the project are important when a query is
+provided. The query in the context of the project is the priority."*
+
+## What the duplication actually is
+
+Not the whole of either screen, and not a *visible* duplication — that framing was wrong in
+review. Both tabs offer **a way to add recommended papers**, but the Map's is behind a `zap`
+header icon that opens a `BottomSheet` (`graph.tsx:301`, panel at `:411`): 100 rows max, paged
+20 at a time, no Hide, no abstract, no affiliations, no relevance. Kamil's remark was about
+seeing two **tabs**, not two lists on screen. The duplication is of KIND — two places that
+recommend papers to add, over one substrate — not of rendered surface:
+
+| | Map today | Discover today |
+|---|---|---|
+| reference graph | ✅ `GraphCanvas` | — |
+| neighbourhood freshness | ✅ `NeighbourhoodLine` | ✅ same component |
+| papers to add | ✅ `GET /graph` → `recommendations` | ✅ goal-driven suggestions |
+| author board, labs research | ✅ | — |
+| open-ended query | — | ✅ `run_discovery` |
+| hide / unhide | (filtered by `discovery.filter_hidden`) | ✅ `discovery.hide_candidate` |
+
+So "I still see both" is two TABS that each recommend papers to add, over a substrate that
+already merged: `neighbourhood.py` (DR-052 PRs 1–2) and the shared hidden-list are used by both today.
+
+## The merged surface
+
+**One tab, `Map`.** Graph on top, as now. Below it, **one ranked list** of papers to add — not
+sections, because sections are the boundary he asked us not to draw. Provenance moves onto each
+row instead, in language the engine already emits (`discovery.py` builds these strings today):
+
+- *"Cites “…” from your reading list"*
+- *"New: has started citing “…” from your list"*
+- *"Recommended from your reading list’s citation patterns"* (curly apostrophe in the source; `_preview` emits "from your list" rather than "from your reading list", so two variants ship depending on surface)
+- and, when a query ran, the query's own reason
+
+**Opening the tab costs nothing — with one correction from review.** The reference-derived lane
+is a file read: `GET /graph`'s `recommendations` field, already in the graph store. The
+**forward-citer lane is not**. The store holds only per-anchor citer ID SETS
+(`record_forward_sweep` writes `{citers, swept_at, complete, source}`) — no title, no authors, no
+abstract — and the rows come from `neighbourhood.forward_delta()`, a Semantic Scholar sweep of
+one call per corpus paper that declines to start without an S2 key. So free rows come only from
+the last run's persisted result and the discovery ledger's reservoir; producing NEW ones is
+network work inside the run job.
+
+The multi-source query run costs real money and takes minutes, so it stays an explicit action on
+a background job — invariant 1, not a preference.
+
+**A query re-ranks the list in project context and highlights matching nodes** already in the
+graph. It does not add result nodes: the graph keeps meaning "your project", and a crowded graph
+of things he has not read would answer a question he did not ask.
+
+**Empty project** shows the query box alone. No new machinery — `_reading_list` already returns
+`[]` gracefully and the lexical lane still produces suggestions, which is what makes Discover the
+on-ramp for a new project's first papers.
+
+## Questions settled without asking
+
+| question | answer | evidence |
+|---|---|---|
+| Does Discover need a library? | No | `_reading_list` returns `[]`; "the lexical lane still produces suggestions" |
+| Sections or one list? | One list, per-row provenance | `reasons` already speaks this language |
+| Ranking with no query? | Existing project signals | connectivity bonus, significance classification, citation counts |
+| Hidden list shared? | Yes, already is | `graph/recommendations` runs through `discovery.filter_hidden` |
+| Does the graph move? | No | project structure is unambiguously Map |
+| Author board / labs? | Stay | "we keep all features of Map" |
+
+## Staging
+
+Each step ships and is verifiable on its own. Step 1 is deliberately duplicative until step 3;
+no other step leaves the tab half-merged.
+
+1. **Lanes behind one list.** Feed the Map's recommendations into the same ranked list Discover
+   builds, with provenance per row. The source is `GET /graph`'s `recommendations` field, **not**
+   `GET /graph/recommendations` — that route has no caller in `mobile/`, `web/` or `shared/`.
+
+   **COPY, not move:** the Map's `zap` sheet keeps working through this step, because removing it
+   would strip a Map feature and "we keep all features of Map" is the constraint. That does mean
+   the same rows are reachable from two places until step 3, which is the one step that is
+   deliberately worse before it is better.
+
+   **The real content of this step is shape, not plumbing.** `GraphRecommendation` has no
+   `candidate_id`, `abstract`, `affiliations`, `sources`, `relevance` or `credibility`, and calls
+   its reasons `recommend_reasons`. `SuggestionCard` keys both its React identity and its
+   in-flight hide guard on `candidate_id` — so dropping graph rows in unchanged gives every one
+   of them `undefined`, colliding React keys and a hide response that can flip the wrong card.
+   Step 1 is a server-side `candidate_id` + `reasons` alias, or an explicit client adapter.
+2. **First-run, BEFORE the tab goes.** Empty project shows the query box as the on-ramp. This
+   moved ahead of the tab removal in review: today's only on-ramp is `EmptyProjectHub`'s
+   "Discover papers" CTA (`index.tsx:503` → `router.push('/discover')`), and the Map tab's
+   zero-paper state is "No map yet" with a **Build map** button. Removing Discover's tab first
+   would point every new project's CTA at a dead end.
+3. **The list moves under the graph** in the Map tab, with the query box. Discover's tab is
+   removed; its route and `index.tsx`'s `onDiscover` both land on the query box. Touches
+   `_layout.tsx`'s `TAB_META` (4 slots → 3) and `nowPlayingVisibility.ts`'s hardcoded
+   `TAB_PATHS`.
+4. **Query ↔ graph highlighting.** Matching nodes light up; no new nodes.
+
+## Scope and unresolved mechanics
+
+**Mobile only.** The web SPA has its own `discover` view and hash route (`web/src/App.tsx`) and
+its own `RecommendationsPanel` (`web/src/components/Graph.tsx`); it follows separately via
+`docs/web-rebuild-plan.md`.
+
+**The Map already has a text input, and it means something else.** `graph.tsx`'s `search` header
+action filters graph NODES locally and for free. The query box arriving in step 3 runs a metered
+background job. Two inputs on one screen with opposite semantics is not addressed here and needs
+deciding before step 3 — most likely by making one box do both: filter as you type, run on
+submit.
+
+**Two long jobs can be live on one screen.** The graph build (`graph_jobs`, keyed on `pid`) and
+the Discover run (`discovery_jobs`, scoped `discovery:${pid}`) are separate registries and can
+run concurrently. The write race itself is closed by `graph_store` revisioning (#407), so this is
+a presentation question: what the tab shows when both are running.
+
+## Open, and deliberately not decided here
+
+- **Ordering between lanes in one list.** A reference the corpus cites 6 times and a query hit
+  with a strong lexical match are not comparable on any scale that exists today. Needs a real
+  ranking pass, and probably his eye on a sample.
+- **What the Map tab is called in the tab bar** if the list becomes its main job. He chose "Map"
+  for now; worth revisiting once step 3 ships and he has used it.
