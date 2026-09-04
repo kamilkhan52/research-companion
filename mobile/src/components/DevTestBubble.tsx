@@ -32,7 +32,7 @@ import type { DispatchModel } from '@/api/dispatch';
 import type {
   DevTestItem, DevTestFeedbackEntry, DispatchStatus, DeployState,
 } from '@/api/endpoints';
-import { Markdown } from '@/components/Markdown';
+import { Markdown, MarkdownRuns } from '@/components/Markdown';
 // DR-118 reuses the corpus-neighbourhood line's coarse age formatter rather than growing a second
 // one — "2h ago" here means what it means there.
 import { relativeAge } from '@/components/NeighbourhoodLine';
@@ -1585,7 +1585,13 @@ export function DispatchBanner({ status }: { status: DispatchStatus }) {
       {open ? (
         <>
           {detail ? (
-            <Text variant="caption" color={t.muted} numberOfLines={2}>{detail}</Text>
+            // DR-128 — Kamil, of this very line: "the details text seem to expect markdown
+            // rendering but none is happening." A session's closing recap is written as
+            // markdown, and it was the raw source. Same two-line clamp; nested runs keep it.
+            <Text variant="caption" color={t.muted} numberOfLines={2}
+                  testID="devtest-dispatch-status-detail">
+              <MarkdownRuns text={detail} />
+            </Text>
           ) : null}
           <Text variant="caption" color={t.muted}>
             {status.steps > 0 ? `${status.steps} steps` : 'no step detail'}
@@ -1837,8 +1843,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // Not persisted: "collapsed" is the right state to come back to every time, and remembering
   // per item would recreate the wall of text on exactly the cards he reads most.
   const [details, setDetails] = useState(false);
-  // DR-120: the collapsed three-line preview, with the markdown syntax taken out. Memoized per
-  // description because the whole list of cards re-renders on every verdict.
+  // The description as one plain string. DR-128 gave the visible preview its formatting back
+  // (`MarkdownRuns` below), so this is now only for the toggle's `accessibilityLabel`, which
+  // must be a string. Memoized per description because the whole list re-renders on a verdict.
   const detailPreview = useMemo(() => markdownToPlain(item.how_to_test), [item.how_to_test]);
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
@@ -2036,12 +2043,16 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
                 // carried here or a screen reader loses the description entirely.
                 accessibilityLabel={`Show details. ${detailPreview}`}
                 testID="devtest-item-details">
+                {/* DR-128: the preview is markdown too, now — nested `<Text>` runs, which is
+                    what keeps `numberOfLines` working. The plain string still exists, but only
+                    for the label above; the screen gets the formatting. */}
                 <Text
                   variant="caption"
                   color={t.muted}
                   style={styles.how}
+                  testID="devtest-item-preview"
                   numberOfLines={DETAIL_PREVIEW_LINES}>
-                  {detailPreview}
+                  <MarkdownRuns text={item.how_to_test} />
                 </Text>
                 <Text variant="caption" color={t.violet} style={styles.how}>Show details</Text>
               </Pressable>

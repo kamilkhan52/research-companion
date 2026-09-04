@@ -30,6 +30,10 @@ jest.mock('@/components/Markdown', () => ({
     markdownProps.push(props);
     return null;
   },
+  // DR-128's preview renderer. It takes no scale — it inherits the caption it is dropped
+  // into — so it is stubbed to its text, which keeps the prose findable for the assertions
+  // below that read the card as a whole.
+  MarkdownRuns: (props: { text: string }) => props.text,
 }));
 
 jest.mock('@/api/endpoints', () => ({

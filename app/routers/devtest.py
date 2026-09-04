@@ -307,6 +307,20 @@ def _entry_epoch(ts: object) -> float | None:
         return None
 
 
+def _record_epoch(value: object) -> float:
+    """A dispatch record's epoch field as a float — 0.0 when it is missing or not a number.
+
+    Same rule as `_entry_epoch` above and for the same reason: these files are written by a
+    detached child and read by every dispatch-aware route, so a torn or hand-edited record must
+    drop out of the arithmetic rather than 500 the caller. The phone is the only place the
+    dispatch file can be cleared from, and it can only clear it through a route that answers.
+    """
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _dispatch_activity(aliases: dict[str, str]) -> dict[str, float]:
     """item id → epoch seconds of the most recent Claude dispatch aimed at that item.
 
@@ -330,10 +344,7 @@ def _dispatch_activity(aliases: dict[str, str]) -> dict[str, float]:
         item_id = info.get("item_id")
         if not item_id or not isinstance(item_id, str):
             continue
-        try:
-            when = float(info.get("started_ts") or 0)
-        except (TypeError, ValueError):
-            when = 0.0
+        when = _record_epoch(info.get("started_ts"))
         # Pre-`started_ts` records (and any that lost it) still carry the human timestamp.
         when = when or _entry_epoch(info.get("started_at")) or 0.0
         if not when:
@@ -1383,10 +1394,7 @@ def _dispatch_peek() -> tuple[dict | None, bool]:
     # sheet — and the phone is the only place he could clear the file from.
     if not isinstance(info, dict):
         return None, False
-    try:
-        started = float(info.get("started_ts") or 0)
-    except (TypeError, ValueError):
-        started = 0.0
+    started = _record_epoch(info.get("started_ts"))
     return info, _dispatch_liveness(info.get("pid"), started) != "dead"
 
 
@@ -1414,10 +1422,7 @@ def _dispatch_reap() -> tuple[dict | None, bool]:
     # Liveness FIRST, age only as a tiebreaker. The other order declares a long-running session
     # dead, which releases single-flight and lets the next dispatch `git reset --hard` the
     # worktree that session is still editing. See DISPATCH_MAX_AGE_S.
-    try:
-        started = float(info.get("started_ts") or 0)
-    except (TypeError, ValueError):
-        started = 0.0
+    started = _record_epoch(info.get("started_ts"))
     liveness = _dispatch_liveness(info.get("pid"), started)
     if liveness == "dead":
         ended_reason = "process gone"
@@ -1676,10 +1681,7 @@ def _continuable_dispatch(item_id: str | None) -> tuple[dict, str, str] | None:
         # `_dispatch_activity` applies to these very files.
         if not isinstance(info, dict) or info.get("item_id") not in aliases:
             continue
-        try:
-            started = float(info.get("started_ts") or 0)
-        except (TypeError, ValueError):
-            started = 0.0
+        started = _record_epoch(info.get("started_ts"))
         # `_dispatch_activity` reads the same files and falls back to the ISO field; do the
         # same, then REQUIRE a start time. A zero start slipped past the age bound entirely,
         # and it also made any feedback look newer than the run — so such a record came back
@@ -1733,7 +1735,7 @@ def _resumable_dispatch() -> dict | None:
     # The CLI expires its stored sessions, so `--resume` on a days-old id spawns a process that
     # dies immediately — which would present as a fresh `gone` and look like a new bug. Past
     # this window, a fresh dispatch is the honest offer.
-    started = float(info.get("started_ts") or 0)
+    started = _record_epoch(info.get("started_ts"))
     if started and time.time() - started > DISPATCH_RESUME_MAX_AGE_S:
         return None
     progress = _dispatch_progress(info.get("log"))
@@ -2381,6 +2383,13 @@ def dispatch_status(request: Request):
             info = json.loads((_dispatch_dir() / "last.json").read_text())
         except (OSError, ValueError):
             return {"dispatch": None}       # nothing has ever been dispatched
+        # `current.json` gets this from `_dispatch_peek`/`_dispatch_reap`; the ARCHIVED record
+        # read here had nothing checking it, so valid JSON that is not a dict 500'd this route
+        # on the very next `.get`. The banner is the only place the file's state is visible and
+        # the phone is the only place it can be cleared from, so a malformed archive that takes
+        # the route down takes the way out down with it.
+        if not isinstance(info, dict):
+            return {"dispatch": None}
     progress = _dispatch_progress(info.get("log"))
     result = progress["result"]
     rate_limit = progress["rate_limit"]
@@ -2405,7 +2414,7 @@ def dispatch_status(request: Request):
         # for something that does not exist, which is this whole feature's failure mode wearing
         # the opposite hat.
         state = "gone"
-    started = float(info.get("started_ts") or 0)
+    started = _record_epoch(info.get("started_ts"))
     if alive:
         elapsed = time.time() - started if started else None
     elif result and result.get("duration_ms"):
@@ -2413,7 +2422,7 @@ def dispatch_status(request: Request):
     else:
         # Falls back to when the reap NOTICED the exit, which can overshoot by up to one poll
         # interval. Good enough for a banner; never presented as exact.
-        elapsed = (float(info.get("ended_ts") or 0) - started) or None
+        elapsed = (_record_epoch(info.get("ended_ts")) - started) or None
     public = _via_public_tunnel(request)
     if public and result:
         result = {**result, "text": None}

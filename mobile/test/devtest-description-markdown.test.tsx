@@ -6,9 +6,11 @@
 // backticked paths. It was the one body of text in the card rendered as raw `<Text>` — an agent
 // reply three elements below it already went through `<Markdown>`.
 
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
 
-import { markdownToPlain } from '@/lib/markdownPlain';
+import { markdownToInlineSource, markdownToPlain, restoreEscapes } from '@/lib/markdownPlain';
+import { fonts } from '@/theme/tokens';
 import { DevTestBubble } from '@/components/DevTestBubble';
 import type { DevTestItem } from '@/api/endpoints';
 
@@ -136,4 +138,90 @@ test('markdownToPlain is total on the shapes that break naive strippers', () => 
   expect(markdownToPlain('a `dangling backtick')).toBe('a `dangling backtick');
   expect(markdownToPlain('[label with no target]')).toBe('[label with no target]');
   expect(markdownToPlain('```\ncode\n```')).toBe('code');
+});
+
+// ---------- DR-128: the COLLAPSED half ----------
+//
+// Kamil, as a remark on DR-120: "When 'Show details' is pressed, it renders the markdown, but
+// stays unrendered still when compacted (Hide details; default). Fix that and it should be all
+// good." DR-120 fixed the half he has to open a card to see. The preview is clamped with
+// `numberOfLines`, which only a single `<Text>` honours — but a `<Text>` NESTED inside that one
+// clamps with it, so the inline faces fit inside the constraint after all. Block structure still
+// flattens; three lines is not where a heading helps.
+
+test('the collapsed preview renders the inline formatting, and still clamps to three lines', async () => {
+  const screen = await openCard();
+  const preview = screen.getByTestId('devtest-item-preview');
+  // The constraint DR-120 shipped the flat version for. Losing it would be a worse regression
+  // than the one being fixed: the whole evidence cell would push the verdict row off screen.
+  expect(preview.props.numberOfLines).toBe(3);
+  // Each of these is its OWN run now. Under DR-120's single flattened string an exact match on
+  // any of them finds nothing, which is what makes this fail if the fix is taken back out.
+  const code = within(preview).getByText('app/routers/devtest.py');
+  expect(StyleSheet.flatten(code.props.style).fontFamily).toMatch(/Menlo|monospace/);
+  const bold = within(preview).getByText('Shipped in #471');
+  expect(StyleSheet.flatten(bold.props.style).fontFamily).toBe(fonts.bodyBold);
+  const link = within(preview).getByText('#471');
+  expect(StyleSheet.flatten(link.props.style).textDecorationLine).toBe('underline');
+  // Formatted, not raw: the syntax and the URL are still gone, which was DR-120's own measure.
+  expect(screen.queryByText(/\*\*Shipped in/)).toBeNull();
+  expect(screen.queryByText(/github\.com/)).toBeNull();
+});
+
+test('the preview unparks its escapes, so no sentinel reaches the screen', async () => {
+  // The escape parking has to survive inline TOKENIZING now, not just the stripping passes.
+  // Unparked early, `\*` is a live emphasis marker again and eats the words on both sides of
+  // it; left parked, a control character lands on his phone.
+  jest.mocked(api.getDevTestItems).mockResolvedValue({
+    items: [{ ...ITEMS[0], how_to_test: 'a literal \\*asterisk\\* pair and **real** bold' }],
+  });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText(/DR-A.*Tap to leave a pass/i));
+  const preview = screen.getByTestId('devtest-item-preview');
+  within(preview).getByText('a literal *asterisk* pair and ');
+  expect(StyleSheet.flatten(within(preview).getByText('real').props.style).fontFamily)
+    .toBe(fonts.bodyBold);
+});
+
+test('an escape inside maths is unparked too, rather than leaving a sentinel on screen', async () => {
+  // Maths is the one token rendered as its own SOURCE, so it is the one that can skip the
+  // per-leaf restore without anything else noticing — and a NUL on the phone is the result.
+  jest.mocked(api.getDevTestItems).mockResolvedValue({
+    items: [{ ...ITEMS[0], how_to_test: 'the bound \\(x\\_i \\le n\\) holds' }],
+  });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText(/DR-A.*Tap to leave a pass/i));
+  const preview = screen.getByTestId('devtest-item-preview');
+  within(preview).getByText('\\(x_i \\le n\\)');
+});
+
+test('markdownToInlineSource flattens the blocks and leaves the inline syntax standing', () => {
+  const src = (md: string) => restoreEscapes(markdownToInlineSource(md));
+  expect(src('## Heading\n\n- **bold** and `code`')).toBe('Heading **bold** and `code`');
+  // The link is the one construct the two readers part company over: the plain stripper drops
+  // it here, this one keeps it whole for the tokenizer downstream.
+  expect(src('see [#471](https://example.com/pull/471) for it'))
+    .toBe('see [#471](https://example.com/pull/471) for it');
+  // An image cannot be a text run under either reading; its alt text is all it can contribute.
+  expect(src('![a figure](shot.png) follows')).toBe('a figure follows');
+  expect(src('> quoted\n> lines')).toBe('quoted lines');
+  expect(src('1. one\n2. two')).toBe('one two');
+  expect(src('```\ncode\n```')).toBe('code');
+  expect(src('a <https://example.com> link')).toBe('a https://example.com link');
+  expect(src('')).toBe('');
+  // Maths as written, same as the plain reader — a MathView is a View, and a View inside a
+  // clamped Text is exactly what stops the clamp.
+  expect(src('the bound \\(O(n \\log n)\\) holds')).toBe('the bound \\(O(n \\log n)\\) holds');
+});
+
+test('markdownToInlineSource parks its escapes for the tokenizer, not for the screen', () => {
+  // Deliberately NOT a display string: the sentinel has to outlive inline tokenizing, so a
+  // caller that renders this value directly puts control characters on the phone.
+  const parked = markdownToInlineSource('a literal \\*asterisk\\* pair');
+  expect(parked).toContain(String.fromCharCode(0));
+  expect(restoreEscapes(parked)).toBe('a literal *asterisk* pair');
 });
