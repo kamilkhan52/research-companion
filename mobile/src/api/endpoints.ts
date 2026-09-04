@@ -109,6 +109,15 @@ export interface DevTestItem {
   feedback_count: number;
   /** DR-080: agent replies recorded by triage — the card flags their presence. */
   response_count?: number;
+  /** DR-134: his word came last, so this one is unanswered. Independent of the VERDICT on
+   *  purpose — a passed item he has since commented on is the case that was getting lost,
+   *  because every verdict-keyed filter hides it. A `closed` row that never had a conversation
+   *  is excluded: the ledger row was its answer. */
+  awaiting_reply?: boolean;
+  /** DR-134: whether an agent has this item. `working` is the live dispatched session,
+   *  `worked` means one has run on it before — which is what distinguishes a silent row from
+   *  an untouched one. */
+  agent_state?: 'idle' | 'working' | 'worked';
   /** DR-118: epoch SECONDS of the newest server-side thing that happened to this item — an
    *  agent reply, a dispatch, or the tester's own verdict/remark. Null when nothing has. The
    *  bubble maxes it against its device-local "when I last opened this card". */

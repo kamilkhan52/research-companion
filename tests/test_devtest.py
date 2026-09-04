@@ -2884,3 +2884,204 @@ def test_the_tunnel_message_wins_over_a_running_dispatch(client, monkeypatch, tm
     d = client.get("/api/devtest/deploy", headers={"cf-ray": "abc123"}).json()["deploy"]
     assert d["deployable"] is False
     assert d["active_dispatch"] is None
+
+
+# --- DR-134: what is unanswered, and what an agent has (2026-09-04) --------------------------
+
+def test_a_comment_on_a_passed_item_is_flagged_unanswered(client, monkeypatch, tmp_path):
+    """Kamil: "I made comments on Passed items expecting they'd be seen." They were not. The
+    default filter keys on the VERDICT, so recording a Pass drops the card out of it and a
+    comment added afterwards has nowhere to appear. `awaiting_reply` keys on whose word came
+    last instead, which is the only way that item can be surfaced again."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(
+        json.dumps({"item_id": "DR-001", "kind": "response", "ts": "2026-09-01T00:00:00+00:00",
+                    "text": "shipped"}) + "\n"
+        + json.dumps({"item_id": "DR-001", "kind": "feedback", "ts": "2026-09-02T00:00:00+00:00",
+                      "verdict": "pass", "comment": "one more thing"}) + "\n")
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["awaiting_reply"] is True
+
+    # Answering it clears the flag — the queue has to drain, or it stops being a queue.
+    with inbox.open("a") as f:
+        f.write(json.dumps({"item_id": "DR-001", "kind": "response",
+                            "ts": "2026-09-03T00:00:00+00:00", "text": "on it"}) + "\n")
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["awaiting_reply"] is False
+
+
+def test_a_settled_closed_row_is_not_in_the_queue(client, monkeypatch, tmp_path):
+    """A closed row that never had a conversation was answered by the ledger row itself. 22 of
+    the 30 rows this first flagged were exactly that — things settled weeks ago — and a queue
+    that is three-quarters stale is a queue he stops reading. But a closed row he came BACK to
+    after a reply is him reopening something, which is the case worth surfacing."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    # DR-013 is `closed` in the sample. His word is last, but nothing ever answered it.
+    inbox.write_text(json.dumps({"item_id": "DR-013", "kind": "feedback",
+                                 "ts": "2026-09-02T00:00:00+00:00", "verdict": "pass"}) + "\n")
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-013"]["awaiting_reply"] is False
+
+    # Same row, but now a reply exists for him to have spoken after.
+    inbox.write_text(
+        json.dumps({"item_id": "DR-013", "kind": "response", "ts": "2026-09-01T00:00:00+00:00",
+                    "text": "done"}) + "\n"
+        + json.dumps({"item_id": "DR-013", "kind": "feedback", "ts": "2026-09-02T00:00:00+00:00",
+                      "verdict": "remark", "comment": "actually, still broken"}) + "\n")
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-013"]["awaiting_reply"] is True
+
+
+def test_the_item_a_live_session_is_on_says_so(client, monkeypatch, tmp_path):
+    """The other half of what he asked for: "a way to track if other sessions have addressed
+    some or are addressing it." `_dispatch_peek`, never `_dispatch_running` — the latter reaps,
+    and this is a polled list route holding no lock (DR-124)."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
+
+    # On the FILESYSTEM, not on the symbol. Spying on `_dispatch_running` was vacuous: a bare
+    # `_dispatch_reap()` inserted beside the peek left all 151 tests green while the route
+    # rewrote `last.json` and unlinked `current.json` on every call.
+    current = dt._dispatch_dir() / "current.json"
+    current.write_text(json.dumps({"id": "d1", "item_id": "DR-001", "pid": 999999}))
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert current.exists(), "the list route reaped a record it only meant to read"
+    assert not (dt._dispatch_dir() / "last.json").exists()
+    assert items["DR-058"]["agent_state"] == "idle"
+
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"item_id": "DR-001"}, True))
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["agent_state"] == "working"
+
+    # A session that has ENDED is not on it any more — but if one has RUN on it before, that is
+    # `worked`, not `idle`. The distinction is what separates a silent row from an untouched one,
+    # which is half of what he asked for.
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"item_id": "DR-001"}, False))
+    monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {"DR-001": 1.0})
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["agent_state"] == "worked"
+    assert items["DR-058"]["agent_state"] == "idle"
+
+    # And with no history at all it is plainly idle.
+    monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["agent_state"] == "idle"
+
+
+def test_a_malformed_dispatch_record_does_not_empty_the_bubble(client, monkeypatch, tmp_path):
+    """DR-134 puts `_dispatch_peek` on the bubble's MAIN read, so a record that is valid JSON but
+    not a dict — or whose `started_ts` is not a number — would 500 the whole item list. The phone
+    is the only place he could clear that file from."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    current = dt._dispatch_dir() / "current.json"
+    for bad in ('["a list"]', '"a string"', '42', 'null',
+                '{"pid": 1, "started_ts": "not-a-number"}'):
+        current.write_text(bad)
+        r = client.get("/api/devtest/items")
+        assert r.status_code == 200, f"{bad} emptied the sheet"
+        assert len(r.json()["items"]) == 3
+        # The REAPING sibling takes the same shapes — deploy and dispatch read through it, and
+        # the phone is the only place he could clear the file from.
+        assert client.get("/api/devtest/deploy").status_code in (200, 503), bad
+
+
+def test_the_badge_follows_an_item_through_its_provisional_id(client, monkeypatch, tmp_path):
+    """The common case, and the one it was silently wrong for: he raises an item from the phone
+    (`NEW-…`), dispatches it, and the session triages it into a `DR-…` row mid-run. The card
+    folds into that row — and without mapping the running id the same way, the badge drops from
+    "Claude is on it" to nothing while the session is still working. That is DR-092's original
+    complaint, re-created by DR-097's aliasing."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE.replace(
+        "| DR-001 | 2026-07-21 | Notes must show progress. | `implemented — verify` | Verify both densities. |",
+        "| DR-001 | 2026-07-21 | Notes must show progress. | `implemented — verify` | "
+        "Provisional id `NEW-1788482089`. Verify both densities. |"))
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
+    # The live session still names the PROVISIONAL id it was dispatched on.
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"item_id": "NEW-1788482089"}, True))
+
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["agent_state"] == "working"
+    assert items["DR-058"]["agent_state"] == "idle"
+
+
+def test_a_bare_pass_is_not_an_unanswered_comment(client, monkeypatch, tmp_path):
+    """The rule that took the live queue from 30 to 5, and it shipped unpinned for a round.
+
+    A bare Pass is him CLOSING the loop, not asking for anything. Flagging it made the queue
+    undrainable — nothing ever replies to a pass, so every future one would add a permanent
+    entry. The same entry WITH a comment is the case DR-134 exists for.
+    """
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+
+    def flag(entry: dict) -> bool:
+        inbox.write_text(
+            json.dumps({"item_id": "DR-001", "kind": "response",
+                        "ts": "2026-09-01T00:00:00+00:00", "text": "shipped"}) + "\n"
+            + json.dumps({"item_id": "DR-001", "kind": "feedback",
+                          "ts": "2026-09-02T00:00:00+00:00", **entry}) + "\n")
+        items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+        return items["DR-001"]["awaiting_reply"]
+
+    # DR-001 is `implemented — verify`, so the closed-row exclusion cannot be what decides this.
+    assert flag({"verdict": "pass"}) is False
+    assert flag({"verdict": "pass", "comment": "   "}) is False, "whitespace is not a request"
+    assert flag({"verdict": "pass", "comment": "one more thing"}) is True
+    # A screenshot alone is a valid remark (DR-088), so it asks for something too.
+    assert flag({"verdict": "remark", "screenshot": "shots/x.png"}) is True
+
+
+def test_raising_an_item_stops_counting_once_it_has_been_triaged(client, monkeypatch, tmp_path):
+    """DR-063 and DR-065 sat in the queue on nothing but their own raising, at
+    `implemented — verify` since 2026-08-11. Once a row has a real state the ledger row IS the
+    answer and the ball is on his side."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(json.dumps({"id": "NEW-999", "kind": "new_item",
+                                 "ts": "2026-09-02T00:00:00+00:00", "title": "A thing"}) + "\n")
+
+    # Untriaged: nobody has answered it, so it is genuinely waiting.
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["NEW-999"]["awaiting_reply"] is True
+
+    # Triaged into a row with a real state: the row is the answer.
+    ledger.write_text(LEDGER_SAMPLE.replace(
+        "| DR-058 | 2026-08-11 | One paper changes the notes too much. | `open` |",
+        "| DR-058 | 2026-08-11 | One paper changes the notes too much. | `implemented — verify` | "
+        "Provisional id `NEW-999`. |"))
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-058"]["awaiting_reply"] is False
