@@ -379,6 +379,7 @@ def list_items():
             known.add(entry["id"])
     counts: dict[str, int] = {}
     response_counts: dict[str, int] = {}
+    substantive: dict[str, bool] = {}
     # DR-118: (epoch seconds, kind) of the newest thing that happened to each item. `kind` is the
     # kind of the WINNING event, so the client can say what the timestamp refers to rather than
     # showing a bare age.
@@ -400,24 +401,36 @@ def list_items():
         if kind == "feedback" and target:
             counts[target] = counts.get(target, 0) + 1
             note(target, when, "you")
+            # Whether his latest word asks for anything. A comment does; a bare Pass does not.
+            substantive[target] = bool((entry.get("comment") or "").strip())
         elif kind == "response" and target:
             response_counts[target] = response_counts.get(target, 0) + 1
             note(target, when, "claude")
+            substantive[target] = False
         elif kind == "new_item":
             # Raising it is activity too, and for an untriaged item it is the only kind there is —
             # without this a brand-new issue would sort as though nothing had ever happened to it.
             new_id = entry.get("id")
-            note(aliases.get(new_id or "", new_id), when, "raised")
-    for target, when in _dispatch_activity(aliases).items():
+            tgt = aliases.get(new_id or "", new_id)
+            note(tgt, when, "raised")
+            # Raising it IS a request — until it has been triaged into a real state.
+            if tgt:
+                substantive[tgt] = True
+    dispatched = _dispatch_activity(aliases)
+    for target, when in dispatched.items():
         note(target, when, "dispatch")
     # DR-134 — Kamil: "I made comments on Passed items expecting they'd be seen." They were not.
-    # The default filter is "Not reviewed", and recording a Pass drops the card out of it, so a
-    # comment added afterwards lands on a card he can no longer see and nothing anywhere says it
-    # is unanswered. `awaiting_reply` is deliberately independent of the VERDICT for that reason:
-    # a passed item he has since commented on is exactly the case that was getting lost, so a
-    # filter keyed on the verdict can never surface it.
+    #
+    # The cause, corrected in review: NOT that the default filter is "Not reviewed" — the
+    # persisted default is `all` (DevTestBubble's toolbar draft). It is that DR-077 persists his
+    # LAST choice, so a session spent under "Not reviewed" leaves him there, and every filter in
+    # the sheet keys on the VERDICT. Recording a Pass then drops the card out of that view, and a
+    # comment added afterwards lands on a card he can no longer see with nothing saying it is
+    # unanswered. `awaiting_reply` is deliberately verdict-INDEPENDENT for that reason: a filter
+    # keyed on the verdict can never surface the passed-and-then-commented item.
     running = _dispatch_running_item()
-    worked = set(_dispatch_activity(aliases))
+    running = aliases.get(running or "", running)
+    worked = set(dispatched)
     for item in items:
         item["feedback_count"] = counts.get(item["id"], 0)
         # DR-080: an agent reply is the signal the tester can decide pass/close from — the
@@ -429,14 +442,32 @@ def list_items():
         # His word came last, so the ball is on our side. `raised` counts: an item raised and
         # never answered is the same unanswered state as a comment left hanging.
         #
-        # The exception is what makes this usable rather than noise. A CLOSED row that never had
+        # Two exclusions keep this a queue rather than noise, and both were measured against
+        # the live inbox rather than reasoned about. A CLOSED row that never had a conversation
+        # was answered by the ledger row itself. And a bare PASS is him closing the loop, not
+        # asking for anything — 8 of the 15 that survived the first exclusion were exactly that,
+        # and they could never drain, because nothing replies to a pass on an already-closed row.
         # a conversation on it was answered by the ledger row itself — 22 of the 30 rows this
         # first flagged were exactly that, settled things from weeks ago, and a queue that is
         # three-quarters stale is a queue he stops reading. But a closed row he came BACK to
         # after a reply is different: that is him reopening something, which is precisely the
         # case that was getting lost. So closed rows qualify only once a reply exists to have
         # spoken after.
-        him_last = (latest or (None, None))[1] in ("you", "raised")
+        # A bare Pass with no comment is him CLOSING the loop, not asking for something — the
+        # opposite of the comment this exists to surface. Measured against the live inbox, 8 of
+        # the 15 survivors were exactly that, and they can never drain: nothing replies to a
+        # pass on an already-closed row, so every future pass would add one permanently. And
+        # `raised` only counts while the row is still untriaged; once it has a real state the
+        # ledger row IS the answer and the ball is on his side.
+        kind_last = (latest or (None, None))[1]
+        # `raised` counts only while the row is still untriaged. Once it has a real state the
+        # ledger row IS the answer and the ball is on his side — DR-063 and DR-065 have sat at
+        # `implemented — verify` since 2026-08-11 with nothing but their raising, and they are
+        # waiting on him, not on us.
+        if kind_last == "raised" and item["state"] != "new — untriaged":
+            him_last = False
+        else:
+            him_last = kind_last in ("you", "raised") and substantive.get(item["id"], False)
         settled = item["state"] == "closed" and response_counts.get(item["id"], 0) == 0
         item["awaiting_reply"] = him_last and not settled
         # "is anyone on this" — the other half of what he asked for. `working` is the live
@@ -1355,8 +1386,17 @@ def _dispatch_peek() -> tuple[dict | None, bool]:
         info = json.loads((_dispatch_dir() / "current.json").read_text())
     except (OSError, ValueError):
         return None, False
-    return info, _dispatch_liveness(
-        info.get("pid"), float(info.get("started_ts") or 0)) != "dead"
+    # A record that is valid JSON but not a dict, or whose `started_ts` is not a number, used to
+    # crash the caller. That was survivable while this only fed a banner; DR-134 puts it on
+    # `/api/devtest/items`, the bubble's main read, so a malformed record would empty the whole
+    # sheet — and the phone is the only place he could clear the file from.
+    if not isinstance(info, dict):
+        return None, False
+    try:
+        started = float(info.get("started_ts") or 0)
+    except (TypeError, ValueError):
+        started = 0.0
+    return info, _dispatch_liveness(info.get("pid"), started) != "dead"
 
 
 def _dispatch_reap() -> tuple[dict | None, bool]:

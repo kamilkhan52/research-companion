@@ -7,12 +7,13 @@
 // Also home to GeneratingBar/prepLabel, the audio-preparation progress UI.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Animated, Easing, Pressable, ScrollView, StyleSheet, View, type TextStyle } from 'react-native';
 import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
 
 import { sentenceSeekPosition, splitSentences, type SentenceBoundary } from '../../sentence-seek';
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
+import { narrationTextStyle, useListeningMode } from '@/store/listening';
 import { Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
@@ -31,12 +32,16 @@ const TranscriptLine = memo(function TranscriptLine({
   index,
   text,
   active,
+  type,
   onPress,
   onLayout,
 }: {
   index: number;
   text: string;
   active: boolean;
+  /** DR-135 — the reader's chosen face/size. Memoized by the parent so this stays a stable
+   *  reference and the memo above keeps holding against the 10Hz position clock. */
+  type: TextStyle;
   onPress: (i: number) => void;
   onLayout: (i: number, y: number, h: number) => void;
 }) {
@@ -58,6 +63,7 @@ const TranscriptLine = memo(function TranscriptLine({
       <Animated.Text
         style={[
           styles.line,
+          type,
           { opacity: glow.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) },
         ]}>
         {text}
@@ -68,6 +74,13 @@ const TranscriptLine = memo(function TranscriptLine({
 
 export function RollingTranscript({ narration }: { narration: string }) {
   const styles = useThemedStyles(makeStyles);
+  // DR-135 — face + size come from the reader's narration settings (the sheet behind the
+  // player header's control), not from a literal in this file.
+  const { narrationFace, narrationTextScale } = useListeningMode();
+  const type = useMemo(
+    () => narrationTextStyle(narrationFace, narrationTextScale),
+    [narrationFace, narrationTextScale],
+  );
   // Smooth, dead-reckoned playback clock (see useSmoothPosition) instead of raw coarse polls.
   const { position, duration } = useSmoothPosition();
   const sentences = useMemo(() => splitSentences(narration), [narration]);
@@ -183,6 +196,7 @@ export function RollingTranscript({ narration }: { narration: string }) {
           index={i}
           text={s.text}
           active={i === activeIdx}
+          type={type}
           onPress={handlePress}
           onLayout={handleLayout}
         />
@@ -292,12 +306,13 @@ export function GeneratingBar({
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   roll: { flex: 1, paddingHorizontal: space.lg },
+  // DR-135 — fontFamily/fontSize/lineHeight now arrive per-render from the narration settings
+  // (see narrationTextStyle) and override this base. What stays here is what the reader does
+  // not choose: the ink, and the gap BETWEEN sentences. That gap was space.sm on top of a
+  // 32px line box, which is part of why the roll felt oversized even before the type did.
   line: {
-    fontFamily: fonts.bodySemiBold,
-    fontSize: 21,
-    lineHeight: 32,
     color: t.text, // dimming is the animated opacity, so inactive lines still read muted
-    paddingVertical: space.sm,
+    paddingVertical: space.xs,
   },
   // U.23 audio-loading card, per the Figma spec (node 64:157).
   genCard: {

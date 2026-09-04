@@ -2955,13 +2955,19 @@ def test_the_item_a_live_session_is_on_says_so(client, monkeypatch, tmp_path):
     monkeypatch.setattr(dt, "_LEDGER", ledger)
     monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
 
-    reaped: list[str] = []
-    monkeypatch.setattr(dt, "_dispatch_running", lambda: reaped.append("x") or None)
+    # On the FILESYSTEM, not on the symbol. Spying on `_dispatch_running` was vacuous: a bare
+    # `_dispatch_reap()` inserted beside the peek left all 151 tests green while the route
+    # rewrote `last.json` and unlinked `current.json` on every call.
+    current = dt._dispatch_dir() / "current.json"
+    current.write_text(json.dumps({"id": "d1", "item_id": "DR-001", "pid": 999999}))
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert current.exists(), "the list route reaped a record it only meant to read"
+    assert not (dt._dispatch_dir() / "last.json").exists()
+    assert items["DR-058"]["agent_state"] == "idle"
+
     monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"item_id": "DR-001"}, True))
     items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
     assert items["DR-001"]["agent_state"] == "working"
-    assert items["DR-058"]["agent_state"] == "idle"
-    assert reaped == [], "the list route must not take the reaping path"
 
     # A session that has ENDED is not on it any more — but if one has RUN on it before, that is
     # `worked`, not `idle`. The distinction is what separates a silent row from an untouched one,
@@ -2976,3 +2982,44 @@ def test_the_item_a_live_session_is_on_says_so(client, monkeypatch, tmp_path):
     monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
     items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
     assert items["DR-001"]["agent_state"] == "idle"
+
+
+def test_a_malformed_dispatch_record_does_not_empty_the_bubble(client, monkeypatch, tmp_path):
+    """DR-134 puts `_dispatch_peek` on the bubble's MAIN read, so a record that is valid JSON but
+    not a dict — or whose `started_ts` is not a number — would 500 the whole item list. The phone
+    is the only place he could clear that file from."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    current = dt._dispatch_dir() / "current.json"
+    for bad in ('["a list"]', '"a string"', '42', 'null',
+                '{"pid": 1, "started_ts": "not-a-number"}'):
+        current.write_text(bad)
+        r = client.get("/api/devtest/items")
+        assert r.status_code == 200, f"{bad} emptied the sheet"
+        assert len(r.json()["items"]) == 3
+
+
+def test_the_badge_follows_an_item_through_its_provisional_id(client, monkeypatch, tmp_path):
+    """The common case, and the one it was silently wrong for: he raises an item from the phone
+    (`NEW-…`), dispatches it, and the session triages it into a `DR-…` row mid-run. The card
+    folds into that row — and without mapping the running id the same way, the badge drops from
+    "Claude is on it" to nothing while the session is still working. That is DR-092's original
+    complaint, re-created by DR-097's aliasing."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE.replace(
+        "| DR-001 | 2026-07-21 | Notes must show progress. | `implemented — verify` | Verify both densities. |",
+        "| DR-001 | 2026-07-21 | Notes must show progress. | `implemented — verify` | "
+        "Provisional id `NEW-1788482089`. Verify both densities. |"))
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    monkeypatch.setattr(dt, "_dispatch_activity", lambda aliases: {})
+    # The live session still names the PROVISIONAL id it was dispatched on.
+    monkeypatch.setattr(dt, "_dispatch_peek", lambda: ({"item_id": "NEW-1788482089"}, True))
+
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-001"]["agent_state"] == "working"
+    assert items["DR-058"]["agent_state"] == "idle"

@@ -110,6 +110,7 @@ import {
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
+import { SettingsStepperRow } from '@/components/SettingsStepperRow';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import {
   DiscussionLoadingSkeleton,
@@ -907,6 +908,9 @@ const STATE_LABEL: Record<string, string> = {
 
 // DR-068 — the readout is the percentage alone (Kamil, 2026-08-22: "Just keep the
 // percentage, not size in the UI"); the resolved pt size stays out of the label.
+// The row itself is SettingsStepperRow (shared with the DR-135 narration sheet); this binds it
+// to the Discussion text scale. The accessibility labels it produces ("… Discussion text size,
+// currently 100 percent") are asserted by test/text-size-stepper.test.tsx.
 function TextSizeStepperRow({
   scale,
   onChange,
@@ -914,84 +918,22 @@ function TextSizeStepperRow({
   scale: number;
   onChange: (next: number) => void;
 }) {
-  const t = useTheme();
   const percent = Math.round(scale * 100);
-  const atMin = scale <= MIN_TEXT_SCALE;
-  const atMax = scale >= MAX_TEXT_SCALE;
-  // Opus review, PR #385: each button's label now carries the CURRENT value, not just the
-  // action — a screen reader focusing either button after a step announces the new percentage
-  // in the same breath, rather than the reader having to swipe back to the value text to learn
-  // what changed.
   return (
-    <View style={stepperStyles.row}>
-      <View style={[stepperStyles.badge, { backgroundColor: t.elevated }]}>
-        <Text variant="heading" color={t.muted}>Aa</Text>
-      </View>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text variant="heading" numberOfLines={1}>Text size</Text>
-        <Text variant="caption" color={t.muted} numberOfLines={1}>Discussion text</Text>
-      </View>
-      <View style={[stepperStyles.segmented, { borderColor: t.line2 }]}>
-        <Pressable
-          onPress={() => onChange(scale - TEXT_SCALE_STEP)}
-          disabled={atMin}
-          accessibilityRole="button"
-          accessibilityLabel={`Decrease Discussion text size, currently ${percent} percent`}
-          style={[stepperStyles.segBtn, atMin && { opacity: 0.4 }]}
-        >
-          <Icon name="minus" size={16} color={t.text} />
-        </Pressable>
-        <Text variant="caption" color={t.muted} style={stepperStyles.segValue} numberOfLines={1}>
-          {`${percent}%`}
-        </Text>
-        <Pressable
-          onPress={() => onChange(scale + TEXT_SCALE_STEP)}
-          disabled={atMax}
-          accessibilityRole="button"
-          accessibilityLabel={`Increase Discussion text size, currently ${percent} percent`}
-          style={[stepperStyles.segBtn, atMax && { opacity: 0.4 }]}
-        >
-          <Icon name="plus" size={16} color={t.text} />
-        </Pressable>
-      </View>
-    </View>
+    <SettingsStepperRow
+      badge="Aa"
+      title="Text size"
+      subtitle="Discussion text"
+      value={`${percent}%`}
+      valueLabel={`${percent} percent`}
+      scopeLabel="Discussion text size"
+      atMin={scale <= MIN_TEXT_SCALE}
+      atMax={scale >= MAX_TEXT_SCALE}
+      onDecrease={() => onChange(scale - TEXT_SCALE_STEP)}
+      onIncrease={() => onChange(scale + TEXT_SCALE_STEP)}
+    />
   );
 }
-
-const stepperStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingHorizontal: space.lg,
-    paddingVertical: 10,
-  },
-  // Matches OptionsSheet's own badge (38px, elevated fill) so this row's leading glyph lines
-  // up with every ordinary row's icon badge rather than starting flush against the sheet edge.
-  badge: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  // One segmented control — minus, live value, plus — matching the mockup's "flanking" layout
-  // (Kamil: "plus and minus signs besides current font size") rather than the value sitting
-  // apart from the buttons as a caption.
-  segmented: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: radius.pill,
-  },
-  segBtn: {
-    width: control.minTouch,
-    height: control.minTouch,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  segValue: { minWidth: 62, textAlign: 'center' },
-});
 
 // The single overflow trigger for every discussion-level action that isn't the composer
 // itself: navigation into related works / graph / notes, then the quieter mode toggles —

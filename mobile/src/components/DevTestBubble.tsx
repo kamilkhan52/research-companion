@@ -686,6 +686,33 @@ export function DevTestBubble() {
   // it — the card would slide away mid-read. It is a snapshot per open: what happened before
   // this sitting orders the list, what happens during it takes effect the next time.
   const [localState, setLocalState] = useState<Record<string, LocalItemState>>({});
+  // DR-134: `awaiting_reply` and `agent_state` are derived server-side from the inbox and the
+  // dispatch records, so no local state update can keep them true. Without this the two things
+  // the row asks Kamil to check both fail in the sitting he checks them: a comment recorded
+  // after a Pass does not move into "Needs reply", and dispatching from a card never adds
+  // "Claude is on it" — he would record a Fail on working code.
+  const refreshItems = useCallback(async () => {
+    try {
+      setItems((await api.getDevTestItems()).items);
+    } catch {
+      /* a failed refresh leaves the last good list; the next open re-fetches. */
+    }
+  }, []);
+
+  // DR-134: the badge is derived from which item a LIVE session is on, so it has to move when
+  // that changes — a dispatch starting, or ending. The heartbeat already polls for exactly that,
+  // so hang the item refetch off its transitions rather than adding a second timer.
+  const dispatchedItem = dispatchStatus?.state === 'running' ? dispatchStatus.item_id : null;
+  const lastDispatched = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    // Only on a real TRANSITION. Firing on mount too would race the open path's own fetch,
+    // which is what it did first: the reopen test lost its list entirely because the second
+    // fetch landed after the first and the two disagreed.
+    const changed = lastDispatched.current !== undefined && lastDispatched.current !== dispatchedItem;
+    lastDispatched.current = dispatchedItem;
+    if (visible && changed) void refreshItems();
+  }, [visible, dispatchedItem, refreshItems]);
+
   const reportVerdict = useCallback((id: string, info: VerdictInfo | undefined) => {
     setVerdicts((prev) => {
       const cur = prev[id];
@@ -1059,7 +1086,7 @@ export function DevTestBubble() {
                     route={pathname}
                     startExpanded
                     onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt}
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -1085,7 +1112,7 @@ export function DevTestBubble() {
                       // "A–Z". "Last activity" is the sort Kamil asked for to work the queue,
                       // which made it the first place the fail prompt was silently dead.
                       onExpandChange={onExpandChange}
-                      onFailRecorded={queueFailPrompt}
+                      onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
                     />
                   ))}
                 </>
@@ -1095,13 +1122,13 @@ export function DevTestBubble() {
                   {sections.verify.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -1129,7 +1156,7 @@ export function DevTestBubble() {
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
                       ))
                     : null}
                 </>
@@ -1766,7 +1793,8 @@ interface ItemCardDraft {
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
 export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
-                          dispatchModel, activity, onExpandChange, onFailRecorded }: {
+                          dispatchModel, activity, onExpandChange, onFailRecorded,
+                          onRecorded }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
   /** Told when this card opens or closes, so the list can restore the reading position it
    *  had before all that content appeared. */
@@ -1775,6 +1803,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
    *  rather than here because recording a verdict re-filters the list, which can unmount this
    *  card in the same commit. */
   onFailRecorded?: (id: string) => void;
+  /** DR-134: a verdict or comment just changed what the SERVER thinks is unanswered, and that
+   *  is not derivable here — the sheet has to re-ask. Fires after a successful record only. */
+  onRecorded?: () => void;
   /** DR-118: "You opened it · 2h ago" and friends — what the "Last activity" sort ordered this
    *  card by. Undefined under every other sort, where it would be noise. */
   activity?: string;
@@ -1862,6 +1893,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
       // he just pressed. A toast that named a third thing is how the vocabulary drifted.
       showToast(`${item.id}: ${verdict === 'remark' ? 'comment' : verdict} recorded${
         screenshotOutcome(wantedShot, entry.screenshot, entry.screenshot_error)}.`);
+      onRecorded?.();
       // Nothing left to resume once a verdict lands, but DR-075 wants the fact that a pass/fail
       // was already given to survive close/reopen (a remark leaves no verdict, so it doesn't
       // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
