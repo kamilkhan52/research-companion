@@ -135,13 +135,13 @@ recommend papers to add, over one substrate — not of rendered surface:
 |---|---|---|
 | reference graph | ✅ `GraphCanvas` | — |
 | neighbourhood freshness | ✅ `NeighbourhoodLine` | ✅ same component |
-| papers to add | ✅ `graph/recommendations` | ✅ goal-driven suggestions |
+| papers to add | ✅ `GET /graph` → `recommendations` | ✅ goal-driven suggestions |
 | author board, labs research | ✅ | — |
 | open-ended query | — | ✅ `run_discovery` |
 | hide / unhide | (filtered by `discovery.filter_hidden`) | ✅ `discovery.hide_candidate` |
 
-So "I still see both" is the recommendation list appearing twice, over a substrate that already
-merged: `neighbourhood.py` (DR-052 PRs 1–2) and the shared hidden-list are used by both today.
+So "I still see both" is two TABS that each recommend papers to add, over a substrate that
+already merged: `neighbourhood.py` (DR-052 PRs 1–2) and the shared hidden-list are used by both today.
 
 ## The merged surface
 
@@ -187,7 +187,8 @@ on-ramp for a new project's first papers.
 
 ## Staging
 
-Each step ships and is verifiable on its own; none leaves the tab in a half-merged state.
+Each step ships and is verifiable on its own. Step 1 is deliberately duplicative until step 3;
+no other step leaves the tab half-merged.
 
 1. **Lanes behind one list.** Feed the Map's recommendations into the same ranked list Discover
    builds, with provenance per row. The source is `GET /graph`'s `recommendations` field, **not**
@@ -195,7 +196,7 @@ Each step ships and is verifiable on its own; none leaves the tab in a half-merg
 
    **COPY, not move:** the Map's `zap` sheet keeps working through this step, because removing it
    would strip a Map feature and "we keep all features of Map" is the constraint. That does mean
-   the same rows are reachable from two places until step 2, which is the one step that is
+   the same rows are reachable from two places until step 3, which is the one step that is
    deliberately worse before it is better.
 
    **The real content of this step is shape, not plumbing.** `GraphRecommendation` has no
@@ -222,10 +223,10 @@ its own `RecommendationsPanel` (`web/src/components/Graph.tsx`); it follows sepa
 `docs/web-rebuild-plan.md`.
 
 **The Map already has a text input, and it means something else.** `graph.tsx`'s `search` header
-action filters graph NODES locally and for free. Step 4's query runs a metered background job and
-highlights. Two inputs on one screen with opposite semantics is not addressed here and needs
-deciding before step 4 — most likely by making the one query box do both (filter as you type,
-run on submit).
+action filters graph NODES locally and for free. The query box arriving in step 3 runs a metered
+background job. Two inputs on one screen with opposite semantics is not addressed here and needs
+deciding before step 3 — most likely by making one box do both: filter as you type, run on
+submit.
 
 **Two long jobs can be live on one screen.** The graph build (`graph_jobs`, keyed on `pid`) and
 the Discover run (`discovery_jobs`, scoped `discovery:${pid}`) are separate registries and can
@@ -238,4 +239,4 @@ a presentation question: what the tab shows when both are running.
   with a strong lexical match are not comparable on any scale that exists today. Needs a real
   ranking pass, and probably his eye on a sample.
 - **What the Map tab is called in the tab bar** if the list becomes its main job. He chose "Map"
-  for now; worth revisiting once (2) ships and he has used it.
+  for now; worth revisiting once step 3 ships and he has used it.
