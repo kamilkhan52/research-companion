@@ -185,6 +185,20 @@ test('the preview unparks its escapes, so no sentinel reaches the screen', async
     .toBe(fonts.bodyBold);
 });
 
+test('an escape inside maths is unparked too, rather than leaving a sentinel on screen', async () => {
+  // Maths is the one token rendered as its own SOURCE, so it is the one that can skip the
+  // per-leaf restore without anything else noticing — and a NUL on the phone is the result.
+  jest.mocked(api.getDevTestItems).mockResolvedValue({
+    items: [{ ...ITEMS[0], how_to_test: 'the bound \\(x\\_i \\le n\\) holds' }],
+  });
+  const screen = render(<DevTestBubble />);
+  fireEvent.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByText('Alpha thing')).toBeTruthy());
+  fireEvent.press(screen.getByLabelText(/DR-A.*Tap to leave a pass/i));
+  const preview = screen.getByTestId('devtest-item-preview');
+  within(preview).getByText('\\(x_i \\le n\\)');
+});
+
 test('markdownToInlineSource flattens the blocks and leaves the inline syntax standing', () => {
   const src = (md: string) => restoreEscapes(markdownToInlineSource(md));
   expect(src('## Heading\n\n- **bold** and `code`')).toBe('Heading **bold** and `code`');

@@ -831,7 +831,11 @@ export function MarkdownRuns({ text }: { text: string }) {
   const run = (token: InlineToken, i: number): ReactNode => {
     switch (token.type) {
       case 'math':
-        return <RNText key={i}>{`\\(${token.text}\\)`}</RNText>;
+        // Unparked like every other leaf, not passed through raw: `\(x\_i\)` parks that `\_`
+        // like any other escape, and skipping the restore here would put the sentinel — a NUL
+        // — on the screen. It resolves to the bare character, which is exactly what
+        // `markdownToPlain` has always done with an escape inside maths.
+        return <RNText key={i}>{`\\(${restoreEscapes(token.text)}\\)`}</RNText>;
       case 'code':
         // No fontSize: the preview inherits the caption scale it sits in, and a hard-coded one
         // would make a backticked path the biggest thing on a three-line summary.
