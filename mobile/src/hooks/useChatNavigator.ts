@@ -295,6 +295,10 @@ export function useChatNavigator({
         // padding IS the clearance), so the native clamp lands the oldest top the full
         // clearance below the header. Correcting THAT to the live edge would eat into the very
         // clearance the reader asked for, in the one direction that cannot be what they meant.
+        // That equality also assumes no `ListFooterComponent` — the chat library maps the
+        // INVERTED list's footer to its load-earlier block, which this screen never enables. Turn
+        // that on and the maximum grows by the footer, so this row's landing could clamp short
+        // and would want the correction back.
         if (clearanceRef.current > 0 && index < countRef.current - 1) {
           snapArmedRef.current = true;
           scheduleSnapCheck();
@@ -371,7 +375,12 @@ export function useChatNavigator({
     if (landmarkRef.current !== null && landmarkRef.current !== LIVE_EDGE
         && !describesLanding(top, bottom, landmarkRef.current, clearanceRef.current)) {
       landmarkRef.current = null;
-      cancelRetry();   // as with a drag: they are no longer where we put them
+      // NOT the queued re-aim, though — unlike a drag, this branch is reachable from our OWN
+      // movement. An approximate landing that OVERSHOOTS reports arrival first and then, as the
+      // travel continues past the target, a report whose bottom row is newer than it: a
+      // retirement, raised by the very inaccuracy the re-aim exists to correct. Cancelling here
+      // would strand the reader on the overshoot. (DR-115 did cancel the extreme's own timer
+      // here; that timer was a second ESTIMATE, not a correction, so it had nothing to lose.)
     }
   }).current;
 

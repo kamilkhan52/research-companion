@@ -651,3 +651,23 @@ test('the start of the thread is never corrected back to the live edge', () => {
   act(() => void jest.runOnlyPendingTimers());
   expect(list.scrollToOffset).not.toHaveBeenCalled();
 });
+
+test('a stray report retires the landmark but KEEPS the re-aim it may need', () => {
+  // The retirement branch is reachable from our OWN movement, which is what separates it from a
+  // drag: an approximate landing that overshoots reports arrival, then — still travelling —
+  // reports a window whose oldest row is newer than the target. That is the inaccuracy the
+  // re-aim exists to correct, so cancelling it there strands the reader on the overshoot.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 40, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([20])));
+  act(() => result.current.goUp());                                       // aims at 20
+  act(() => result.current.onScrollToIndexFailed({ index: 20, averageItemLength: 400 }));
+  act(() => result.current.onViewableItemsChanged(viewable([20, 19])));   // arrives
+  act(() => result.current.onViewableItemsChanged(viewable([24, 23])));   // overshot past it
+  list.scrollToIndex.mockClear();
+  act(() => void jest.advanceTimersByTime(200));
+  expect(list.scrollToIndex).toHaveBeenCalledWith(
+    expect.objectContaining({ index: 20, viewOffset: -CHROME }));
+});

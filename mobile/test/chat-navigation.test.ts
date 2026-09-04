@@ -38,8 +38,10 @@ test('stepping down goes straight to the next newer message — there is no land
 });
 
 test('stepping up past the oldest message resolves to the top of the thread', () => {
-  // The oldest message's top IS the top of the thread, so index count-1 is never a target:
-  // scrollToEnd reaches it exactly, past the list's header padding.
+  // The oldest message's top IS the top of the thread, so `count - 1` is named as the extreme
+  // rather than as a bare index — the navigator resolves it to that row and lands it exactly
+  // like any other (DR-127; it used to get its own `scrollToEnd`, which cannot clear the
+  // floating header because it never sees the list's contentContainer padding).
   expect(stepUp({ landmark: COUNT - 2, topIndex: null, count: COUNT })).toEqual<NavTarget>({
     kind: 'oldest',
   });
