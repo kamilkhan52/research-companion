@@ -29,6 +29,7 @@ import {
   usePlan,
   useSettings,
   useUsage,
+  useDevMode,
 } from '@/api/queries';
 import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
@@ -70,6 +71,7 @@ export default function SettingsScreen() {
   const styles = useThemedStyles(makeStyles);
   const qc = useQueryClient();
   const { activePid } = useActiveProject();
+  const devMode = useDevMode();
   const [url, setUrl] = useState(getBaseUrl());
   const [savingUrl, setSavingUrl] = useState(false);
 
@@ -118,7 +120,7 @@ export default function SettingsScreen() {
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
-  const { chatNavRail, setChatNavRail } = useReadingSettings();
+  const { chatNavRail, setChatNavRail, libraryTitle, setLibraryTitle } = useReadingSettings();
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -509,6 +511,34 @@ export default function SettingsScreen() {
                   takes one tap rather than a page of swiping. It fades back after a moment and
                   stays see-through over the text.
                 </Text>
+                {devMode ? (
+                  <>
+                    {/* DR-137 — experimental device-local switch, exposed only when the SERVER
+                        confirms RC_DEV. It never enters the per-user settings document. */}
+                    <Label
+                      text="Library title"
+                      hint="developer preview, stored on this device"
+                    />
+                    <View style={{ flexDirection: 'row', gap: space.sm }}>
+                      <Toggle
+                        label="Hide title"
+                        local
+                        active={!libraryTitle}
+                        onPress={() => setLibraryTitle(false)}
+                      />
+                      <Toggle
+                        label="Show title"
+                        local
+                        active={libraryTitle}
+                        onPress={() => setLibraryTitle(true)}
+                      />
+                    </View>
+                    <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+                      Removes the whole Seminar header from Library so the no-title layout can be
+                      tried on this device. Other tabs still provide access to Settings.
+                    </Text>
+                  </>
+                ) : null}
               </Section>
 
               {/* Map */}

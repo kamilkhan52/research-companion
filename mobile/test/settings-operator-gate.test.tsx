@@ -4,6 +4,7 @@
 // shared controls go read-only for a reader, and the reader's own DEVICE-local controls (playback
 // mode, theme, density, the map filter, the server URL) keep working.
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
 import { act, fireEvent, renderAsync, screen, waitFor } from '@testing-library/react-native';
@@ -53,7 +54,12 @@ const settings = {
 
 let saveSettingsMutate: jest.Mock;
 
-function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boolean) {
+function stubQueries(
+  isOperator: boolean | undefined,
+  canEditPreferences?: boolean,
+  devMode = false,
+) {
+  jest.spyOn(queries, 'useDevMode').mockReturnValue(devMode);
   jest.spyOn(queries, 'useSettings').mockReturnValue({
     data: { ...settings, is_operator: isOperator, can_edit_preferences: canEditPreferences },
     isLoading: false, isError: false, isSuccess: true, isFetching: false,
@@ -75,6 +81,8 @@ function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boole
 }
 
 const client = createTestQueryClient();
+
+afterEach(() => AsyncStorage.clear());
 
 /** The screen's real provider stack from `_layout.tsx`, minus what it does not touch. */
 function renderScreen() {
@@ -108,6 +116,16 @@ function inert(label: string): boolean {
   while (node) {
     const state = node.props?.accessibilityState as { disabled?: boolean } | undefined;
     if (state && 'disabled' in state) return state.disabled === true;
+    node = node.parent;
+  }
+  throw new Error(`no accessibilityState above the "${label}" toggle`);
+}
+
+function checked(label: string): boolean {
+  let node: ReactTestInstance | null = screen.getByText(label).parent;
+  while (node) {
+    const state = node.props?.accessibilityState as { checked?: boolean } | undefined;
+    if (state && 'checked' in state) return state.checked === true;
     node = node.parent;
   }
   throw new Error(`no accessibilityState above the "${label}" toggle`);
@@ -158,6 +176,24 @@ test('the operator gets the same screen fully writable', async () => {
   for (const label of [...SHARED_TOGGLES, ...LOCAL_TOGGLES]) {
     expect([label, inert(label)]).toEqual([label, false]);
   }
+});
+
+test('the device-local Library title experiment is shown only for server RC_DEV', async () => {
+  stubQueries(true, true, false);
+  const production = await renderScreen();
+  expect(screen.queryByText('Library title')).toBeNull();
+  expect(screen.queryByText('Hide title')).toBeNull();
+  await production.unmountAsync();
+
+  stubQueries(true, true, true);
+  await renderScreen();
+  expect(screen.getByText('Library title')).toBeTruthy();
+  expect(inert('Hide title')).toBe(false);
+
+  await act(async () => { fireEvent.press(screen.getByText('Hide title')); });
+  await waitFor(() =>
+    expect(AsyncStorage.getItem('rc.reading.libraryTitle')).resolves.toBe('false'));
+  expect(checked('Hide title')).toBe(true);
 });
 
 // A backend older than the gate omits the flag and accepts the write from anyone, so assuming

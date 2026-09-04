@@ -75,7 +75,7 @@ import { ReportContentSheet, reportReference } from '@/components/ReportContentS
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
-import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import { EdgeFade } from '@/components/EdgeFade';
 import { ChatNavRail, type ChatNavRailHandle } from '@/components/chat/ChatNavRail';
 // The chat library's `messagesContainerRef` is a gesture-handler FlatList (its own
 // `AnimatedList<TMessage>`), which the package does not re-export; name the same type here.
@@ -701,9 +701,10 @@ export default function DiscussionScreen() {
     <ExternalRefSheet pid={pid} refItem={externalRef} onClose={() => setExternalRef(null)} />
     <Screen edges={immersiveDiscussion ? [] : ['top']}>
       {immersiveDiscussion ? (
-        <DiscussionEdgeFade
+        <EdgeFade
           edge="top"
-          height={headerHeight + 48}
+          size={headerHeight + 48}
+          testID="discussion-top-edge-fade"
           style={styles.discussionTopFade}
         />
       ) : null}
@@ -2271,10 +2272,11 @@ function DiscussionThread({
         <View
           style={styles.composerOverlay}
           onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-          <DiscussionEdgeFade
+          <EdgeFade
             edge="bottom"
-            height={chromeLayout.bottomFadeHeight}
+            size={chromeLayout.bottomFadeHeight}
             transparentInset={chromeLayout.bottomFadeTransparentInset}
+            testID="discussion-bottom-edge-fade"
           />
           <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
             <View style={styles.committedBar}>
@@ -2297,10 +2299,11 @@ function DiscussionThread({
         <View
           style={styles.composerOverlay}
           onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-          <DiscussionEdgeFade
+          <EdgeFade
             edge="bottom"
-            height={chromeLayout.bottomFadeHeight}
+            size={chromeLayout.bottomFadeHeight}
             transparentInset={chromeLayout.bottomFadeTransparentInset}
+            testID="discussion-bottom-edge-fade"
           />
           <View style={[styles.composerForeground, { paddingBottom: insets.bottom + space.sm }]}>
             <View style={styles.committedBar}>
@@ -2323,10 +2326,11 @@ function DiscussionThread({
       <View
         style={styles.composerOverlay}
         onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
-        <DiscussionEdgeFade
+        <EdgeFade
           edge="bottom"
-          height={chromeLayout.bottomFadeHeight}
+          size={chromeLayout.bottomFadeHeight}
           transparentInset={chromeLayout.bottomFadeTransparentInset}
+          testID="discussion-bottom-edge-fade"
         />
         <View style={styles.composerForeground}>
           <SentenceCommentComposer

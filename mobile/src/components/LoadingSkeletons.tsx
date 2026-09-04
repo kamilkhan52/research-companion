@@ -2,7 +2,7 @@ import { StyleSheet, View, type DimensionValue } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { SessionState } from '@/api/types';
-import { DiscussionEdgeFade } from '@/components/chat/DiscussionEdgeFade';
+import { EdgeFade } from '@/components/EdgeFade';
 import { discussionComposerPadding } from '@/components/chat/discussionLayout';
 import { Skeleton, SkeletonGroup } from '@/components/Skeleton';
 import { useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
@@ -219,10 +219,11 @@ export function DiscussionLoadingSkeleton({ state = 'in_discussion' }: { state?:
         ))}
       </SkeletonGroup>
 
-      <DiscussionEdgeFade
+      <EdgeFade
         edge="bottom"
-        height={fadeHeight}
+        size={fadeHeight}
         transparentInset={64}
+        testID="discussion-bottom-edge-fade"
         style={paperStyles.discussionBottomFade}
       />
       {bottomMode === 'composer' ? (

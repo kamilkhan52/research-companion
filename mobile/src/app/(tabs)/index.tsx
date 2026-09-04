@@ -35,6 +35,7 @@ import {
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
+import { EdgeFade } from '@/components/EdgeFade';
 import { LibraryLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
 import { MoveToProjectSheet } from '@/components/MoveToProjectSheet';
@@ -43,6 +44,7 @@ import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { SplitProjectSheet } from '@/components/SplitProjectSheet';
 import { useActiveProject } from '@/store/project';
+import { useReadingSettings } from '@/store/readingSettings';
 import { loadLastThread } from '@/lib/lastThread';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import {
@@ -96,6 +98,7 @@ export default function LibraryScreen() {
   const styles = useThemedStyles(makeStyles);
   const queryClient = useQueryClient();
   const { activePid, setActivePid, ready } = useActiveProject();
+  const { libraryTitle } = useReadingSettings();
   const baseUrl = useBaseUrl();
   const hasUrl = !!baseUrl;
   const projectsQuery = useProjects();
@@ -329,14 +332,22 @@ export default function LibraryScreen() {
     [selectMode, selected, router],
   );
 
-  const header = (
-    <TabHeader
-      title="Seminar"
-      actions={[
-        { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
-      ]}
-    />
-  );
+  const header = libraryTitle ? (
+    <View testID="library-title-header" style={styles.titleHeader}>
+      <TabHeader
+        title="Seminar"
+        actions={[
+          { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
+        ]}
+      />
+      <EdgeFade
+        edge="top"
+        size={36}
+        testID="library-title-edge-fade"
+        style={styles.titleFade}
+      />
+    </View>
+  ) : null;
 
   if (!hasUrl) {
     return (
@@ -977,6 +988,12 @@ function EmptyProjectHub({
 const makeStyles = (t: ThemePalette, density: DensityMode) => {
   const tight = density === 'tight';
   return StyleSheet.create({
+  titleHeader: {
+    position: 'relative',
+    zIndex: 3,
+    backgroundColor: t.bg,
+  },
+  titleFade: { top: '100%' },
   // Transparent absolute holder so the pill floats over the scrolling list (R12.6). Rendered
   // before the list for screen-reader order, so an explicit zIndex keeps it painted on top.
   pillOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 2, backgroundColor: 'transparent' },

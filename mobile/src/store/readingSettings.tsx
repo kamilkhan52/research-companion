@@ -4,30 +4,42 @@
 // and a reader who never wanted it should not have to dismiss it. Kamil asked for it as "an
 // option in settings", so this is the store behind that toggle.
 //
-// Unlike GraphSettingsProvider there is no ready-gate. Nothing here changes what the app
-// looks like before first paint (the rail is chrome over an already-scrolling transcript), so
-// blocking the whole tree on one more AsyncStorage read would buy nothing; the preference
-// simply arrives a frame later than the screen.
+// Unlike GraphSettingsProvider there is no app-wide ready-gate. The existing Library title is
+// the safe initial default, then an explicitly hidden device preference arrives asynchronously;
+// blocking every screen on these small chrome preferences would cost more than that one update.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 const CHAT_NAV_RAIL_KEY = 'rc.chat.navRail';
+export const LIBRARY_TITLE_KEY = 'rc.reading.libraryTitle';
 
 interface ReadingSettingsContextValue {
   /** Whether the discussion transcript shows the landmark navigation rail. */
   chatNavRail: boolean;
   setChatNavRail: (enabled: boolean) => void;
+  /** Whether the Library shows its in-app title header. Dev-adjustable, device-local. */
+  libraryTitle: boolean;
+  setLibraryTitle: (enabled: boolean) => void;
 }
 
 const ReadingSettingsContext = createContext<ReadingSettingsContextValue | undefined>(undefined);
 
 export function ReadingSettingsProvider({ children }: { children: ReactNode }) {
   const [chatNavRail, setChatNavRailState] = useState(false);
+  const [libraryTitle, setLibraryTitleState] = useState(true);
 
   useEffect(() => {
-    AsyncStorage.getItem(CHAT_NAV_RAIL_KEY)
-      .then((value) => setChatNavRailState(value === 'true'))
+    Promise.all([
+      AsyncStorage.getItem(CHAT_NAV_RAIL_KEY),
+      AsyncStorage.getItem(LIBRARY_TITLE_KEY),
+    ])
+      .then(([navRail, title]) => {
+        setChatNavRailState(navRail === 'true');
+        // Absence means ON. Only an explicit false hides the title, so upgrades preserve the
+        // existing Library and a failed/cleared store cannot make navigation disappear.
+        setLibraryTitleState(title !== 'false');
+      })
       .catch(() => undefined);
   }, []);
 
@@ -38,8 +50,13 @@ export function ReadingSettingsProvider({ children }: { children: ReactNode }) {
         setChatNavRailState(enabled);
         void AsyncStorage.setItem(CHAT_NAV_RAIL_KEY, String(enabled));
       },
+      libraryTitle,
+      setLibraryTitle: (enabled) => {
+        setLibraryTitleState(enabled);
+        void AsyncStorage.setItem(LIBRARY_TITLE_KEY, String(enabled));
+      },
     }),
-    [chatNavRail],
+    [chatNavRail, libraryTitle],
   );
 
   return <ReadingSettingsContext.Provider value={value}>{children}</ReadingSettingsContext.Provider>;

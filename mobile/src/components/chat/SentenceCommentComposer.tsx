@@ -5,8 +5,8 @@ import Animated, {
   FadeOutDown,
   LinearTransition,
 } from 'react-native-reanimated';
-import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
+import { EdgeFade } from '@/components/EdgeFade';
 import {
   type PendingSentenceComment,
   type SelectedSentence,
@@ -159,7 +159,12 @@ export function SentenceCommentComposer({
               overlaps the comments more than it should"). The control is a flex sibling and
               never actually overlapped anything — the defect was the edge. A gradient to the
               tray's own fill lets a chip dissolve at the boundary instead of being sliced. */}
-          <ChipsEdgeFade fill={t.elevated} />
+          <EdgeFade
+            edge="right"
+            size={CHIPS_FADE_WIDTH}
+            fill={t.elevated}
+            testID="sentence-comment-chips-fade"
+          />
           </View>
           <Pressable
             testID="sentence-comment-collapse"
@@ -202,36 +207,8 @@ export function SentenceCommentComposer({
   );
 }
 
-/** DR-130 — the soft right edge of the chip strip: a gradient from transparent to the tray's
- *  own fill, so a chip that runs past the collapse control fades out instead of ending at a
- *  hard vertical seam. Same idiom as DiscussionEdgeFade, turned on its side and scoped to one
- *  small strip. Non-interactive, and invisible to assistive tech. */
+/** DR-130 — width of the shared right-edge fade over the chip strip. */
 export const CHIPS_FADE_WIDTH = 28;
-
-function ChipsEdgeFade({ fill }: { fill: string }) {
-  return (
-    <Svg
-      testID="sentence-comment-chips-fade"
-      pointerEvents="none"
-      width={CHIPS_FADE_WIDTH}
-      height="100%"
-      style={fadeStyles.fade}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants">
-      <Defs>
-        <LinearGradient id="sentence-comment-chips-fade" x1="0" y1="0" x2="1" y2="0">
-          <Stop offset="0%" stopColor={fill} stopOpacity={0} />
-          <Stop offset="100%" stopColor={fill} stopOpacity={1} />
-        </LinearGradient>
-      </Defs>
-      <Rect width="100%" height="100%" fill="url(#sentence-comment-chips-fade)" />
-    </Svg>
-  );
-}
-
-const fadeStyles = StyleSheet.create({
-  fade: { position: 'absolute', right: 0, top: 0, bottom: 0 },
-});
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   wrap: {
