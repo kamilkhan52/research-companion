@@ -5,6 +5,7 @@ import Animated, {
   FadeOutDown,
   LinearTransition,
 } from 'react-native-reanimated';
+import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 import {
   type PendingSentenceComment,
@@ -123,6 +124,7 @@ export function SentenceCommentComposer({
           layout={LinearTransition.duration(180)}
           testID="sentence-comment-queue"
           style={styles.queue}>
+          <View style={styles.chipsViewport}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -151,6 +153,14 @@ export function SentenceCommentComposer({
               </View>
             ))}
           </ScrollView>
+          {/* DR-130 — the chips used to be guillotined by the tray's own opaque fill at the
+              collapse control's left edge: a hard vertical seam straight through the middle of
+              a comment, which reads as a white panel laid ON TOP of it ("no transparency and
+              overlaps the comments more than it should"). The control is a flex sibling and
+              never actually overlapped anything — the defect was the edge. A gradient to the
+              tray's own fill lets a chip dissolve at the boundary instead of being sliced. */}
+          <ChipsEdgeFade fill={t.elevated} />
+          </View>
           <Pressable
             testID="sentence-comment-collapse"
             onPress={() => {
@@ -178,17 +188,50 @@ export function SentenceCommentComposer({
             accessibilityLabel={
               `${count} comment${count === 1 ? '' : 's'} attached. Tap to show them.`
             }>
+            {/* DR-130 — Kamil: "instead of saying 'N comments' when minimized, we should just
+                have the number and the icon. No 'comments' needed." The word is gone; the
+                chevron stays, because it is the only cue that the pill expands (the DR-061
+                lesson), and the accessibilityLabel below still reads the whole sentence. */}
+            <Text variant="label" color={t.violet}>{count}</Text>
             <Icon name="message-square" size={14} color={t.violet} />
-            <Text variant="label" color={t.violet}>
-              {count} comment{count === 1 ? '' : 's'}
-            </Text>
-            <Icon name="chevron-up" size={14} color={t.violet} />
+            <Icon name="chevron-up" size={13} color={t.violet} />
           </Pressable>
         </Animated.View>
       ) : null}
     </Animated.View>
   );
 }
+
+/** DR-130 — the soft right edge of the chip strip: a gradient from transparent to the tray's
+ *  own fill, so a chip that runs past the collapse control fades out instead of ending at a
+ *  hard vertical seam. Same idiom as DiscussionEdgeFade, turned on its side and scoped to one
+ *  small strip. Non-interactive, and invisible to assistive tech. */
+export const CHIPS_FADE_WIDTH = 28;
+
+function ChipsEdgeFade({ fill }: { fill: string }) {
+  return (
+    <Svg
+      testID="sentence-comment-chips-fade"
+      pointerEvents="none"
+      width={CHIPS_FADE_WIDTH}
+      height="100%"
+      style={fadeStyles.fade}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants">
+      <Defs>
+        <LinearGradient id="sentence-comment-chips-fade" x1="0" y1="0" x2="1" y2="0">
+          <Stop offset="0%" stopColor={fill} stopOpacity={0} />
+          <Stop offset="100%" stopColor={fill} stopOpacity={1} />
+        </LinearGradient>
+      </Defs>
+      <Rect width="100%" height="100%" fill="url(#sentence-comment-chips-fade)" />
+    </Svg>
+  );
+}
+
+const fadeStyles = StyleSheet.create({
+  fade: { position: 'absolute', right: 0, top: 0, bottom: 0 },
+});
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   wrap: {
@@ -257,7 +300,14 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line2,
     backgroundColor: t.elevated,
   },
-  // The one control the header row used to hold, kept as a real 44px target beside the chips.
+  // The chip strip and its soft right edge share one relatively-positioned box, so the fade
+  // can sit over the strip's last pixels without escaping into the collapse control.
+  chipsViewport: { flex: 1, minWidth: 0 },
+  // The one control the header row used to hold, kept as a real 48px target beside the chips.
+  // DR-130 deliberately did NOT shrink this to buy the chips more width: a narrower button
+  // would be leaning on hitSlop again, which the DR-053 review round already established is
+  // not a real target here. The overlap Kamil reported was the hard edge, not the width, and
+  // the edge is what the fade fixes.
   collapseBtn: {
     width: control.minTouch,
     minHeight: control.minTouch,
@@ -270,14 +320,20 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.xs,
-    minHeight: 36,
+    // DR-130 shortened this pill's LABEL (`3 comments` -> `3 💬`), which narrowed it from ~130px
+    // to ~75px — and it is the only way back to the attached comments once the tray is
+    // collapsed. `control.minTouch`, not 36: `alignSelf: 'flex-start'` means this just becomes a
+    // taller pill, and hitSlop would buy nothing because RN clips a touch area to its parent.
+    minHeight: control.minTouch,
     paddingHorizontal: space.md,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: t.violet,
     backgroundColor: t.violetWash,
   },
-  chips: { gap: space.sm, paddingRight: space.md },
+  // Trailing pad at least as wide as the fade, so scrolling to the end brings the last chip
+  // fully clear of the gradient rather than parking it permanently half-dissolved.
+  chips: { gap: space.sm, paddingRight: CHIPS_FADE_WIDTH },
   chip: {
     width: 230,
     minHeight: 54,
