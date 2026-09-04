@@ -720,6 +720,32 @@ def test_dispatch_status_reports_a_live_session_and_what_it_is_doing(client, tmp
     assert d["result"] is None and d["elapsed_s"] >= 120
 
 
+def test_dispatch_status_survives_a_malformed_archived_record(client, tmp_path):
+    """`last.json` is the one dispatch record nothing was checking, and this route reads it.
+
+    `_dispatch_peek` and `_dispatch_reap` both guard `current.json` against a non-dict and a
+    non-numeric `started_ts`; the archived record went straight into `info.get(...)` and
+    `float(...)`, so a torn write 500'd the status route. That matters more than it sounds: the
+    banner is where the dispatch's state is visible AND the phone is the only place the file can
+    be cleared from, so the failure takes down its own remedy.
+    """
+    d = tmp_path / "inbox" / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "last.json").write_text(json.dumps({
+        "id": "dispatch-test", "model": "opus", "item_id": "DR-115",
+        "started_at": "2026-09-01T08:01:31-0700", "log": str(d / "session.log"),
+        "started_ts": "not a number", "ended_ts": {}}))
+    body = client.get("/api/devtest/dispatch")
+    assert body.status_code == 200
+    assert body.json()["dispatch"]["id"] == "dispatch-test"
+    assert body.json()["dispatch"]["elapsed_s"] is None      # undatable, not zero and not a 500
+
+    # Valid JSON that is not a record at all: reported as "nothing dispatched", not a crash.
+    (d / "last.json").write_text(json.dumps(["not", "a", "record"]))
+    body = client.get("/api/devtest/dispatch")
+    assert body.status_code == 200 and body.json()["dispatch"] is None
+
+
 def test_dispatch_status_reports_the_outcome_after_the_session_exits(client, tmp_path,
                                                                     monkeypatch):
     """A finished session must stay reportable. The pre-existing reap DELETED current.json, so

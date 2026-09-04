@@ -148,8 +148,10 @@ test('the description is clamped until it is asked for', async () => {
   // Without this the "Show details" label exists but clamps nothing, which every other test
   // here would happily accept.
   const view = render(<ItemCard item={ITEM} shot={null} route="/discover" startExpanded />);
-  const prose = await view.findByText(ITEM.how_to_test);
-  expect(prose.props.numberOfLines).toBe(3);
+  // By testID rather than by its text: DR-128 gave the preview nested `<Text>` runs, so the
+  // prose now matches an inner leaf as readily as the clamped parent, and only the parent
+  // carries `numberOfLines`. The clamp is what this test is about.
+  expect((await view.findByTestId('devtest-item-preview')).props.numberOfLines).toBe(3);
   fireEvent.press(view.getByTestId('devtest-item-details'));
   await waitFor(() => expect(
     view.getByText(ITEM.how_to_test).props.numberOfLines).toBeUndefined());

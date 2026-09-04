@@ -4,7 +4,7 @@
 // MathView). Deliberately small — not a full CommonMark implementation — to keep reading
 // fast and the bundle lean.
 
-import { createContext, Fragment, useContext, useMemo } from 'react';
+import { createContext, Fragment, useContext, useMemo, type ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
 // RNGH's ScrollView, not core RN's: the discussion renders messages inside gifted-chat's
 // inverted list under a gesture-handler hierarchy, where a core horizontal ScrollView loses
@@ -16,6 +16,7 @@ import { InlineMath, MathBlock } from '@/components/MathView';
 import type { PaperFigure } from '@/api/types';
 import { planFigurePlacement } from '@/lib/figures';
 import { RC_SEARCH_PREFIX } from '@/lib/paperLinks';
+import { markdownToInlineSource, restoreEscapes } from '@/lib/markdownPlain';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, makeTextStyles, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -800,6 +801,69 @@ function Inline({
         </Fragment>
   );
   return <>{tokens.map(renderToken)}</>;
+}
+
+/** The inline half of a markdown render, as `<Text>` runs and NOTHING else — for a preview that
+ *  has to keep clamping.
+ *
+ *  DR-128 — Kamil, on DR-120: "When 'Show details' is pressed, it renders the markdown, but
+ *  stays unrendered still when compacted (Hide details; default). Fix that and it should be all
+ *  good." DR-120 gave the EXPANDED description `<Markdown>` and left the collapsed preview flat
+ *  prose, because clamping it to three lines needs `numberOfLines` and only a single `<Text>`
+ *  honours that. But a `<Text>` NESTED inside that one clamps with its parent, so the inline
+ *  faces — bold, italic, code, a link's label — were available in the preview all along. Only
+ *  block LAYOUT is not, and flattening headings, bullets and fences is the right reading for
+ *  three lines anyway (`markdownToInlineSource` does that part).
+ *
+ *  Drop it inside the caller's own clamped `<Text>`. It renders no View, on purpose: `Inline`'s
+ *  richer output mounts them (`InlineMath`, the rc-paper book glyph), and a View inside a
+ *  clamped Text is exactly what stops the clamp. So math shows as its `\( … \)` source, which
+ *  is what the plain stripper does with it too, and a link is its label in link colours with no
+ *  `onPress` — the preview lives inside the toggle's Pressable, which owns the tap and opens
+ *  the card where the same link is live. */
+export function MarkdownRuns({ text }: { text: string }) {
+  const theme = useTheme();
+  // Memoized on the text: this renders once per card in a list of 120, and the whole list
+  // re-renders on every verdict.
+  const tokens = useMemo(() => tokenizeInline(markdownToInlineSource(text)), [text]);
+  // The escapes are unparked HERE, per leaf, rather than before tokenizing — see
+  // `markdownToInlineSource`. A leaf that skips this puts control characters on the screen.
+  const run = (token: InlineToken, i: number): ReactNode => {
+    switch (token.type) {
+      case 'math':
+        return <RNText key={i}>{`\\(${token.text}\\)`}</RNText>;
+      case 'code':
+        // No fontSize: the preview inherits the caption scale it sits in, and a hard-coded one
+        // would make a backticked path the biggest thing on a three-line summary.
+        return (
+          <RNText key={i} style={{ fontFamily: MONO, color: theme.mint }}>
+            {restoreEscapes(token.text)}
+          </RNText>
+        );
+      case 'link':
+        return (
+          <RNText key={i} style={{ color: theme.mint, textDecorationLine: 'underline' }}>
+            {restoreEscapes(token.text)}
+          </RNText>
+        );
+      case 'bold':
+      case 'italic': {
+        // Manrope ships no italic cut, so italics are the synthetic face — the same choice
+        // `Inline` already makes on its non-serif path.
+        const style = token.type === 'bold'
+          ? { fontFamily: fonts.bodyBold }
+          : { fontStyle: 'italic' as const };
+        return (
+          <RNText key={i} style={style}>
+            {token.children ? token.children.map(run) : restoreEscapes(token.text)}
+          </RNText>
+        );
+      }
+      default:
+        return <RNText key={i}>{restoreEscapes(token.text)}</RNText>;
+    }
+  };
+  return <>{tokens.map(run)}</>;
 }
 
 interface InlineToken {

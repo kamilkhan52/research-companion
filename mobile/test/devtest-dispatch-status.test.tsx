@@ -20,9 +20,11 @@ jest.mock('@/api/endpoints', () => ({
   resumeDispatch: jest.fn().mockResolvedValue({ dispatch: {} }),
 }));
 
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
 
 import { DispatchBanner } from '@/components/DevTestBubble';
+import { fonts } from '@/theme/tokens';
 import type { DispatchStatus } from '@/api/endpoints';
 
 const base: DispatchStatus = {
@@ -266,4 +268,26 @@ test('collapsing never hides Resume, the one action the banner carries', async (
   fireEvent.press(limited.getByTestId('devtest-dispatch-status-toggle'));
   expect(limited.queryByText(/Resuming keeps everything/)).toBeNull();   // details did collapse
   limited.getByTestId('devtest-dispatch-resume');                        // the action did not
+});
+
+// ---------- DR-128 ----------
+
+test('the detail line renders its markdown, and is still held to two lines', async () => {
+  // Kamil, of this line: "the details text seem to expect markdown rendering but none is
+  // happening." A session's closing recap is written as markdown — bold, backticked paths, a
+  // PR link — and the banner was showing the raw source. Nested `<Text>` runs format it
+  // without giving up the clamp, which is the whole reason the flat version existed.
+  const { getByTestId } = await showOpen(status({
+    state: 'finished', last_summary: null,
+    result: { is_error: false, subtype: 'success',
+              text: 'Merged **#487** — guarded `app/routers/devtest.py`.',
+              cost_usd: 1, num_turns: 3, denials: 0, duration_ms: 1000 },
+  }));
+  const detail = getByTestId('devtest-dispatch-status-detail');
+  expect(detail.props.numberOfLines).toBe(2);
+  // Its own runs: flattened into one string, neither exact match resolves.
+  expect(StyleSheet.flatten(within(detail).getByText('#487').props.style).fontFamily)
+    .toBe(fonts.bodyBold);
+  expect(StyleSheet.flatten(within(detail).getByText('app/routers/devtest.py').props.style)
+    .fontFamily).toMatch(/Menlo|monospace/);
 });
