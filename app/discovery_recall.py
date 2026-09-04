@@ -890,8 +890,20 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
             # The alias is still what lets an unidentified lexical or snippet hit adopt the first
             # identity offered to it — that row is not yet committed to being a particular paper,
             # so it cannot blend two identified ones. That case is untouched; only the both-sides-
-            # identified bridge is refused, and in practice a genuine pair coalesces on a strong
-            # key anyway, because Semantic Scholar reports `externalIds.ArXiv` alongside its DOI.
+            # identified bridge is refused. A genuine pair usually still coalesces on a strong
+            # key, because Semantic Scholar reports `externalIds.ArXiv` alongside its DOI — but
+            # that is an S2 property, not a universal one, and OPENALEX is the real exposure:
+            # `_from_openalex` only lifts an arXiv id off a new-style `arxiv.org/abs/…` landing
+            # page, so a PUBLISHED arXiv paper reached through `sweep_topics`/`chase_citations`
+            # arrives as `{doi: publisher, openalex_id}` with no arXiv id at all. Title-linked to
+            # its own preprint, that pair now stays two cards. Measured and accepted: this is the
+            # duplicate-card cost of not shipping a wrong-PDF card, and DR-114's verify text asks
+            # Kamil to report two cards for one work as a fail so we hear about it if it bites.
+            # CONTRACT: this reads the injected keyer's format. `identity_keys` is injected so
+            # this module invents no notion of sameness, but the DR-114 rule needs to know
+            # WHICH key matched — a keyer that does not prefix title aliases with `title:`
+            # leaves `alias_only` permanently False and the rule silently stops applying,
+            # with no test failing. Change one and change the other.
             alias_only = bool(matched_key and matched_key.startswith("title:"))
             unrelated = (hit is not None and alias_only
                          and _carries_strong_id(hit) and _carries_strong_id(candidate))
