@@ -31,7 +31,7 @@ import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { keys, useAddPaper, useDiscovery, useNeighbourhood, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
-import { NeighbourhoodLine } from '@/components/NeighbourhoodLine';
+import { NeighbourhoodLine, relativeAge } from '@/components/NeighbourhoodLine';
 import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
@@ -60,6 +60,31 @@ export function dedupeSuggestions<T extends { candidate_id?: string | null }>(ro
     seen.add(id);
     return true;
   });
+}
+
+/** DR-136 — attribute `result.focus` to the run that wrote it.
+ *
+ *  `focus` is the query planner's one-line restatement of what it decided to search for
+ *  (app/discovery.generate_queries). It is saved with the results and can therefore be much
+ *  older than the goals now in the box above — Kamil's read it as "maybe from a previous
+ *  search", which is close: it is from the run whose results he was looking at, not from the
+ *  goals he last typed. It is only unexplained because it was printed with no label and no
+ *  date, so this says both. Returns '' when there is no focus to attribute (a result saved
+ *  before the field existed, or a run whose planner returned none), so the line disappears
+ *  rather than reading "Searched for “”".
+ */
+export function describeRunFocus(
+  focus: string | undefined | null,
+  generatedAt: string | undefined | null,
+  now: number = Date.now(),
+): string {
+  const text = (focus ?? '').trim();
+  if (!text) return '';
+  const at = generatedAt ? Date.parse(generatedAt) : NaN;
+  // A future or unparseable timestamp yields no age rather than "in -3d": the label is worth
+  // showing even when the clock disagrees, and a wrong age is worse than none.
+  const age = Number.isNaN(at) || at > now ? '' : relativeAge((now - at) / 1000);
+  return age ? `Searched ${age} for “${text}”` : `Searched for “${text}”`;
 }
 
 export default function DiscoverScreen() {
@@ -112,6 +137,8 @@ export default function DiscoverScreen() {
   const topN = result?.top_n ?? 5;
   const visible = showAll ? suggestions : suggestions.slice(0, topN);
   const hiddenCount = suggestions.length - Math.min(topN, suggestions.length);
+
+  const searchedFor = describeRunFocus(result?.focus, result?.generated_at);
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
@@ -245,10 +272,31 @@ export default function DiscoverScreen() {
               <Text variant="editorial">
                 {runState.job?.status === 'cancelled' ? 'Previous results' : 'Results'}
               </Text>
-              <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
-                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
-                scholarly sources, ranked by fit and evidence.
-              </Text>
+              {/* DR-136 — Kamil: "Unexplained text at the top of Discover … 'Reinforcement
+                  Learning for robotics…', I think that shouldn't be there. Maybe from a previous
+                  search." It is `result.focus`: the model's one-line restatement of what the
+                  SAVED run searched for, written when that run planned its queries. Legitimate
+                  and worth keeping — on his own results it is the only thing on the screen that
+                  explains why an LLM-serving project was searched for robotics — but it was
+                  pasted in front of the sentence about the results with no label and no date, so
+                  it read as a caption on papers it does not describe. Labelled and dated, it says
+                  what it is and that it is months old, which is the actionable half. */}
+              <View style={{ marginTop: space.xs, marginBottom: space.md }}>
+                <Text variant="caption" color={t.muted}>
+                  {result.candidate_count} papers across scholarly sources, ranked by fit and
+                  evidence.
+                </Text>
+                {searchedFor ? (
+                  <Text
+                    testID="discover-run-focus"
+                    variant="caption"
+                    color={t.muted}
+                    numberOfLines={3}
+                    style={{ marginTop: 2, opacity: 0.75 }}>
+                    {searchedFor}
+                  </Text>
+                ) : null}
+              </View>
               {visible.length > 0 ? (
                 <View style={styles.actionKey}>
                   <View style={styles.actionKeyItem}>
@@ -526,14 +574,31 @@ export function SuggestionCard({
   const affiliationList = (s.affiliations ?? []).map((a) => (a ?? '').trim()).filter(Boolean);
   const affiliations = affiliationList.slice(0, 2).join(' · ')
     + (affiliationList.length > 2 ? ` +${affiliationList.length - 2}` : '');
-  const meta = [
-    authors || null,
-    s.year,
-    s.venue || null,
-    s.citation_count != null ? `~${s.citation_count.toLocaleString()} citations` : null,
-    s.arxiv_id ? `arXiv:${s.arxiv_id}` : s.doi ? `DOI:${s.doi}` : null,
-  ]
-    .filter(Boolean)
+  // DR-129 — Kamil, on his DR-112 pass: "remove DOI from the details shown, and affiliation can
+  // go after authors and before venue. Citations last. No doi like I said." Two consequences.
+  // The identifier tail goes ENTIRELY, not just its DOI branch: it is one slot rendering
+  // `arXiv:…` when an arXiv id exists and `DOI:…` otherwise, and it sat after the citations that
+  // he wants last. Nothing else on the card uses it — Full paper builds its own URL from
+  // `url`/`pdf_url`, and Add passes `arxiv_id` from the suggestion, not from this string.
+  // And the institutions rejoin the run in the position he named. They stay at DR-112's
+  // fuller-strength colour, nested inside the meta line rather than beside it, so the reorder
+  // costs none of the weight he asked for there ("more important than author names") while
+  // reading in exactly the order he wrote: authors, affiliation, venue, citations.
+  const metaParts: { key: string; text: string; strong?: boolean }[] = [];
+  if (authors) metaParts.push({ key: 'authors', text: authors });
+  if (s.year) metaParts.push({ key: 'year', text: String(s.year) });
+  if (affiliationList.length) {
+    metaParts.push({ key: 'affiliations', text: affiliations, strong: true });
+  }
+  if (s.venue) metaParts.push({ key: 'venue', text: s.venue });
+  if (s.citation_count != null) {
+    metaParts.push({ key: 'citations', text: `~${s.citation_count.toLocaleString()} citations` });
+  }
+  // The truncated "+N" is a width compromise; a screen reader has no width, so it hears the
+  // whole list (DR-112's Opus review) — now on the meta line, since a nested Text inside a Text
+  // is flattened and its own label would never be announced.
+  const metaLabel = metaParts
+    .map((p) => (p.key === 'affiliations' ? affiliationList.join(', ') : p.text))
     .join(' · ');
 
   async function handleAdd() {
@@ -560,25 +625,28 @@ export function SuggestionCard({
         <Text style={styles.rankNum}>{String(rank).padStart(2, '0')}</Text>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text variant="heading">{s.title}</Text>
-          <Text variant="caption" style={{ marginTop: 2 }}>
-            {meta}
-          </Text>
-          {affiliationList.length ? (
-            <View style={styles.affiliationRow}>
-              {/* No icon: the paper screen already states affiliations as plain text among the
-                  paper's facts, and Feather has no institution glyph worth inventing a meaning
-                  for. Its own line plus fuller-strength text is what gives it the weight. */}
-              <Text
-                testID="suggestion-affiliations"
-                variant="caption"
-                color={t.text}
-                numberOfLines={2}
-                style={{ flex: 1, opacity: 0.85 }}
-                accessibilityLabel={`Affiliations: ${affiliationList.join(', ')}`}>
-                {affiliations}
+          <Text
+            testID="suggestion-meta"
+            variant="caption"
+            style={{ marginTop: 2 }}
+            accessibilityLabel={metaLabel || undefined}>
+            {metaParts.map((part, i) => (
+              <Text key={part.key} variant="caption">
+                {i > 0 ? ' · ' : ''}
+                {part.strong ? (
+                  <Text
+                    testID="suggestion-affiliations"
+                    variant="caption"
+                    color={t.text}
+                    style={{ opacity: 0.85 }}>
+                    {part.text}
+                  </Text>
+                ) : (
+                  part.text
+                )}
               </Text>
-            </View>
-          ) : null}
+            ))}
+          </Text>
         </View>
       </View>
       {(s.reasons ?? [])[0] ? (
@@ -741,7 +809,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: space.sm },
   // DR-112: sits directly under the meta line, closer to it than the reason row is,
   // because it is part of what the paper IS rather than why it was suggested.
-  affiliationRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 4 },
   // DR-070 — "Make the Add button larger than the rest with a large plus." Taller than the
   // 48px icon row it sits beside, so it reads as the primary action rather than a fourth peer.
   addBtn: { height: 56, paddingHorizontal: space.lg },
