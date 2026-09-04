@@ -5,8 +5,8 @@
 
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Switch, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import TrackPlayer, {
   State,
   useActiveTrack,
@@ -17,10 +17,12 @@ import TrackPlayer, {
 
 import { useAudio } from '@/audio/AudioProvider';
 import { SKIP_SECONDS } from '@/audio/setup';
-import { PLAYBACK_RATES, useListeningMode } from '@/store/listening';
+import { useListeningMode } from '@/store/listening';
 import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
+import { NarrationSettingsButton } from '@/components/player/NarrationSettingsButton';
+import { type SheetOption } from '@/components/chat/OptionsSheet';
 import { Icon, IconButton, Screen, Text } from '@/ui';
 import { showToast } from '@/ui/Toast';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -49,12 +51,26 @@ export default function PlayerScreen() {
   const buffering = state === State.Buffering || state === State.Loading;
   const value = scrubbing ?? position;
 
-  // R6.6 — tap to cycle narration speed; persisted and applied by AudioProvider.
-  const { listeningMode, playbackRate, setPlaybackRate } = useListeningMode();
-  const cycleRate = () => {
-    const i = PLAYBACK_RATES.indexOf(playbackRate);
-    setPlaybackRate(PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length]);
-  };
+  const { listeningMode } = useListeningMode();
+
+  // DR-135 — Autoplay was a full labelled Switch block sitting under the transport, visible
+  // only in listening mode. It is a narration PREFERENCE, not a transport control, so it moves
+  // into the narration menu with the rest of them; the row it vacated is what let the player
+  // stop feeling like a settings screen with a play button on it. "Play next" stays inline —
+  // that one is an action, not a setting.
+  const narrationOptions = useMemo<SheetOption[]>(() => {
+    if (!listeningMode) return [];
+    return [{
+      key: 'autoplay',
+      title: 'Autoplay',
+      subtitle: audio.playlistAutoplay ? 'On — continue through responses' : 'Off',
+      icon: 'repeat',
+      section: true,
+      selected: audio.playlistAutoplay,
+      closeOnPress: false,
+      onPress: () => audio.setPlaylistAutoplay(!audio.playlistAutoplay),
+    }];
+  }, [audio, listeningMode]);
 
   async function togglePlay() {
     if (playing) {
@@ -84,16 +100,9 @@ export default function PlayerScreen() {
             {track?.title ?? audio.prep?.title ?? 'Narration'}
           </Text>
         </View>
-        <Pressable
-          onPress={cycleRate}
-          hitSlop={8}
-          style={[styles.rateBtn, playbackRate !== 1 && { borderColor: t.mint }]}
-          accessibilityRole="button"
-          accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change.`}>
-          <Text style={[styles.rateLabel, playbackRate !== 1 && { color: t.mint }]}>
-            {playbackRate}×
-          </Text>
-        </Pressable>
+        {/* DR-135 — was a bare speed pill that cycled the rate; now the entry to the whole
+            narration settings menu (speed, size, face, autoplay), still showing the speed. */}
+        <NarrationSettingsButton extraOptions={narrationOptions} />
       </View>
 
       {track ? (
@@ -206,19 +215,6 @@ export default function PlayerScreen() {
                   )}
                   <Text style={styles.nextResponseLabel}>Play next</Text>
                 </Pressable>
-                <View style={styles.autoplayControl}>
-                  <View style={{ flex: 1 }}>
-                    <Text variant="body">Autoplay</Text>
-                    <Text variant="caption" color={t.muted}>Continue through responses</Text>
-                  </View>
-                  <Switch
-                    value={audio.playlistAutoplay}
-                    onValueChange={audio.setPlaylistAutoplay}
-                    trackColor={{ true: t.mint, false: t.line2 }}
-                    thumbColor={t.surface}
-                    accessibilityLabel="Autoplay responses"
-                  />
-                </View>
               </View>
             ) : null}
           </View>
@@ -321,13 +317,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     gap: space.sm,
   },
   nextResponseLabel: { color: t.mint, fontFamily: fonts.bodySemiBold },
-  autoplayControl: {
-    flex: 1,
-    minHeight: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-  },
   playBtn: {
     width: 72,
     height: 72,
@@ -363,20 +352,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   sentenceGlyph: { gap: 2, alignItems: 'flex-start' },
   sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: t.mint },
   skipGlyph: { color: t.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
-  // R9.10 — a proper pill (bg + border), bigger than the old bare-text control, so the speed
-  // affordance is prominent enough to find and tap.
-  rateBtn: {
-    minWidth: 52,
-    height: 36,
-    paddingHorizontal: 12,
-    borderRadius: radius.pill,
-    backgroundColor: t.elevated,
-    borderWidth: 1,
-    borderColor: t.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rateLabel: { color: t.muted, fontSize: 15, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
