@@ -45,6 +45,18 @@
 //    live edge gets the clearance added on top of it (`scheduleSnapCheck`); and the cleared
 //    band is filled by older rows, so a viewability report after a landing names one of THEM
 //    as the top row (`describesLanding`).
+//
+//  • "Start of thread" was the ONE landing that fix did not cover, and it stayed broken in
+//    exactly the reported way (DR-127, Kamil: "when scrolling to top of summary… it hides some
+//    of the summary headers behind the UI. But when I manually scroll all the way up, it shows
+//    perfectly"). It had its own primitive, `scrollToEnd`, which computes its offset from CELL
+//    metrics plus the list's footer and is blind to `contentContainerStyle` padding — and the
+//    list's visual-top padding IS `topClearance`. So it stopped that clearance short of the end
+//    a finger reaches, landing the oldest message's top flush behind the header, while a manual
+//    drag to the true end showed it correctly. No primitive lands it right, so the extreme now
+//    takes the SAME cleared `scrollToIndex` landing as every other row. `scrollToEnd` survives
+//    only as an APPROACH to an unmeasured last row, where the list's own end estimate beats
+//    `averageItemLength * index`.
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { ViewToken } from 'react-native';
@@ -140,7 +152,6 @@ export function useChatNavigator({
   const countRef = useRef(count);
   const retryRef = useRef<{ index: number; attempts: number } | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const oldestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** The top row a jump of ours is travelling toward, or null once it has arrived. */
   const pendingTopRef = useRef<number | null>(null);
   // Held in a ref, not a dependency. The header is measured after first paint, so this value
@@ -184,7 +195,6 @@ export function useChatNavigator({
 
   useEffect(() => () => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
-    if (oldestTimer.current) clearTimeout(oldestTimer.current);
     if (snapTimer.current) clearTimeout(snapTimer.current);
   }, []);
 
@@ -193,6 +203,14 @@ export function useChatNavigator({
     if (snapTimer.current) {
       clearTimeout(snapTimer.current);
       snapTimer.current = null;
+    }
+  }, []);
+
+  const cancelRetry = useCallback(() => {
+    retryRef.current = null;
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
     }
   }, []);
 
@@ -255,27 +273,29 @@ export function useChatNavigator({
     (target: NavTarget) => {
       const list = listRef.current;
       if (!list) return;
-      retryRef.current = null;
-      if (retryTimer.current) {
-        clearTimeout(retryTimer.current);
-        retryTimer.current = null;
-      }
-      if (oldestTimer.current) {
-        clearTimeout(oldestTimer.current);
-        oldestTimer.current = null;
-      }
+      cancelRetry();
       cancelSnap();
       if (target.kind === 'live') list.scrollToOffset({ offset: 0, animated });
-      else if (target.kind === 'oldest') list.scrollToEnd({ animated });
       else {
+        // DR-127 — "start of thread" is just the LAST ROW, landed the way every other row is.
+        // It used to have its own primitive; see the note at the top of this file for why that
+        // primitive can never clear the header.
+        const index = target.kind === 'oldest' ? countRef.current - 1 : target.index;
+        if (index < 0) return;                    // an empty thread has no row to aim at
         list.scrollToIndex({
-          index: target.index,
+          index,
           viewPosition: CHAT_NAV_VIEW_POSITION,
           viewOffset: landingViewOffset(clearanceRef.current),
           animated,
         });
-        // Only an index landing can clamp at the live edge with the clearance added on top.
-        if (clearanceRef.current > 0) {
+        // Only an index landing can clamp at the live edge with the clearance added on top —
+        // and only one that is not the OLDEST row. That row's natural landing is <= 0 only when
+        // the whole thread fits above the fold, and there the clamp already gives the right
+        // answer: the list's maximum offset is `natural + clearance` exactly (its visual-top
+        // padding IS the clearance), so the native clamp lands the oldest top the full
+        // clearance below the header. Correcting THAT to the live edge would eat into the very
+        // clearance the reader asked for, in the one direction that cannot be what they meant.
+        if (clearanceRef.current > 0 && index < countRef.current - 1) {
           snapArmedRef.current = true;
           scheduleSnapCheck();
         }
@@ -286,7 +306,7 @@ export function useChatNavigator({
       // on their own — which is the distinction that makes the retirement below safe.
       pendingTopRef.current = target.kind === 'live' ? null : landmarkRef.current;
     },
-    [animated, cancelSnap, listRef, scheduleSnapCheck],
+    [animated, cancelRetry, cancelSnap, listRef, scheduleSnapCheck],
   );
 
   const goUp = useCallback(() => {
@@ -307,20 +327,11 @@ export function useChatNavigator({
     if (target) scrollTo(target);
   }, [scrollTo]);
 
-  const goOldest = useCallback(() => {
-    scrollTo({ kind: 'oldest' });
-    // `scrollToEnd` derives its offset from the list's AVERAGE row length, which on a thread
-    // of unmeasured, screen-tall responses can be far out — and unlike an index target it
-    // never reports a failure, so nothing corrects it. The index path got a bounded re-aim for
-    // exactly this reason; "start of thread" needs one too, and it is the control Kamil's
-    // ledger row asks him to check. One re-issue after the same settling delay, by which time
-    // the rows near the end have measured. Cheap, and no index arithmetic to get wrong.
-    if (oldestTimer.current) clearTimeout(oldestTimer.current);
-    oldestTimer.current = setTimeout(() => {
-      oldestTimer.current = null;
-      listRef.current?.scrollToEnd({ animated });
-    }, RETRY_DELAY_MS);
-  }, [animated, listRef, scrollTo]);
+  // The bespoke re-aim this used to carry is gone with the bespoke primitive: an index target
+  // reports its own failure, so the shared bounded re-aim in `onScrollToIndexFailed` now covers
+  // the extreme too — and unlike the old one it finishes on an EXACT landing rather than a
+  // second estimate.
+  const goOldest = useCallback(() => scrollTo({ kind: 'oldest' }), [scrollTo]);
 
   const goLive = useCallback(() => scrollTo({ kind: 'live' }), [scrollTo]);
 
@@ -360,10 +371,7 @@ export function useChatNavigator({
     if (landmarkRef.current !== null && landmarkRef.current !== LIVE_EDGE
         && !describesLanding(top, bottom, landmarkRef.current, clearanceRef.current)) {
       landmarkRef.current = null;
-      if (oldestTimer.current) {   // as with a drag: they are no longer where we put them
-        clearTimeout(oldestTimer.current);
-        oldestTimer.current = null;
-      }
+      cancelRetry();   // as with a drag: they are no longer where we put them
     }
   }).current;
 
@@ -373,14 +381,12 @@ export function useChatNavigator({
     landmarkRef.current = null;
     // The reader is driving now: a correction computed for OUR landing would fight them.
     cancelSnap();
-    // The reader has taken over, so any correction still queued is no longer wanted. Without
-    // this, tapping "start of thread" and changing your mind within RETRY_DELAY_MS yanks you
-    // back out of your own drag — a movement nobody asked for at the moment it happens.
-    if (oldestTimer.current) {
-      clearTimeout(oldestTimer.current);
-      oldestTimer.current = null;
-    }
-  }, [cancelSnap]);
+    // Same for a queued re-aim: tapping a landmark and changing your mind within
+    // RETRY_DELAY_MS yanked you back out of your own drag — a movement nobody asked for at the
+    // moment it happens. DR-115 guarded only "start of thread", which had its own timer; that
+    // extreme now shares the index re-aim (DR-127), so the guard belongs on the shared one.
+    cancelRetry();
+  }, [cancelRetry, cancelSnap]);
 
   /** `scrollToIndex` can only land exactly on a row the list has already measured, and this
    *  list deliberately renders a tiny window (DR-100). Approximate first so the cells around
@@ -392,10 +398,20 @@ export function useChatNavigator({
       // Inverted list ⇒ a larger offset moves content DOWN, so the chrome clearance is ADDED
       // here where the exact landing SUBTRACTS it as a viewOffset. Both put the target's top
       // the same distance below the header; this one only gets there approximately.
-      list.scrollToOffset({
-        offset: Math.max(0, info.averageItemLength * info.index + clearanceRef.current),
-        animated,
-      });
+      //
+      // For the OLDEST row, `scrollToEnd` is the better approach: it estimates from the list's
+      // own cell metrics — measured where it can, the average only beyond them — rather than
+      // from `averageItemLength * index` alone, which on a thread of wildly unequal rows can
+      // stop far short. It is only ever an APPROACH here: being blind to the list's visual-top
+      // padding is precisely why the landing itself could not be left to it (DR-127), and the
+      // re-aim below is what lands.
+      if (info.index >= countRef.current - 1) list.scrollToEnd({ animated });
+      else {
+        list.scrollToOffset({
+          offset: Math.max(0, info.averageItemLength * info.index + clearanceRef.current),
+          animated,
+        });
+      }
       const state = retryRef.current?.index === info.index
         ? retryRef.current
         : { index: info.index, attempts: 0 };

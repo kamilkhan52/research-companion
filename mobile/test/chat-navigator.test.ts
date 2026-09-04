@@ -120,16 +120,31 @@ test('a new message retires the landmark, because every older index has shifted'
   });
 });
 
-test('the extremes use the exact primitives, not an index landing', () => {
+test('the extremes: the live edge is an offset, the start of the thread is the last row', () => {
+  // DR-127 — "start of thread" used `scrollToEnd`, the one primitive that cannot clear the
+  // floating header (it is blind to the list's contentContainer padding, which IS the
+  // clearance). It is the last ROW, so it takes the same landing every other row takes.
   const list = fakeList();
   const { result } = renderHook(() =>
     useChatNavigator({ listRef: { current: list }, count: 6 }),
   );
   act(() => result.current.goOldest());
-  expect(list.scrollToEnd).toHaveBeenCalledWith({ animated: true });
+  expect(list.scrollToIndex).toHaveBeenCalledWith(
+    expect.objectContaining({ index: 5, viewPosition: CHAT_NAV_VIEW_POSITION }));
+  expect(list.scrollToEnd).not.toHaveBeenCalled();
   act(() => result.current.goLive());
   expect(list.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
+});
+
+test('an empty thread has no row to aim at', () => {
+  // `scrollToEnd` returned silently on an empty list; `scrollToIndex(-1)` throws an invariant.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 0 }),
+  );
+  act(() => result.current.goOldest());
   expect(list.scrollToIndex).not.toHaveBeenCalled();
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
 });
 
 test('stepping up from the live edge shows the newest message rather than skipping it', () => {
@@ -266,32 +281,37 @@ test('the live-edge landmark is exempt, since it makes no claim about the top ro
     expect.objectContaining({ index: 0 }));
 });
 
-test('start-of-thread re-issues once, because scrollToEnd never reports a failure', () => {
-  // `scrollToEnd` derives its offset from the average row length and cannot fail, so the
-  // bounded re-aim that protects index targets does not cover it — on a thread of screen-tall
-  // rows the first landing can be far short. This is the control the ledger row asks Kamil to
-  // check ("the double-chevrons reach the very start of the thread").
+test('an unmeasured start of thread APPROACHES with scrollToEnd, then lands cleared', () => {
+  // The one job `scrollToEnd` is still right for. On a thread of unmeasured, screen-tall rows
+  // the last row's exact landing fails, and `averageItemLength * index` — the estimate every
+  // other target uses — can stop far short of the end; the list's own cell metrics do better.
+  // But it is only the APPROACH: the re-aim is what actually lands, and it carries the
+  // clearance the approach cannot express.
   const list = fakeList();
   const { result } = renderHook(() =>
-    useChatNavigator({ listRef: { current: list }, count: 40 }),
+    useChatNavigator({ listRef: { current: list }, count: 40, topClearance: CHROME }),
   );
   act(() => result.current.goOldest());
+  act(() => result.current.onScrollToIndexFailed({ index: 39, averageItemLength: 400 }));
   expect(list.scrollToEnd).toHaveBeenCalledTimes(1);
-  act(() => jest.advanceTimersByTime(200));
-  expect(list.scrollToEnd).toHaveBeenCalledTimes(2);       // corrected after the rows measured
-  act(() => jest.advanceTimersByTime(2000));
-  expect(list.scrollToEnd).toHaveBeenCalledTimes(2);       // exactly one correction, not a loop
+  expect(list.scrollToOffset).not.toHaveBeenCalled();      // not the average-length estimate
+  list.scrollToIndex.mockClear();
+  act(() => void jest.advanceTimersByTime(200));
+  expect(list.scrollToIndex).toHaveBeenCalledWith(
+    expect.objectContaining({ index: 39, viewOffset: -CHROME }));
 });
 
-test('another jump cancels the start-of-thread correction', () => {
+test('another jump cancels a queued re-aim', () => {
   const list = fakeList();
   const { result } = renderHook(() =>
     useChatNavigator({ listRef: { current: list }, count: 40 }),
   );
   act(() => result.current.goOldest());
+  act(() => result.current.onScrollToIndexFailed({ index: 39, averageItemLength: 400 }));
   act(() => result.current.goLive());
+  list.scrollToIndex.mockClear();
   act(() => jest.advanceTimersByTime(500));
-  expect(list.scrollToEnd).toHaveBeenCalledTimes(1);       // the pending correction was dropped
+  expect(list.scrollToIndex).not.toHaveBeenCalled();       // the pending re-aim was dropped
 });
 
 test('a shrinking list retires the pending correction instead of throwing past the end', () => {
@@ -331,17 +351,21 @@ test('stepping keeps working when viewability lags the animated scroll', () => {
     expect.objectContaining({ index: 4 }));    // kept stepping; did not stall back on 2 or 3
 });
 
-test('taking over the scroll cancels the start-of-thread correction', () => {
-  // Introduced by the correction itself: tap ⌃⌃, change your mind inside RETRY_DELAY_MS, and
-  // the timer yanked you back to the start of the thread out of your own drag.
+test('taking over the scroll cancels a queued re-aim', () => {
+  // Introduced by the correction itself: tap a landmark, change your mind inside
+  // RETRY_DELAY_MS, and the timer yanked you back out of your own drag. DR-115 guarded only
+  // "start of thread", which had its own timer; DR-127 moved that extreme onto the shared
+  // re-aim, so the guard had to move with it or every index jump kept the hole.
   const list = fakeList();
   const { result } = renderHook(() =>
     useChatNavigator({ listRef: { current: list }, count: 40 }),
   );
   act(() => result.current.goOldest());
+  act(() => result.current.onScrollToIndexFailed({ index: 39, averageItemLength: 400 }));
+  list.scrollToIndex.mockClear();
   act(() => result.current.onScrollBeginDrag());
   act(() => jest.advanceTimersByTime(500));
-  expect(list.scrollToEnd).toHaveBeenCalledTimes(1);     // no unasked-for second jump
+  expect(list.scrollToIndex).not.toHaveBeenCalled();     // no unasked-for second jump
 });
 
 // --- landing clear of the floating header (Kamil's 2026-09-02 remark on DR-115) ---------------
@@ -571,4 +595,59 @@ test('a target that exhausts its corrections stops claiming the reader is on it'
   // does with no landmark. The lie would have given 27, a message they never reached.
   expect(list.scrollToIndex).toHaveBeenLastCalledWith(
     expect.objectContaining({ index: 26 }));
+});
+
+// --- the start of the thread lands like everything else (DR-127) -----------------------------
+
+test('start of thread clears the header, exactly as every other landing does', () => {
+  // Kamil, on device: "when scrolling to top of summary (first response) always scroll all the
+  // way up. Right now, it hides some of the summary headers behind the UI. But when I manually
+  // scroll all the way up, it shows perfectly." The summary is the OLDEST row, and its jump was
+  // the one landing DR-115 round 2 left on `scrollToEnd` — which derives its offset from cell
+  // metrics plus the list footer and never sees `contentContainerStyle` padding. That padding
+  // is the clearance, so it stopped exactly CHROME px short of the end a finger reaches.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 12, topClearance: CHROME }),
+  );
+  act(() => result.current.goOldest());
+  expect(list.scrollToIndex).toHaveBeenCalledWith({
+    index: 11,
+    viewPosition: CHAT_NAV_VIEW_POSITION,
+    viewOffset: -CHROME,
+    animated: true,
+  });
+  expect(list.scrollToEnd).not.toHaveBeenCalled();
+});
+
+test('stepping up onto the oldest row clears the header too, not just the ⌃⌃ control', () => {
+  // `stepUp` resolves the last row to the same target the control uses, so both share the fix.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 3, topClearance: CHROME }),
+  );
+  act(() => result.current.onViewableItemsChanged(viewable([1])));
+  act(() => result.current.goUp());                                  // the row it is inside
+  act(() => result.current.onViewableItemsChanged(viewable([1])));   // arrived
+  act(() => result.current.goUp());                                  // steps onto the oldest
+  expect(list.scrollToIndex).toHaveBeenLastCalledWith(
+    expect.objectContaining({ index: 2, viewOffset: -CHROME }));
+});
+
+test('the start of the thread is never corrected back to the live edge', () => {
+  // The live-edge correction exists because `scrollToIndex` clamps at 0 before subtracting
+  // viewOffset, parking a near-the-bottom target CHROME px short of the live edge. The OLDEST
+  // row cannot mean that: its natural landing is <= 0 only when the whole thread fits above the
+  // fold, and there the list's max offset IS `natural + clearance`, so the native clamp already
+  // lands it right. Snapping to the live edge from there would eat the clearance it just got —
+  // and on a settled offset inside the band the correction cannot tell the two cases apart.
+  const list = fakeList();
+  const { result } = renderHook(() =>
+    useChatNavigator({ listRef: { current: list }, count: 8, topClearance: CHROME }),
+  );
+  act(() => result.current.goOldest());
+  list.scrollToOffset.mockClear();
+  act(() => result.current.onScroll({ contentOffset: { y: CHROME } }));
+  act(() => void jest.runOnlyPendingTimers());
+  expect(list.scrollToOffset).not.toHaveBeenCalled();
 });

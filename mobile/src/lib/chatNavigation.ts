@@ -44,8 +44,10 @@ export interface StepInput {
 export function stepUp({ landmark, topIndex, count }: StepInput): NavTarget | null {
   if (count <= 0) return null;
   const target = landmark !== null ? landmark + 1 : topIndex ?? 0;
-  // The oldest message's top IS the top of the thread, and scrollToEnd reaches it exactly
-  // (past the list's header padding) where an index-based landing only approaches it.
+  // The oldest message's top IS the top of the thread. It stays its own kind rather than
+  // `{ index: count - 1 }` so the rail's "start of thread" control can name it without knowing
+  // the count — but it is that row, and the navigator lands it exactly like any other. (It used
+  // to get its own `scrollToEnd`, which cannot clear the floating header: DR-127.)
   if (target >= count - 1) return { kind: 'oldest' };
   return { kind: 'index', index: target };
 }
