@@ -402,7 +402,12 @@ def list_items():
             counts[target] = counts.get(target, 0) + 1
             note(target, when, "you")
             # Whether his latest word asks for anything. A comment does; a bare Pass does not.
-            substantive[target] = bool((entry.get("comment") or "").strip())
+            # A SCREENSHOT alone does too — DR-088 made that a valid remark on purpose ("a
+            # screenshot alone is a valid remark; requiring words on top of it pushed the tester
+            # toward Pass/Fail just to get the screenshot through"), so a rule that ignored it
+            # would drop exactly the reports that came with evidence.
+            substantive[target] = bool((entry.get("comment") or "").strip()
+                                       or entry.get("screenshot"))
         elif kind == "response" and target:
             response_counts[target] = response_counts.get(target, 0) + 1
             note(target, when, "claude")
@@ -439,31 +444,17 @@ def list_items():
         latest = activity.get(item["id"])
         item["last_activity"] = round(latest[0], 3) if latest else None
         item["last_activity_kind"] = latest[1] if latest else None
-        # His word came last, so the ball is on our side. `raised` counts: an item raised and
-        # never answered is the same unanswered state as a comment left hanging.
+        # His word came last, so the ball is on our side — but only if his word ASKED for
+        # something. Three exclusions keep this a queue rather than noise, all measured against
+        # the live inbox rather than reasoned about, and together they take it from 30 rows to 5:
         #
-        # Two exclusions keep this a queue rather than noise, and both were measured against
-        # the live inbox rather than reasoned about. A CLOSED row that never had a conversation
-        # was answered by the ledger row itself. And a bare PASS is him closing the loop, not
-        # asking for anything — 8 of the 15 that survived the first exclusion were exactly that,
-        # and they could never drain, because nothing replies to a pass on an already-closed row.
-        # a conversation on it was answered by the ledger row itself — 22 of the 30 rows this
-        # first flagged were exactly that, settled things from weeks ago, and a queue that is
-        # three-quarters stale is a queue he stops reading. But a closed row he came BACK to
-        # after a reply is different: that is him reopening something, which is precisely the
-        # case that was getting lost. So closed rows qualify only once a reply exists to have
-        # spoken after.
-        # A bare Pass with no comment is him CLOSING the loop, not asking for something — the
-        # opposite of the comment this exists to surface. Measured against the live inbox, 8 of
-        # the 15 survivors were exactly that, and they can never drain: nothing replies to a
-        # pass on an already-closed row, so every future pass would add one permanently. And
-        # `raised` only counts while the row is still untriaged; once it has a real state the
-        # ledger row IS the answer and the ball is on his side.
+        #   - a CLOSED row that never had a conversation was answered by the ledger row itself;
+        #     a closed row he came BACK to after a reply is him reopening it, and does count;
+        #   - a bare PASS is him closing the loop, not asking. These could never drain — nothing
+        #     replies to a pass — so every future one would add a permanent entry;
+        #   - `raised` counts only while the row is still untriaged. Once it has a real state the
+        #     ledger row IS the answer and the ball is on his side.
         kind_last = (latest or (None, None))[1]
-        # `raised` counts only while the row is still untriaged. Once it has a real state the
-        # ledger row IS the answer and the ball is on his side — DR-063 and DR-065 have sat at
-        # `implemented — verify` since 2026-08-11 with nothing but their raising, and they are
-        # waiting on him, not on us.
         if kind_last == "raised" and item["state"] != "new — untriaged":
             him_last = False
         else:
@@ -1415,10 +1406,18 @@ def _dispatch_reap() -> tuple[dict | None, bool]:
         info = json.loads(current.read_text())
     except (OSError, ValueError):
         return None, False
+    # Same guard its read-only sibling `_dispatch_peek` carries: valid JSON that is not a dict,
+    # or a non-numeric `started_ts`, used to 500 whichever route asked. Here that is deploy and
+    # dispatch — and the phone is the only place the file could be cleared from.
+    if not isinstance(info, dict):
+        return None, False
     # Liveness FIRST, age only as a tiebreaker. The other order declares a long-running session
     # dead, which releases single-flight and lets the next dispatch `git reset --hard` the
     # worktree that session is still editing. See DISPATCH_MAX_AGE_S.
-    started = float(info.get("started_ts") or 0)
+    try:
+        started = float(info.get("started_ts") or 0)
+    except (TypeError, ValueError):
+        started = 0.0
     liveness = _dispatch_liveness(info.get("pid"), started)
     if liveness == "dead":
         ended_reason = "process gone"

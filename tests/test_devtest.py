@@ -3000,6 +3000,9 @@ def test_a_malformed_dispatch_record_does_not_empty_the_bubble(client, monkeypat
         r = client.get("/api/devtest/items")
         assert r.status_code == 200, f"{bad} emptied the sheet"
         assert len(r.json()["items"]) == 3
+        # The REAPING sibling takes the same shapes — deploy and dispatch read through it, and
+        # the phone is the only place he could clear the file from.
+        assert client.get("/api/devtest/deploy").status_code in (200, 503), bad
 
 
 def test_the_badge_follows_an_item_through_its_provisional_id(client, monkeypatch, tmp_path):
@@ -3023,3 +3026,62 @@ def test_the_badge_follows_an_item_through_its_provisional_id(client, monkeypatc
     items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
     assert items["DR-001"]["agent_state"] == "working"
     assert items["DR-058"]["agent_state"] == "idle"
+
+
+def test_a_bare_pass_is_not_an_unanswered_comment(client, monkeypatch, tmp_path):
+    """The rule that took the live queue from 30 to 5, and it shipped unpinned for a round.
+
+    A bare Pass is him CLOSING the loop, not asking for anything. Flagging it made the queue
+    undrainable — nothing ever replies to a pass, so every future one would add a permanent
+    entry. The same entry WITH a comment is the case DR-134 exists for.
+    """
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+
+    def flag(entry: dict) -> bool:
+        inbox.write_text(
+            json.dumps({"item_id": "DR-001", "kind": "response",
+                        "ts": "2026-09-01T00:00:00+00:00", "text": "shipped"}) + "\n"
+            + json.dumps({"item_id": "DR-001", "kind": "feedback",
+                          "ts": "2026-09-02T00:00:00+00:00", **entry}) + "\n")
+        items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+        return items["DR-001"]["awaiting_reply"]
+
+    # DR-001 is `implemented — verify`, so the closed-row exclusion cannot be what decides this.
+    assert flag({"verdict": "pass"}) is False
+    assert flag({"verdict": "pass", "comment": "   "}) is False, "whitespace is not a request"
+    assert flag({"verdict": "pass", "comment": "one more thing"}) is True
+    # A screenshot alone is a valid remark (DR-088), so it asks for something too.
+    assert flag({"verdict": "remark", "screenshot": "shots/x.png"}) is True
+
+
+def test_raising_an_item_stops_counting_once_it_has_been_triaged(client, monkeypatch, tmp_path):
+    """DR-063 and DR-065 sat in the queue on nothing but their own raising, at
+    `implemented — verify` since 2026-08-11. Once a row has a real state the ledger row IS the
+    answer and the ball is on his side."""
+    from app.routers import devtest as dt
+
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text(LEDGER_SAMPLE)
+    monkeypatch.setattr(dt, "_LEDGER", ledger)
+    inbox = dt._dir() / "feedback.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(json.dumps({"id": "NEW-999", "kind": "new_item",
+                                 "ts": "2026-09-02T00:00:00+00:00", "title": "A thing"}) + "\n")
+
+    # Untriaged: nobody has answered it, so it is genuinely waiting.
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["NEW-999"]["awaiting_reply"] is True
+
+    # Triaged into a row with a real state: the row is the answer.
+    ledger.write_text(LEDGER_SAMPLE.replace(
+        "| DR-058 | 2026-08-11 | One paper changes the notes too much. | `open` |",
+        "| DR-058 | 2026-08-11 | One paper changes the notes too much. | `implemented — verify` | "
+        "Provisional id `NEW-999`. |"))
+    items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
+    assert items["DR-058"]["awaiting_reply"] is False

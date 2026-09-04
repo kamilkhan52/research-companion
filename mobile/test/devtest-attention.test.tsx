@@ -6,8 +6,31 @@
  * see, and nothing surfaces it. These pin the two things that fix it: a filter that ignores the
  * verdict, and a card that says when a session is on the item right now.
  */
-import { cardMeta, matchesFilter, REVIEW_FILTERS } from '@/components/DevTestBubble';
+jest.mock('expo-router', () => ({ usePathname: () => '/discover' }));
+jest.mock('@/api/endpoints', () => ({
+  getDevTestItems: jest.fn().mockResolvedValue({ items: [] }),
+  recordDevTestFeedback: jest.fn().mockResolvedValue({ entry: {} }),
+  dispatchToClaude: jest.fn(),
+  getDispatchStatus: jest.fn().mockResolvedValue({ dispatch: null }),
+  getDeployState: jest.fn(),
+  deployNow: jest.fn(),
+  resumeDispatch: jest.fn(),
+  createDevTestItem: jest.fn(),
+  getDevTestFeedback: jest.fn().mockResolvedValue({ entries: [] }),
+}));
+
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
+
+import * as api from '@/api/endpoints';
+import { cardMeta, ItemCard, matchesFilter, REVIEW_FILTERS } from '@/components/DevTestBubble';
 import type { DevTestItem } from '@/api/endpoints';
+
+const ITEM: DevTestItem = {
+  id: 'DR-900', raised: '2026-09-04', title: 'A thing to check', state: 'implemented — verify',
+  how_to_test: 'Tap it.', feedback_count: 0,
+};
+
+beforeEach(() => jest.clearAllMocks());
 
 const item = (over: Partial<DevTestItem>): DevTestItem => ({
   id: 'DR-001', raised: '2026-09-04', title: 'A thing', state: 'implemented — verify',
@@ -83,4 +106,39 @@ test('a closed row he came back to IS in Needs reply — settled is not answered
   expect(passes(item({ state: 'closed', awaiting_reply: true }), 'needsreply', 'pass')).toBe(true);
   // A settled closed row with nothing waiting stays out of it.
   expect(passes(item({ state: 'closed', awaiting_reply: false }), 'needsreply', 'pass')).toBe(false);
+});
+
+// --- DR-134: the two fields are SERVER-derived, so the sheet has to re-ask -------------------
+
+test('recording a verdict re-asks the server, or Needs reply cannot move in that sitting', async () => {
+  // Without this, both halves of DR-134's own verify text fail as written: a comment recorded
+  // after a Pass does not move the item into Needs reply, because the client still holds the
+  // `awaiting_reply: false` it fetched when the sheet opened. He would record a Fail on working
+  // code. This shipped unpinned for a round — the review caught that deleting `onRecorded?.()`
+  // left all 1059 client tests green.
+  const onRecorded = jest.fn();
+  const screen = render(
+    <ItemCard item={{ ...ITEM, id: 'DR-997' }} shot={null} route="/discover"
+              onRecorded={onRecorded} />);
+  fireEvent.press(screen.getByText(ITEM.title));
+  fireEvent.changeText(await screen.findByPlaceholderText('Comment (optional for Pass and Fail)'),
+                       'one more thing');
+  fireEvent.press(screen.getByText('Pass'));
+
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  // AFTER the record resolves, not before — a refetch that raced the write would read the old
+  // state and look like it worked.
+  await waitFor(() => expect(onRecorded).toHaveBeenCalled());
+});
+
+test('a FAILED record does not re-ask — nothing changed server-side to re-read', async () => {
+  const onRecorded = jest.fn();
+  jest.mocked(api.recordDevTestFeedback).mockRejectedValueOnce(new Error('offline'));
+  const screen = render(
+    <ItemCard item={{ ...ITEM, id: 'DR-996' }} shot={null} route="/discover"
+              onRecorded={onRecorded} />);
+  fireEvent.press(screen.getByText(ITEM.title));
+  fireEvent.press(await screen.findByText('Pass'));
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  expect(onRecorded).not.toHaveBeenCalled();
 });
