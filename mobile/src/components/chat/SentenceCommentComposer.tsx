@@ -320,7 +320,11 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.xs,
-    minHeight: 36,
+    // DR-130 shortened this pill's LABEL (`3 comments` -> `3 💬`), which narrowed it from ~130px
+    // to ~75px — and it is the only way back to the attached comments once the tray is
+    // collapsed. `control.minTouch`, not 36: `alignSelf: 'flex-start'` means this just becomes a
+    // taller pill, and hitSlop would buy nothing because RN clips a touch area to its parent.
+    minHeight: control.minTouch,
     paddingHorizontal: space.md,
     borderRadius: radius.pill,
     borderWidth: 1,

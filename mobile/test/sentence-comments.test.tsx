@@ -356,3 +356,19 @@ test('the attached-comments tray has a real surface, not text floating with no b
   expect(style.backgroundColor).toBeTruthy();
   expect(style.borderWidth ?? style.borderTopWidth).toBeTruthy();
 });
+
+test('the collapsed count pill is still tappable after DR-130 shortened its label', async () => {
+  // DR-130 replaced `2 comments` with `2` + an icon, taking the pill from ~130px to ~75px wide.
+  // It is the ONLY way back to the attached comments once the tray is collapsed, so shrinking
+  // the label must not have shrunk the target. Asserting the style prop, not hitSlop arithmetic:
+  // RN clips a touch area to its parent's bounds, so slop inside a tight row buys nothing.
+  const props = {
+    active: false, selected: null, draft: '', onChangeDraft: jest.fn(), onSave: jest.fn(),
+    onCancelSelection: jest.fn(), onOpen: jest.fn(), onRemove: jest.fn(), onDone: jest.fn(),
+  };
+  await renderAsync(<SentenceCommentComposer {...props} comments={[first, second]} />);
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
+
+  expect(minHeightOf(screen.getByTestId('sentence-comment-chip')))
+    .toBeGreaterThanOrEqual(control.minTouch);
+});
