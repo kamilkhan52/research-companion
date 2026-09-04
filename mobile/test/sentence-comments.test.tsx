@@ -1,8 +1,12 @@
 import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
-import { StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet, Text as RNText } from 'react-native';
+import { Stop } from 'react-native-svg';
 import type { ReactTestInstance } from 'react-test-renderer';
 
-import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
+import {
+  CHIPS_FADE_WIDTH,
+  SentenceCommentComposer,
+} from '@/components/chat/SentenceCommentComposer';
 import {
   composeSentenceReply,
   removeSentenceComment,
@@ -156,10 +160,62 @@ test('Done collapses the attached comments to a single chip, and the chip brings
   await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
   expect(onDone).toHaveBeenCalled();                       // still exits annotation mode
   expect(screen.queryByTestId('sentence-comment-queue')).toBeNull();
-  expect(screen.getByText('2 comments')).toBeTruthy();     // the chip states what is attached
+  // DR-130 — the chip is the COUNT plus the speech-bubble glyph, not "2 comments".
+  expect(screen.getByText('2')).toBeTruthy();
+  expect(screen.queryByText(/comments?$/)).toBeNull();
 
   await fireEventAsync.press(screen.getByTestId('sentence-comment-chip'));
   expect(screen.getByTestId('sentence-comment-queue')).toBeTruthy();
+});
+
+// DR-130 — Kamil: "instead of saying 'N comments' when minimized, we should just have the number
+// and the icon. No 'comments' needed." The word must be gone from the VISIBLE label while the
+// accessibility label keeps the whole sentence — a screen reader hearing "2" alone learns
+// nothing. Asserting both halves, because dropping the word from both would also pass a
+// visible-text-only check.
+test('the collapsed chip shows the bare count, and still SAYS "comments" to a screen reader', async () => {
+  const props = {
+    active: false, selected: null, draft: '', onChangeDraft: jest.fn(), onSave: jest.fn(),
+    onCancelSelection: jest.fn(), onOpen: jest.fn(), onRemove: jest.fn(), onDone: jest.fn(),
+  };
+  await renderAsync(<SentenceCommentComposer {...props} comments={[first, second]} />);
+  await fireEventAsync.press(screen.getByTestId('sentence-comment-collapse'));
+
+  const chip = screen.getByTestId('sentence-comment-chip');
+  expect(chip.props.accessibilityLabel).toBe('2 comments attached. Tap to show them.');
+  // Every string the chip actually paints: the count, and nothing else.
+  const painted = screen.UNSAFE_getAllByType(RNText)
+    .map((n) => n.props.children)
+    .filter((c) => typeof c === 'string' || typeof c === 'number')
+    .map(String);
+  expect(painted).toEqual(['2']);
+});
+
+// DR-130 — the reported defect: with more chips than fit, the strip ended at a hard vertical
+// seam against the tray's opaque fill, which reads as a panel sitting ON TOP of a comment
+// ("the minimize arrow seems to have no transparency and overlaps the comments more than it
+// should"). The fix is a gradient to that same fill, so the boundary dissolves.
+test('the chip strip fades out at its trailing edge instead of being cut off', async () => {
+  const props = {
+    active: false, selected: null, draft: '', onChangeDraft: jest.fn(), onSave: jest.fn(),
+    onCancelSelection: jest.fn(), onOpen: jest.fn(), onRemove: jest.fn(), onDone: jest.fn(),
+  };
+  await renderAsync(<SentenceCommentComposer {...props} comments={[first, second]} />);
+
+  const fade = screen.getByTestId('sentence-comment-chips-fade', { includeHiddenElements: true });
+  expect(fade.props.pointerEvents).toBe('none');           // never eats a tap meant for a chip
+  expect(fade.props.width).toBe(CHIPS_FADE_WIDTH);
+
+  // Transparent where the comment is, opaque where the control is — the other way round would
+  // paint a solid block over the chips, which is the very thing being fixed.
+  const stops = screen.UNSAFE_getAllByType(Stop);
+  expect(stops.map((s) => s.props.stopOpacity)).toEqual([0, 1]);
+
+  // And the strip can scroll clear of the fade rather than parking half-dissolved under it.
+  const strip = screen.UNSAFE_getAllByType(ScrollView)
+    .find((s) => s.props.horizontal);
+  const pad = StyleSheet.flatten(strip?.props.contentContainerStyle) as { paddingRight?: number };
+  expect(pad.paddingRight).toBeGreaterThanOrEqual(CHIPS_FADE_WIDTH);
 });
 
 test('a newly attached comment re-opens the tray so the reader sees it land', async () => {
