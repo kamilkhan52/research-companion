@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
-import { fireEventAsync, waitFor } from '@testing-library/react-native';
+import { act, fireEventAsync, waitFor } from '@testing-library/react-native';
 import { Slot, useLocalSearchParams } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 import { Text } from 'react-native';
@@ -11,14 +11,19 @@ import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import { keys } from '@/api/queries';
 import { ProjectProvider } from '@/store/project';
+import { LIBRARY_TITLE_KEY, ReadingSettingsProvider } from '@/store/readingSettings';
 
 const client = createTestQueryClient();
+
+afterEach(() => AsyncStorage.clear());
 
 function TestLayout() {
   return (
     <QueryClientProvider client={client}>
       <ProjectProvider>
-        <Slot />
+        <ReadingSettingsProvider>
+          <Slot />
+        </ReadingSettingsProvider>
       </ProjectProvider>
     </QueryClientProvider>
   );
@@ -35,10 +40,33 @@ test('renders an in-memory app route and navigates from the existing Library scr
   );
 
   await waitFor(() => expect(screen.getByText('Connect to your server')).toBeTruthy());
+  expect(screen.getByTestId('library-title-header')).toBeTruthy();
+  expect(screen.getByTestId(
+    'library-title-edge-fade',
+    { includeHiddenElements: true },
+  )).toBeTruthy();
   await fireEventAsync.press(screen.getByText('Open Settings'));
 
   await waitFor(() => expect(rendered.getPathname()).toBe('/settings'));
   expect(screen.getByText('Settings route')).toBeTruthy();
+});
+
+test('a persisted hidden-title preference removes the whole Library header', async () => {
+  await setBaseUrl('');
+  await AsyncStorage.setItem(LIBRARY_TITLE_KEY, 'false');
+
+  renderRouter({ _layout: TestLayout, index: LibraryScreen }, { initialUrl: '/' });
+
+  // Guard on loaded page content before asserting absence; otherwise a route that never mounted
+  // would satisfy both checks.
+  await waitFor(() => expect(screen.getByText('Connect to your server')).toBeTruthy());
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByTestId('library-title-header')).toBeNull();
+  expect(screen.queryByText('Seminar')).toBeNull();
+  expect(screen.queryByTestId(
+    'library-title-edge-fade',
+    { includeHiddenElements: true },
+  )).toBeNull();
 });
 
 test('continues the latest unfinished session across projects', async () => {
