@@ -131,11 +131,14 @@ test('a long institution list is summarised rather than listed', async () => {
   });
   expect(screen.getByTestId('suggestion-affiliations').props.children)
     .toBe('A University · B Institute +2');
-  // The full list still reaches a screen reader, which has no width limit. It rides on the meta
-  // line since DR-129 folded the institutions into it: a nested Text inside a Text is flattened,
-  // so a label of its own would never be announced.
+  // The full list still reaches a screen reader, which has no width limit, and it is still NAMED
+  // as affiliations. Both ride on the meta line since DR-129 folded the institutions into it: a
+  // nested Text inside a Text is flattened, so a label of its own would never be announced. The
+  // prefix is load-bearing rather than decoration (Opus review): once the institutions share the
+  // meta line's ` · ` separator, colour is the only cue a sighted reader has left, and a screen
+  // reader has no colour.
   expect(screen.getByTestId('suggestion-meta').props.accessibilityLabel)
-    .toContain('A University, B Institute, C Lab, D Centre');
+    .toBe('A. Author · 2024 · Affiliations: A University, B Institute, C Lab, D Centre · ~12 citations');
 });
 
 test('a suggestion with no known affiliation draws no empty row', async () => {

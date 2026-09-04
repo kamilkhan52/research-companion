@@ -596,9 +596,14 @@ export function SuggestionCard({
   }
   // The truncated "+N" is a width compromise; a screen reader has no width, so it hears the
   // whole list (DR-112's Opus review) — now on the meta line, since a nested Text inside a Text
-  // is flattened and its own label would never be announced.
+  // is flattened and its own label would never be announced. The "Affiliations:" prefix DR-112's
+  // review added rides along: sighted readers get the institutions' stronger colour, and colour
+  // is the ONLY cue left once they share the meta line's separator, so the spoken line has to
+  // name the field itself or it becomes an unmarked run of proper nouns.
   const metaLabel = metaParts
-    .map((p) => (p.key === 'affiliations' ? affiliationList.join(', ') : p.text))
+    .map((p) => (
+      p.key === 'affiliations' ? `Affiliations: ${affiliationList.join(', ')}` : p.text
+    ))
     .join(' · ');
 
   async function handleAdd() {
