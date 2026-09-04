@@ -1,107 +1,85 @@
-# Merging Map and Discover into one pipeline (DR-052)
+# Map + Discover: one surface (DR-052)
 
-*Drafted 2026-08-10. Kamil: "We should be merging Map and Discover… That's a quality of life
-upgrade we must push before we are production ready. Think about why; the two have common steps
-and differ in context a little. This can be a single function that can fulfil all requirements
-based on options or context." Status: **BUILT — all four delivery PRs merged by 2026-08-21**
-(#407 substrate, #409 delta lane, #431/#432 significance + lane-3 primitives, #436 client
-convergence). The open questions below were resolved in
-[`corpus-neighbourhood-spec.md`](corpus-neighbourhood-spec.md) §1; this file remains the
-architectural record. One correction learned at PR 4: the freshness line is DISCOVERY's (the
-forward sweep), shown read-only on the Map — the Map build never writes forward records.*
+**Status:** design agreed with Kamil 2026-09-04, not yet implemented.
+**Supersedes:** DR-052's original one-line framing ("merge into one function driven by
+options/context"), which left the surface question open.
 
-## Why they merge: the shared spine
+## What he asked for
 
-Both features answer the same underlying question — **what surrounds this corpus?** — and both
-already do it in three steps that differ only at the edges:
+> "I think we keep all features of Map and the tab, and we integrate Discover. And we shouldn't
+> be differentiating or have boundaries between the two when possible."
+> — Kamil, 2026-09-04, choosing **one tab, no mode switch**
 
-| step | Map (graph.py) | Discover (discovery*.py) | actually different? |
-|---|---|---|---|
-| 1. Anchor resolution | project papers → per-paper extraction + S2/OpenAlex ids | project papers → OpenAlex ids (R1, cached in graph store) | **No** — Discovery slice 1 already reads the graph's ids when present, and re-derives them when not |
-| 2. Neighbourhood | references/citers of each anchor, enriched with citation counts | forward citations, graph recommendations, goal search | **Partly** — same providers, same identity keys, different traversal direction and breadth |
-| 3. Ranking | `score_recommendations` (significance to this corpus) | gate → batch triage → blend | **Yes** — Map ranks for *structure*, Discover ranks for *what to read next* |
+With three follow-ups settled the same day: **the graph leads** and the list sits below it; a
+query **highlights matching nodes already in the graph** rather than injecting new ones; and the
+tab **stays "Map"**. On scope: *"Both the query and the project are important when a query is
+provided. The query in the context of the project is the priority."*
 
-The cost of keeping them separate is concrete and already being paid: identity resolution runs
-twice (the graph build resolves anchors, then a Discovery run re-resolves whatever the graph
-lacks), `graph.score_recommendations` is computed by the Map and consumed by Discovery through
-a side-channel read, staleness is bidirectional (a Map built after papers were added doesn't
-refresh Discovery's reservoir, and only Discovery's anchor ids flow back into the graph store —
-its citation and topic data never do),
-and the reader sees two buttons that each take minutes and partially redo each other's work.
+## What the duplication actually is
 
-## The merged shape: one neighbourhood pass, two views
+Not the whole of either screen. Both tabs render **a list of papers to add**:
 
-One pipeline — call it the **corpus neighbourhood pass** — with staged, resumable outputs:
+| | Map today | Discover today |
+|---|---|---|
+| reference graph | ✅ `GraphCanvas` | — |
+| neighbourhood freshness | ✅ `NeighbourhoodLine` | ✅ same component |
+| papers to add | ✅ `graph/recommendations` | ✅ goal-driven suggestions |
+| author board, labs research | ✅ | — |
+| open-ended query | — | ✅ `run_discovery` |
+| hide / unhide | (filtered by `discovery.filter_hidden`) | ✅ `discovery.hide_candidate` |
 
-```
-anchors(project)                      # step 1: identity, cached once, shared
-  → neighbourhood(anchors, breadth)   # step 2: edges + candidate works, one provider sweep
-      → graph view    (layout, significance, authors)      ← today's Map
-      → reading view  (gate, triage, ranked suggestions)   ← today's Discover
-```
+So "I still see both" is the recommendation list appearing twice, over a substrate that already
+merged: `neighbourhood.py` (DR-052 PRs 1–2) and the shared hidden-list are used by both today.
 
-- **Steps 1–2 are one job** (`neighbourhood_jobs`), reusing the graph store as the single
-  persisted substrate — it already holds per-paper extractions, provider records, and
-  recommendations. Discovery's ledger stays what it is (screening memory), but its *inputs*
-  come from the substrate instead of its own fetch pass.
-- **The two views are cheap derivations** over the substrate. The Map's layout/significance
-  step and Discover's screening funnel run as their own (much shorter) jobs, each triggered by
-  its tab, both reading the same neighbourhood revision. "Build map" and "Discover" become
-  "refresh the neighbourhood, then derive my view" — and when the substrate is fresh (the other
-  tab refreshed it minutes ago), the expensive half is skipped entirely. That is the
-  quality-of-life win: the second button becomes near-instant.
+## The merged surface
 
-Options/context (Kamil's "single function… based on options"): the pass takes `breadth`
-(references-only for a pure Map refresh; +forward-citations +goal-search when Discover needs
-reservoir) and `since` (incremental, from the frontier bookkeeping Discovery slice 2 planned).
-A view never triggers more breadth than it needs, but breadth fetched for one view is banked
-for both.
+**One tab, `Map`.** Graph on top, as now. Below it, **one ranked list** of papers to add — not
+sections, because sections are the boundary he asked us not to draw. Provenance moves onto each
+row instead, in language the engine already emits (`discovery.py` builds these strings today):
 
-## What deliberately does NOT merge
+- *"Cites “…” from your reading list"*
+- *"New: has started citing “…” from your list"*
+- *"Recommended from your reading list's citation patterns"*
+- and, when a query ran, the query's own reason
 
-- **Ranking.** Structural significance and what-to-read-next are different judgments; forcing
-  one scorer produced the mediocre pre-rebuild Discover. The funnel (gate → cheap triage →
-  blend) and `score_recommendations` both stay, as view-side derivations.
-- **The tabs.** Two entry points remain — the mental models ("see my field" vs "what next") are
-  distinct. The merge is beneath them. A later UI pass may add cross-links ("this suggestion in
-  the map"), which the shared substrate makes trivial (same node ids).
-- **Spend identity.** The neighbourhood pass is one metered operation; each view derivation
-  that calls an LLM (triage, path) meters as itself. No operation disappears from the ledger.
+**Opening the tab costs nothing.** The reference-derived and forward-citer lanes are file reads
+off the graph store. The multi-source query run costs real money and takes minutes, so it stays
+an explicit action on a background job — that is invariant 1, not a preference.
 
-## Migration path (three PRs, each shippable)
+**A query re-ranks the list in project context and highlights matching nodes** already in the
+graph. It does not add result nodes: the graph keeps meaning "your project", and a crowded graph
+of things he has not read would answer a question he did not ask.
 
-1. **Substrate extraction:** `graph.py`'s steps 1–2 move behind `neighbourhood_jobs` with the
-   graph build calling it — behavior-identical, Map tab unchanged. The job registry, staged
-   progress, and retrieval confirmations carry over.
-2. **Discovery reads the substrate:** R1/R2/R3 — the OpenAlex lanes (anchors, forward
-   citations, topic sweep) — and R5's recommendations consume the substrate, triggering a
-   neighbourhood refresh only when stale; what remains Discovery-owned is R4, the Semantic
-   Scholar goal search, which is goal-dependent and has no place in a goal-agnostic substrate.
-   Fresh provider data writes BACK to the substrate.
-3. **Client convergence:** both tabs show the shared "neighbourhood freshness" line; the near-
-   instant second-view behavior lands; cross-links optional.
+**Empty project** shows the query box alone. No new machinery — `_reading_list` already returns
+`[]` gracefully and the lexical lane still produces suggestions, which is what makes Discover the
+on-ramp for a new project's first papers.
 
-Risks — and the two mechanisms PR 1 must BUILD, because neither exists today:
+## Questions settled without asking
 
-- **The graph store has no revisioning.** `save()` is a whole-document atomic write; last
-  writer wins silently. The clobber is not hypothetical even now: a graph build load-mutate-
-  saves the document many times mid-build while `discovery.py` saves resolved anchors into the
-  same file. PR 1 adds a store revision counter checked on write (stale write → reload, merge,
-  retry), which also retroactively closes today's race.
-- **Nothing serializes the two features.** Graph and discovery run in SEPARATE registries with
-  different key schemes, so "one neighbourhood job per project" must be designed, not
-  inherited. The rule: the neighbourhood pass is one registry keyed on bare `pid`; a request
-  whose `breadth` exceeds the running job's does NOT silently join it (a joined narrow pass
-  would hand Discover an incomplete reservoir with no signal) — it queues a follow-up sweep for
-  the missing lanes, and the views read whatever revision is complete for their needs.
+| question | answer | evidence |
+|---|---|---|
+| Does Discover need a library? | No | `_reading_list` returns `[]`; "the lexical lane still produces suggestions" |
+| Sections or one list? | One list, per-row provenance | `reasons` already speaks this language |
+| Ranking with no query? | Existing project signals | connectivity bonus, significance classification, citation counts |
+| Hidden list shared? | Yes, already is | `graph/recommendations` runs through `discovery.filter_hidden` |
+| Does the graph move? | No | project structure is unambiguously Map |
+| Author board / labs? | Stay | "we keep all features of Map" |
 
-DR-046's lesson applies: substrate absence must render as "not built yet + offer", never as
-loss.
+## Staging
 
-## Open questions for Kamil
+Each step ships and is verifiable on its own; none leaves the tab in a half-merged state.
 
-1. Should a Discover run auto-refresh a stale neighbourhood (minutes, metered) or ask first?
-   The roadmap's risk posture (never surprise-block a legitimate user) suggests: refresh
-   automatically when the substrate is absent, ask when it is merely stale.
-2. Does the Map's "rebuild" button survive, or become "refresh neighbourhood" with the layout
-   derivation always implied?
+1. **Lanes behind one list.** Move `graph/recommendations` into the same ranked list Discover
+   builds, with provenance per row. Discover's tab still exists and still works.
+2. **The list moves under the graph** in the Map tab, with the query box. Discover's tab is
+   removed and its route redirects.
+3. **Query ↔ graph highlighting.** Matching nodes light up; no new nodes.
+4. **First-run.** Empty project shows the query box as the on-ramp.
+
+## Open, and deliberately not decided here
+
+- **Ordering between lanes in one list.** A reference the corpus cites 6 times and a query hit
+  with a strong lexical match are not comparable on any scale that exists today. Needs a real
+  ranking pass, and probably his eye on a sample.
+- **What the Map tab is called in the tab bar** if the list becomes its main job. He chose "Map"
+  for now; worth revisiting once (2) ships and he has used it.
