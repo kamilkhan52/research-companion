@@ -621,6 +621,33 @@ def collect_candidates(
                 )
                 # Titles bridge providers when one side lacks the other's external id. Do not
                 # collapse distinct same-provider search hits that happen to share a title.
+                #
+                # DR-126: this bridge has the DR-114 hazard too — two DIFFERENT papers sharing a
+                # title, one from arXiv and one from Semantic Scholar, blend into a card holding
+                # one paper's DOI beside the other's arXiv id and PDF. It is NOT fixed the way
+                # `merge_candidates` is, deliberately, and the reason is a TRADE rather than an
+                # impossibility. Refusing the bridge for two rows that EACH ALREADY CARRY A
+                # STRONG ID — which is this hazard's case — does NOT swallow a row: their
+                # `identities[0]` differ, so the loop falls through to `key = identities[0]`
+                # below and stores a second row, and both papers survive. (An earlier version of
+                # this comment claimed a swallow; measured, refusing yields two clean rows in
+                # either provider order. The scoping matters and was itself a review finding:
+                # two TITLE-ONLY rows share `identities[0]`, so refusing does not rescue THEM
+                # either — with the bridge they blend into the FIRST row, without it the second
+                # overwrites it; one card either way. Same provider, it is an overwrite even
+                # with the bridge running, which is a pre-existing collapse noted on DR-126 and
+                # one that contradicts the "do not collapse distinct same-provider hits" line
+                # just above.) What it
+                # costs is a DUPLICATE card whenever a preprint and its published record are
+                # only title-linked — exactly the duplicate DR-113 was raised about — and it
+                # breaks `test_collect_candidates_uses_normalized_title_as_a_cross_provider_alias`,
+                # which pins that alias as the documented point of this lane.
+                #
+                # So it is the same trade `merge_candidates` already took one module over: a rare
+                # wrong-PDF card versus a common duplicate card. The answer may still differ
+                # here, because this is the PRIMARY recall path and the alias is its purpose
+                # rather than an incidental join. That is a recall-versus-correctness call for
+                # Kamil, filed as DR-126 rather than taken here.
                 if (
                     not owners
                     and title_owner

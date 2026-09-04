@@ -6,7 +6,6 @@ looks identical whether or not 41 is the paper the model actually judged.
 """
 from __future__ import annotations
 
-import pytest
 from app import discovery_batch
 
 
@@ -331,18 +330,13 @@ def test_no_ordering_of_overlapping_rows_can_duplicate_or_drop_a_paper():
     # below, which pins the shape this one cannot see.
 
 
-@pytest.mark.xfail(reason="DR-114: a title-only bridge donates its DOI to the cluster it joins",
-                   strict=True)
 def test_a_title_bridge_does_not_blend_two_papers_or_split_one():
-    """DR-114, pinned as a failing assertion rather than a comment, so it goes red if someone
-    re-breaks it and green the day it is fixed (Opus review).
-
-    In 20 of these 120 orderings the same-title row with an unrelated DOI absorbs an arXiv row
-    (allowed: a title bridge is how providers that disclose different ids coalesce), and in doing
-    so it INHERITS that paper's arXiv id — a hybrid of two works — while a later true sibling
-    conflicts with the foreign DOI and takes a row of its own. So one paper occupies two rows and
-    another row describes neither paper cleanly. Nothing is duplicated as an object and nothing
-    is unreachable, which is exactly why the count-based assertion above cannot see it.
+    """DR-114, fixed. Was a strict xfail: in 20 of these 120 orderings the same-title row with an
+    unrelated DOI absorbed an arXiv row and INHERITED that paper's arXiv id — a hybrid of two
+    works — while a later true sibling conflicted with the foreign DOI and took a row of its own.
+    So one paper occupied two rows and another row described neither cleanly. Nothing was
+    duplicated as an object and nothing was unreachable, which is exactly why the count-based
+    assertion above cannot see it.
     """
     from itertools import permutations
 
@@ -365,6 +359,77 @@ def test_a_title_bridge_does_not_blend_two_papers_or_split_one():
         # …and the unrelated paper must not have acquired that arXiv id.
         other = next(out for out in merged if "doi:10.1/other" in _identity_keys(out))
         assert not other.get("arxiv_id"), f"a title bridge blended two papers for {order}"
+
+
+def test_a_title_bridge_gives_a_card_no_retrieval_target_it_did_not_earn():
+    """The DR-114 harm stated as the thing the reader feels: Add-to-library follows the card's
+    arXiv id and PDF url, so a card that inherited them from a same-titled OTHER paper fetches a
+    different work than the one it describes. Neither row may end up holding both identities, and
+    the DOI row must not vanish into the arXiv row either — a swallowed paper is a worse trade
+    than the duplicate this avoids.
+    """
+    from app import discovery_recall
+    from app.discovery import _candidate_key, _identity_keys, _merge_candidate
+
+    mine = {"title": "Same Words", "doi": "10.1/mine", "abstract": "mine"}
+    other = {"title": "Same Words", "arxiv_id": "2012.09852",
+             "pdf_url": "https://arxiv.org/pdf/2012.09852",
+             "url": "https://arxiv.org/abs/2012.09852",
+             "abstract": "a considerably longer abstract belonging to the other paper"}
+    for groups in ([[dict(mine)], [dict(other)]], [[dict(other)], [dict(mine)]]):
+        merged = discovery_recall.merge_candidates(
+            groups, identity_keys=_identity_keys, merge_fn=_merge_candidate)
+
+        assert len(merged) == 2, "two identified papers sharing only a title are two papers"
+        doi_row = next(r for r in merged if r.get("doi") == "10.1/mine")
+        arxiv_row = next(r for r in merged if r.get("arxiv_id") == "2012.09852")
+        assert not doi_row.get("arxiv_id") and not doi_row.get("pdf_url")
+        assert not arxiv_row.get("doi")
+        assert doi_row["abstract"] == "mine"
+        assert "arxiv:2012.09852" not in _identity_keys(doi_row)
+        # …and they must reach the client under different React keys, or one is dropped there.
+        ids = [r.get("candidate_id") or _candidate_key(r) for r in merged]
+        assert len(set(ids)) == 2, ids
+
+
+def test_a_title_only_row_still_adopts_the_first_identity_it_is_offered():
+    """The case the alias exists for, and the boundary of the DR-114 rule: a lexical hit with no
+    identifier of its own is not yet committed to being any particular paper, so it cannot blend
+    two identified works — it adopts, exactly as before. Without this exception the fix would cost
+    every title-only row its arXiv id and its PDF.
+    """
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    lexical = {"title": "Attention Is All You Need", "snippet": "found by phrase"}
+    identified = {"title": "Attention Is All You Need", "arxiv_id": "1706.03762",
+                  "pdf_url": "https://arxiv.org/pdf/1706.03762"}
+    merged = discovery_recall.merge_candidates(
+        [[lexical], [identified]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+
+    assert len(merged) == 1
+    assert merged[0]["arxiv_id"] == "1706.03762"
+    assert merged[0]["pdf_url"] == "https://arxiv.org/pdf/1706.03762"
+    assert "arxiv:1706.03762" in _identity_keys(merged[0])
+
+
+def test_a_strong_key_match_still_donates_everything_it_knows():
+    """The rule is scoped to the ALIAS. Two rows that agree on a real identifier are the same
+    paper by construction, so the second must still be able to teach the first a DOI it lacked —
+    that union is how a card ends up retrievable at all.
+    """
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    from_arxiv = {"title": "P", "arxiv_id": "2012.09852"}
+    from_s2 = {"title": "Quite A Different Title", "arxiv_id": "2012.09852",
+               "doi": "10.1109/hpca", "pdf_url": "https://example.org/p.pdf"}
+    merged = discovery_recall.merge_candidates(
+        [[from_arxiv], [from_s2]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+
+    assert len(merged) == 1
+    assert merged[0]["doi"] == "10.1109/hpca"
+    assert merged[0]["pdf_url"] == "https://example.org/p.pdf"
 
 
 def test_a_doi_keeps_its_meaning_through_a_resolver_prefix():
