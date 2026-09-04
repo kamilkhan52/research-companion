@@ -410,6 +410,14 @@ def list_items():
             note(aliases.get(new_id or "", new_id), when, "raised")
     for target, when in _dispatch_activity(aliases).items():
         note(target, when, "dispatch")
+    # DR-134 — Kamil: "I made comments on Passed items expecting they'd be seen." They were not.
+    # The default filter is "Not reviewed", and recording a Pass drops the card out of it, so a
+    # comment added afterwards lands on a card he can no longer see and nothing anywhere says it
+    # is unanswered. `awaiting_reply` is deliberately independent of the VERDICT for that reason:
+    # a passed item he has since commented on is exactly the case that was getting lost, so a
+    # filter keyed on the verdict can never surface it.
+    running = _dispatch_running_item()
+    worked = set(_dispatch_activity(aliases))
     for item in items:
         item["feedback_count"] = counts.get(item["id"], 0)
         # DR-080: an agent reply is the signal the tester can decide pass/close from — the
@@ -418,7 +426,40 @@ def list_items():
         latest = activity.get(item["id"])
         item["last_activity"] = round(latest[0], 3) if latest else None
         item["last_activity_kind"] = latest[1] if latest else None
+        # His word came last, so the ball is on our side. `raised` counts: an item raised and
+        # never answered is the same unanswered state as a comment left hanging.
+        #
+        # The exception is what makes this usable rather than noise. A CLOSED row that never had
+        # a conversation on it was answered by the ledger row itself — 22 of the 30 rows this
+        # first flagged were exactly that, settled things from weeks ago, and a queue that is
+        # three-quarters stale is a queue he stops reading. But a closed row he came BACK to
+        # after a reply is different: that is him reopening something, which is precisely the
+        # case that was getting lost. So closed rows qualify only once a reply exists to have
+        # spoken after.
+        him_last = (latest or (None, None))[1] in ("you", "raised")
+        settled = item["state"] == "closed" and response_counts.get(item["id"], 0) == 0
+        item["awaiting_reply"] = him_last and not settled
+        # "is anyone on this" — the other half of what he asked for. `working` is the live
+        # single-flight session; `worked` means a session has run on it before, which is what
+        # tells him a silent row is not simply untouched.
+        item["agent_state"] = ("working" if running and running == item["id"]
+                               else "worked" if item["id"] in worked else "idle")
     return {"items": items}
+
+
+def _dispatch_running_item() -> str | None:
+    """The item a live dispatched session is on, or None.
+
+    `_dispatch_peek`, never `_dispatch_running`: the latter REAPS (rewrites `last.json`,
+    unlinks `current.json`) and this is called from a polled list route holding no lock — see
+    DR-124, where the same mistake in the deploy status route could delete a live session's
+    record out from under the next dispatch.
+    """
+    info, alive = _dispatch_peek()
+    if not info or not alive:
+        return None
+    item = info.get("item_id")
+    return item if isinstance(item, str) and item else None
 
 
 def _save_screenshot(b64: str, item_id: str) -> tuple[str | None, str | None]:

@@ -155,16 +155,26 @@ export function sectionItems(items: DevTestItem[]): {
 // to be easily able to jump back into whatever I was working on and then find the next one to
 // work on." Filtering needs to know which items already carry a pass/fail verdict; sorting by
 // recency needs to know WHEN. Both live in the DR-075 per-item persisted draft already.
-export type ReviewFilter = 'all' | 'unreviewed' | 'reviewed' | 'passed' | 'failed';
+export type ReviewFilter = 'all' | 'needsreply' | 'unreviewed' | 'reviewed' | 'passed' | 'failed' | 'closed';
 export type SortMode = 'default' | 'activity' | 'recent' | 'az';
 export type VerdictInfo = { verdict: 'pass' | 'fail'; at: number };
 
 export const REVIEW_FILTERS: { key: ReviewFilter; label: string }[] = [
   { key: 'all', label: 'All' },
+  // DR-134 — Kamil: "I made comments on Passed items expecting they'd be seen." They were not.
+  // Every other filter here keys on the VERDICT, and recording a Pass drops the card out of the
+  // default "Not reviewed" view — so a comment added afterwards lands somewhere he cannot see.
+  // This one keys on whose word came last instead, which is why it can surface a passed item.
+  { key: 'needsreply', label: 'Needs reply' },
   { key: 'unreviewed', label: 'Not reviewed' },
   { key: 'reviewed', label: 'Reviewed' },
   { key: 'passed', label: 'Passed' },
   { key: 'failed', label: 'Failed' },
+  // DR-132 — "Those closed should also move out of the way. There should be a filter so I don't
+  // have to see closed issues when I'm not trying to." They are 42 of 137 and only grow, so they
+  // are excluded from EVERY other view rather than being one more thing to filter out; this is
+  // the way back to them.
+  { key: 'closed', label: 'Closed' },
 ];
 export const SORT_MODES: { key: SortMode; label: string }[] = [
   { key: 'default', label: 'Priority' },
@@ -392,6 +402,42 @@ function stateTone(state: string, t: ThemePalette): string {
  *  word "note" is now gone from the sheet entirely. His entries are "from you" (they are not all
  *  comments — a bare Pass is one), the agent's are "replies", and the thing that holds both is the
  *  "conversation". */
+/** The filter predicate, exported so tests drive the real one rather than a copy of it.
+ *
+ *  `needsreply` deliberately ignores the verdict, and that is the whole of DR-134: every other
+ *  case here keys on it, so recording a Pass drops the card out of the default view and a
+ *  comment added afterwards has nowhere to appear. */
+export function matchesFilter(
+  item: DevTestItem, filter: ReviewFilter, verdict: 'pass' | 'fail' | undefined,
+): boolean {
+  // DR-132 — "Those closed should also move out of the way. There should be a filter so I don't
+  // have to see closed issues when I'm not trying to." They are 42 of 137 and only grow.
+  //
+  // Excluded from the WORKING views, not from `all`. Making "All" quietly mean "all except 42"
+  // is the DR-116 failure — a list that is short for a reason nothing on screen states — and it
+  // broke fourteen existing tests that were right to assume All means all.
+  //
+  // `needsreply` is the other exception, and it has to be: a closed row only carries
+  // `awaiting_reply` when he came back to it AFTER a reply, which is him reopening something.
+  // Hiding that would re-create DR-134's exact bug one state over. Settled is not answered.
+  if (filter === 'closed') return item.state === 'closed';
+  // Excluded from "Not reviewed" ONLY — the working queue, where 42 settled rows are the noise
+  // he means. Every other view is either explicitly all of them, or an explicit selection of a
+  // property the row has: a closed item he FAILED belongs under Failed, and a closed item he
+  // came back to after a reply belongs under Needs reply (hiding that would re-create DR-134's
+  // bug one state over — settled is not answered). Two earlier cuts of this were wrong: one made
+  // "All" quietly mean "all except 42", which is DR-116's own complaint, and one hid a failed
+  // closed item from Failed. Both were caught by tests that already encoded the right answer.
+  switch (filter) {
+    case 'needsreply': return !!item.awaiting_reply;
+    case 'unreviewed': return !verdict && item.state !== 'closed';
+    case 'reviewed': return !!verdict;
+    case 'passed': return verdict === 'pass';
+    case 'failed': return verdict === 'fail';
+    default: return true;
+  }
+}
+
 export function cardMeta(item: DevTestItem, verdict: 'pass' | 'fail' | undefined): string {
   const parts: string[] = [];
   // The verdict leads, and it is the one ordering decision here worth explaining. This line is
@@ -405,6 +451,12 @@ export function cardMeta(item: DevTestItem, verdict: 'pass' | 'fail' | undefined
   if (item.response_count) {
     parts.push(`${item.response_count} repl${item.response_count === 1 ? 'y' : 'ies'}`);
   }
+  // DR-134's second half — "a way to track if other sessions have addressed some or are
+  // addressing it". Only the LIVE state earns a word on a bounded line: `worked` is already
+  // implied by a reply count, but "a session is on this right now" is knowable nowhere else and
+  // is the difference between waiting and re-dispatching. Last, so an OS font scale truncates
+  // it before the verdict (DR-075's ordering rule).
+  if (item.agent_state === 'working') parts.push('Claude is on it');
   return parts.join(' · ');
 }
 
@@ -693,13 +745,7 @@ export function DevTestBubble() {
     return items.filter((i) => {
       if (q && !i.id.toLowerCase().includes(q) && !i.title.toLowerCase().includes(q)) return false;
       const v = verdicts[i.id]?.verdict;
-      switch (filter) {
-        case 'unreviewed': return !v;
-        case 'reviewed': return !!v;
-        case 'passed': return v === 'pass';
-        case 'failed': return v === 'fail';
-        default: return true;
-      }
+      return matchesFilter(i, filter, v);
     });
   }, [items, query, filter, verdicts]);
 
