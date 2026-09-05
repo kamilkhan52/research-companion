@@ -273,6 +273,44 @@ test('Start reading automatically fetches before it starts the opening turn', as
   ));
 });
 
+test('a failed opening stays explained on setup and its retry starts one new job', async () => {
+  const stream = {
+    streaming: false,
+    items: [],
+    error: 'The model returned an empty response.',
+    clearError: jest.fn(),
+    run: jest.fn(async () => undefined),
+    stop: jest.fn(),
+  };
+  await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        sessionState={null}
+        selectedModel={null}
+        retrieved
+      />,
+    ),
+  );
+
+  expect(await screen.findByText('Summary didn’t start')).toBeTruthy();
+  expect(screen.getByText('The model returned an empty response.')).toBeTruthy();
+  expect(screen.getByText('Try Start reading again, or choose a different model below.')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByText('Start reading'));
+  await waitFor(() => expect(stream.run).toHaveBeenCalledTimes(1));
+  expect(stream.run).toHaveBeenCalledWith(
+    '/chat/start',
+    expect.objectContaining({ slug: 'rough', prompt: 'Give me a balanced first read.' }),
+    undefined,
+    expect.any(Function),
+  );
+});
+
 test('known-paper navigation starts the durable analysis without another tap', async () => {
   jest.mocked(api.startRetrievalJob).mockResolvedValue({ job: doneJob });
   const stream = {
