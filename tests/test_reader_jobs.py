@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import chat_jobs, preview_jobs, quotas, reader_jobs, sessions, store
+
 from tests.conftest import add_paper
 
 PROTO = ("### CANONICAL ###\nRevised: [H3](rc-paper:h3) is not what I said.\n"
@@ -349,7 +350,9 @@ def test_a_finish_sent_while_the_assistants_read_keeps_the_briefs_off_the_propos
     """The state gate re-checked at delivery: a briefing behind a drafted proposal would leave
     `reopen_discussion` nothing to pop. The briefs are kept on the job instead."""
     import threading
+
     from app.models import NOTES_DRAFTED
+
     slug = _project(temp_project)
     release = threading.Event()
 
