@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -552,6 +553,16 @@ def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
     return played[-CUE_HISTORY_WINDOW:], generated[-CUE_HISTORY_WINDOW:]
 
 
+def _normalized_cue(text: str) -> str:
+    """Stable identity for an exact spoken repeat.
+
+    The model can vary case or whitespace without changing what the listener hears. Keep
+    punctuation and wording significant: this is a deterministic safety net for an exact
+    repeat, not a fuzzy topic classifier that could silence useful new information.
+    """
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip().casefold()
+
+
 def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cue: str = "",
               progress: dict | None = None,
               *, played_cues: list[str] | None = None,
@@ -641,11 +652,28 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
                 "compacted overlong preview cue chat=%s ordinal=%s target=%s hard_max=%s",
                 chat_job_id[:8], ordinal, TARGET_CUE_CHARS, MAX_CUE_CHARS,
             )
+        # The prompt is advisory; a model can and did return the exact cue it had just been
+        # shown. Suppress that repeat before TTS so the audio layer can never play it. Keep the
+        # validated cue on the finished job: cue_history() then carries the failed attempt into
+        # the next prompt and the coordinator can continue without buying a retry here. DR-144.
+        history = [*played_copy, *generated_copy]
+        repeats_recent = bool(_normalized_cue(cue)) and any(
+            _normalized_cue(cue) == _normalized_cue(previous) for previous in history
+        )
         with _registry.lock:
             job.cue = cue
             job.source_sentence_ids = source_ids
             job.stage = "synthesizing"
             job.timings["cue_ready"] = now_iso()
+            if repeats_recent:
+                job.suppressed = True
+                job.timings["duplicate_suppressed"] = now_iso()
+        if repeats_recent:
+            log.warning(
+                "suppressed repeated preview cue chat=%s ordinal=%s",
+                chat_job_id[:8], ordinal,
+            )
+            return
         if _suppressed(job):
             return
 

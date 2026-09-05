@@ -797,6 +797,69 @@ def test_complete_played_and_generated_histories_are_sent_to_the_next_cue(temp_p
     assert "First cue.\nSecond cue." == captured["payload"]["previous_cue"]
 
 
+def test_exact_repeat_is_suppressed_before_tts_and_later_distinct_cue_still_plays(
+    temp_project,
+):
+    synth_calls = []
+    sources = [{
+        "id": "s0001",
+        "text": "A grounded update and a different grounded angle.",
+    }]
+
+    first = preview_jobs.start_job(
+        "chat-dedup",
+        1,
+        sources,
+        generate_fn=lambda *_: json.dumps({
+            "cue": "A grounded update.",
+            "source_sentence_ids": ["s0001"],
+        }),
+        synth_fn=lambda cue: synth_calls.append(cue) or b"mp3",
+    )
+    assert _wait(first.id).url
+    preview_jobs.acknowledge_played(first.id)
+
+    played, generated = preview_jobs.cue_history([first.id])
+    repeated = preview_jobs.start_job(
+        "chat-dedup",
+        2,
+        sources,
+        played_cues=played,
+        generated_cues=generated,
+        generate_fn=lambda *_: json.dumps({
+            "cue": "  a   GROUNDED update.  ",
+            "source_sentence_ids": ["s0001"],
+        }),
+        synth_fn=lambda cue: synth_calls.append(cue) or b"mp3",
+    )
+    repeated = _wait(repeated.id)
+    assert repeated.status == "done"
+    assert repeated.suppressed is True
+    assert repeated.url is None
+    assert "duplicate_suppressed" in repeated.timings
+
+    played, generated = preview_jobs.cue_history([first.id, repeated.id])
+    assert generated[-1] == "a   GROUNDED update."
+    distinct = preview_jobs.start_job(
+        "chat-dedup",
+        3,
+        sources,
+        played_cues=played,
+        generated_cues=generated,
+        generate_fn=lambda *_: json.dumps({
+            "cue": "A different grounded angle.",
+            "source_sentence_ids": ["s0001"],
+        }),
+        synth_fn=lambda cue: synth_calls.append(cue) or b"mp3",
+    )
+    distinct = _wait(distinct.id)
+
+    assert distinct.status == "done"
+    assert distinct.suppressed is False
+    assert distinct.url
+    assert synth_calls == ["A grounded update.", "A different grounded angle."]
+
+
 def test_completed_sentences_hold_back_the_streaming_fragment():
     assert preview_jobs.completed_sentences("First result. Second result is still") == [
         "First result."
