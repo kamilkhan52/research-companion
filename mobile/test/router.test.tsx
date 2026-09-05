@@ -4,7 +4,7 @@ import { createTestQueryClient } from './queryClient';
 import { act, fireEventAsync, waitFor } from '@testing-library/react-native';
 import { Slot, useLocalSearchParams } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
-import { Text } from 'react-native';
+import { StyleSheet, Text } from 'react-native';
 
 import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
@@ -152,6 +152,19 @@ test('continues the latest unfinished session across projects', async () => {
   );
 
   await waitFor(() => expect(screen.getByText('Memory Paper')).toBeTruthy());
+  // The fade and project pill must share a stacking context, with the pill above it. The first
+  // DR-137 implementation nested the fade under the higher-z title header, so it washed out the
+  // project name on Android even though the pill had zIndex 2.
+  const fade = screen.getByTestId('library-title-edge-fade', { includeHiddenElements: true });
+  const pill = screen.getByTestId('library-project-pill-overlay');
+  let fadeParent = fade.parent;
+  while (fadeParent && fadeParent.props.testID !== 'library-body') fadeParent = fadeParent.parent;
+  let pillParent = pill.parent;
+  while (pillParent && pillParent.props.testID !== 'library-body') pillParent = pillParent.parent;
+  expect(fadeParent?.props.testID).toBe('library-body');
+  expect(pillParent?.props.testID).toBe('library-body');
+  expect(StyleSheet.flatten(fade.props.style).zIndex).toBe(1);
+  expect(StyleSheet.flatten(pill.props.style).zIndex).toBe(2);
   // Prefetch starts from the visible hero, before the user taps it — both the transcript and
   // the opening draft, the two things a resume blocks on (R.7). With no stored thread it warms
   // 'main', matching the paper screen's default resume (D39 + R12.2).
