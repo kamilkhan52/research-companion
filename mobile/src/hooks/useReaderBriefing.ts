@@ -20,7 +20,7 @@ import {
 import { keys, useReaderCandidates } from '@/api/queries';
 import type { ReaderCandidate, ReaderJob, TranscriptEntry } from '@/api/types';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
-import { dismissReaderOffer, isReaderOfferDismissed } from '@/lib/readerOffer';
+import { dismissReaderOffer, isReaderOfferDismissed, readerOfferKeyFor } from '@/lib/readerOffer';
 
 const POLL_MS = 1500;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -44,6 +44,7 @@ export function useReaderBriefing({
   pid,
   slug,
   threadId,
+  state,
   transcript,
   streaming,
   deliveryMode,
@@ -52,6 +53,9 @@ export function useReaderBriefing({
   pid: string;
   slug: string;
   threadId: string;
+  /** The session state: the offer exists only while the discussion is open (`in_discussion`)
+   *  — after Finish the trailing records are a proposal, and the server refuses a pass then. */
+  state: string | null;
   transcript: TranscriptEntry[];
   /** A turn is generating — no offer while the response it would be about is still forming. */
   streaming: boolean;
@@ -62,6 +66,9 @@ export function useReaderBriefing({
   const qc = useQueryClient();
   const last = transcript.length ? transcript[transcript.length - 1] : undefined;
   const latestIndex = last?.role === 'assistant' ? last.assistant_index : null;
+  // The response's identity for the "Not now" memory: its job id, so a retried response at
+  // the same index is asked afresh (see lib/readerOffer).
+  const latestKey = last?.role === 'assistant' ? readerOfferKeyFor(last) : null;
 
   const [job, setJob] = useState<ReaderJob | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -69,7 +76,7 @@ export function useReaderBriefing({
   const [error, setError] = useState<string | null>(null);
   // null = not yet checked for this response; the offer stays hidden until it is, so a
   // declined offer never flashes before AsyncStorage answers.
-  const [dismissedFor, setDismissedFor] = useState<{ index: number; dismissed: boolean } | null>(null);
+  const [dismissedFor, setDismissedFor] = useState<{ key: string; dismissed: boolean } | null>(null);
   const watchRef = useRef<string | null>(null);
   const aliveRef = useRef(true);
   // Bumped when the conversation changes, so an in-flight lookup for the previous one can never
@@ -96,7 +103,10 @@ export function useReaderBriefing({
     watchRef.current = start.id;
     setJob(start);
     let snap = start;
-    while (aliveRef.current && watchRef.current === start.id && snap.status === 'running') {
+    // Until `finished_at`, not until `status` leaves running: a Stop flips the status at once
+    // while the worker still unwinds — and may still chain the follow-up turn — so reading
+    // `analysis_job_id` before finalization would miss it (Opus review of #492).
+    while (aliveRef.current && watchRef.current === start.id && (snap.status === 'running' || !snap.finished_at)) {
       await sleep(POLL_MS);
       if (!aliveRef.current || watchRef.current !== start.id) return;
       try {
@@ -148,13 +158,13 @@ export function useReaderBriefing({
   // card from the previous response is stale, and the "Not now" memory is per response.
   useEffect(() => {
     if (job && job.status !== 'running' && job.assistant_index !== latestIndex) setJob(null);
-    if (latestIndex == null) {
+    if (latestKey == null) {
       setDismissedFor(null);
       return;
     }
     let cancelled = false;
-    void isReaderOfferDismissed(pid, slug, threadId, latestIndex).then((dismissed) => {
-      if (!cancelled) setDismissedFor({ index: latestIndex, dismissed });
+    void isReaderOfferDismissed(pid, slug, threadId, latestKey).then((dismissed) => {
+      if (!cancelled) setDismissedFor({ key: latestKey, dismissed });
     });
     return () => {
       cancelled = true;
@@ -162,7 +172,7 @@ export function useReaderBriefing({
     // `job` is deliberately not a dependency: this reacts to the transcript moving, not to
     // poll snapshots.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid, slug, threadId, latestIndex]);
+  }, [pid, slug, threadId, latestIndex, latestKey]);
 
   // Default selection: every readable candidate, re-derived when the candidate set changes.
   const candidateKey = candidates.map((c) => `${c.slug}:${c.has_text ? 1 : 0}`).join('|');
@@ -202,10 +212,10 @@ export function useReaderBriefing({
   }, [starting, latestIndex, candidates, selected, pid, slug, threadId, candidatesIndex, deliveryMode, watch]);
 
   const dismissOffer = useCallback(() => {
-    if (latestIndex == null) return;
-    dismissReaderOffer(pid, slug, threadId, latestIndex);
-    setDismissedFor({ index: latestIndex, dismissed: true });
-  }, [pid, slug, threadId, latestIndex]);
+    if (latestKey == null) return;
+    dismissReaderOffer(pid, slug, threadId, latestKey);
+    setDismissedFor({ key: latestKey, dismissed: true });
+  }, [pid, slug, threadId, latestKey]);
 
   const dismissJob = useCallback(() => {
     watchRef.current = null;
@@ -222,12 +232,13 @@ export function useReaderBriefing({
   }, [job, pid]);
 
   const offer = useMemo(() => {
-    if (job || streaming || latestIndex == null) return null;
-    if (!dismissedFor || dismissedFor.index !== latestIndex || dismissedFor.dismissed) return null;
+    if (job || streaming || latestIndex == null || latestKey == null) return null;
+    if (state !== 'in_discussion') return null; // the server refuses a pass behind a proposal
+    if (!dismissedFor || dismissedFor.key !== latestKey || dismissedFor.dismissed) return null;
     if (candidatesIndex !== latestIndex) return null; // stale data from the previous response
     if (!candidates.some((c) => c.has_text)) return null;
     return { assistantIndex: latestIndex, candidates };
-  }, [job, streaming, latestIndex, dismissedFor, candidatesIndex, candidates]);
+  }, [job, streaming, state, latestIndex, latestKey, dismissedFor, candidatesIndex, candidates]);
 
   return {
     offer,

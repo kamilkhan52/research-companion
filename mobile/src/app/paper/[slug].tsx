@@ -1569,6 +1569,7 @@ function DiscussionThread({
     pid,
     slug,
     threadId,
+    state,
     transcript,
     streaming: stream.streaming,
     deliveryMode: readerListening ? 'listening' : 'reading',

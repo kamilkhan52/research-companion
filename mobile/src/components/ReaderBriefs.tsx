@@ -129,7 +129,10 @@ export function readerProgressTitle(job: ReaderJob): string {
 
 /** What happens next, once the assistants are finished. */
 export function readerHandoffLine(job: ReaderJob): string | null {
-  if (job.status === 'running') return null;
+  if (job.status === 'running') {
+    // A reply sent while the assistants read is being answered first; the briefs follow it.
+    return job.waiting ? 'Waiting for the current response to finish before handing over the briefs.' : null;
+  }
   if (job.analysis_job_id) return 'Handing the briefs to the agent — its revised account is on its way.';
   if (job.status === 'error') return job.error;
   if (job.analysis_error) return `The briefs were recorded but the follow-up did not start: ${job.analysis_error}`;
@@ -185,6 +188,11 @@ export function ReaderProgressCard({
       </View>
       {handoff ? (
         <Text variant="caption" color={job.status === 'error' ? t.danger : t.muted}>{handoff}</Text>
+      ) : null}
+      {/* Paid briefs that never reached the agent (the follow-up did not start, or a wait
+          timed out) stay readable here rather than vanishing with the card. */}
+      {!running && !job.analysis_job_id && job.briefs.length > 0 ? (
+        <ReaderBriefsTrail briefs={job.briefs} />
       ) : null}
       {running && onCancel ? (
         <View style={styles.actions}>

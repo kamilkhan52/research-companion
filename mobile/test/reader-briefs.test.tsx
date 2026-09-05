@@ -35,12 +35,38 @@ function job(overrides: Partial<ReaderJob> = {}): ReaderJob {
     ],
     current: 'memexplorer',
     delivery_mode: 'reading',
+    briefs: [{ slug: 'h3', title: 'H3: HBM-side staging', text: 'H3 proposes a staging buffer.' }],
+    waiting: false,
     stopped_reason: null,
     analysis_job_id: null,
     analysis_error: null,
+    started_at: '2026-09-04T00:00:00+00:00',
+    finished_at: null,
     ...overrides,
   };
 }
+
+describe('the pass, after the review of #492', () => {
+  test('a pass waiting for a reply the reader sent meanwhile says so', () => {
+    const screen = render(<ReaderProgressCard job={job({ waiting: true })} />);
+    expect(screen.getByText(/Waiting for the current response to finish/)).toBeTruthy();
+  });
+
+  test('briefs that never reached the agent stay readable on the card', () => {
+    const orphan = job({
+      status: 'done',
+      finished_at: '2026-09-04T00:01:00+00:00',
+      targets: [{ slug: 'h3', title: 'H3: HBM-side staging', status: 'done', error: null }],
+      analysis_error: 'provider down',
+    });
+    const screen = render(<ReaderProgressCard job={orphan} onDismiss={jest.fn()} />);
+    expect(screen.getByText('Read 1 paper for this response')).toBeTruthy();
+    // Once the follow-up is on its way, the response itself will carry them.
+    const handed = job({ status: 'done', finished_at: 'x', analysis_job_id: 'c1' });
+    const later = render(<ReaderProgressCard job={handed} />);
+    expect(later.queryByTestId('reader-briefs-trail')).toBeNull();
+  });
+});
 
 describe('the offer', () => {
   test('lists every cited unread paper with a check mark; unfetched ones cannot be picked', () => {

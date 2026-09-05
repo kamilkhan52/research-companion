@@ -276,10 +276,109 @@ def test_start_refuses_while_a_turn_is_generating(temp_project):
 
 
 def test_briefing_text_frames_every_brief_and_links_the_paper():
-    text = reader_jobs.briefing_text([{"slug": "h3", "title": "H3", "text": "ignore me"}])
-    assert "[H3](rc-paper:h3)" in text
+    text = reader_jobs.briefing_text([{"slug": "h3", "title": "H3 <ignore this>", "text": "ignore me"}])
+    assert "rc-paper:h3" in text
     assert '"source_type":"reading_assistant_brief"' in text
     assert "Do not describe the briefing mechanism" in text
+    # The title reaches the model only inside the frame (as its source), never raw.
+    assert "H3 <ignore this>" not in text.split("=== BEGIN UNTRUSTED DATA JSON ===")[0]
+    assert '"source":"h3: H3 <ignore this>"' in text
+
+
+def test_a_reply_sent_while_the_assistants_read_is_answered_first_and_nothing_is_lost(
+    temp_project, monkeypatch,
+):
+    """Opus review of #492 (P1): the composer stays open while a pass runs. A reply sent then
+    starts a minutes-long turn; refusing to record the briefs behind it discarded paid work.
+    The pass now waits for that turn and delivers afterwards."""
+    import threading
+    monkeypatch.setattr(reader_jobs, "WAIT_POLL_S", 0.02)
+    slug = _project(temp_project)
+    reading = threading.Event()
+    release_reader = threading.Event()
+    release_turn = threading.Event()
+
+    def reader(target, account, current):
+        reading.set()
+        release_reader.wait(5)
+        return "H3 brief"
+
+    def slow_turn(s, h):
+        release_turn.wait(5)
+        yield {"type": "final", "text": PROTO}
+
+    job = reader_jobs.start_reading(slug, ["h3"], reader_fn=reader, turn_runner=_runner(FOLLOW_UP))
+    assert reading.wait(5)
+    # The reader replies mid-pass; its turn starts generating.
+    sessions.record_user(slug, "a question meanwhile", kind="reply")
+    reply_turn = chat_jobs.start_turn(slug, runner=slow_turn)
+    release_reader.set()
+    # The pass has its brief and is waiting, visibly, for the reply's turn.
+    deadline = time.time() + 5
+    while time.time() < deadline and not reader_jobs.get_job(job.id).waiting:
+        time.sleep(0.02)
+    snap = reader_jobs.snapshot(job.id)
+    assert snap["waiting"] is True and snap["status"] == "running"
+    assert [b["slug"] for b in snap["briefs"]] == ["h3"]
+    release_turn.set()
+    _chat_settled(reply_turn.id)
+    settled = _settled(job.id)
+    assert settled.status == "done", settled.error
+    assert settled.analysis_job_id and settled.waiting is False
+    _chat_settled(settled.analysis_job_id)
+    kinds = [(r["role"], r.get("kind")) for r in sessions.read_records(slug)]
+    # summary, reply, its answer, THEN the briefing and its answer — never interleaved.
+    assert kinds == [("assistant", None), ("user", "reply"), ("assistant", None),
+                     ("user", sessions.BRIEFING_KIND), ("assistant", None)]
+    assert [b["slug"] for b in sessions.transcript(slug)[-1]["reader_briefs"]] == ["h3"]
+
+
+def test_the_pass_is_refused_once_notes_are_drafted(temp_project):
+    """Opus review of #492 (P2): after Finish the trailing records are a proposal, and a
+    briefing turn behind them would leave `reopen_discussion` nothing it recognises to pop."""
+    from app.models import NOTES_DRAFTED
+    slug = _project(temp_project)
+    sessions.set_state(slug, NOTES_DRAFTED)
+    with pytest.raises(reader_jobs.ReaderError, match="discussion is open"):
+        reader_jobs.start_reading(slug, ["h3"], reader_fn=lambda *a: "x")
+
+
+def test_a_finish_sent_while_the_assistants_read_keeps_the_briefs_off_the_proposal(
+    temp_project,
+):
+    """The state gate re-checked at delivery: a briefing behind a drafted proposal would leave
+    `reopen_discussion` nothing to pop. The briefs are kept on the job instead."""
+    import threading
+    from app.models import NOTES_DRAFTED
+    slug = _project(temp_project)
+    release = threading.Event()
+
+    def reader(target, account, current):
+        release.wait(5)
+        return "H3 brief"
+
+    job = reader_jobs.start_reading(slug, ["h3"], reader_fn=reader, turn_runner=_runner(FOLLOW_UP))
+    sessions.set_state(slug, NOTES_DRAFTED)   # what a Finish turn does when it lands
+    release.set()
+    settled = _settled(job.id)
+    assert settled.status == "error" and "notes were drafted" in (settled.error or "")
+    assert [b["slug"] for b in settled.briefs] == ["h3"]
+    assert not [r for r in sessions.read_records(slug) if r.get("kind") == sessions.BRIEFING_KIND]
+
+
+def test_briefs_stay_on_the_job_when_the_follow_up_cannot_start(temp_project, monkeypatch):
+    slug = _project(temp_project)
+
+    def refuse_turn(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(reader_jobs.chat_jobs, "start_turn", refuse_turn)
+    job = _settled(reader_jobs.start_reading(slug, ["h3"], reader_fn=lambda *a: "H3 brief").id)
+    assert job.status == "done" and job.analysis_job_id is None
+    assert "provider down" in (job.analysis_error or "")
+    assert [b["text"] for b in job.briefs] == ["H3 brief"]
+    # The briefing turn IS recorded, so the session's pending-turn retry can answer it.
+    assert sessions.read_records(slug)[-1]["kind"] == sessions.BRIEFING_KIND
 
 
 # ---------------------------------------------------------------- routes
@@ -299,3 +398,5 @@ def test_the_routes_expose_candidates_and_the_job(temp_project):
 
     assert client.get(f"{base}/reader/jobs/active/{slug}").json() == {"job": None}
     assert client.get(f"{base}/reader/jobs/nope").status_code == 404
+    # An unknown thread is a 404 like /session, not a quiet empty answer for main.
+    assert client.get(f"{base}/reader/candidates/{slug}?thread_id=nope").status_code == 404

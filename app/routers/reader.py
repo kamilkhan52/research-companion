@@ -36,6 +36,10 @@ def reader_candidates(slug: str, thread_id: str = sessions.MAIN_THREAD,
     """The project papers a response cited without their having been read here — what the
     offer lists. Deterministic (the response's own `rc-paper:` links); no model is asked."""
     thread_id = _thread_id(thread_id)
+    if thread_id != sessions.MAIN_THREAD:
+        known = {thread["id"] for thread in sessions.list_threads(slug)}
+        if thread_id not in known:
+            raise HTTPException(status_code=404, detail="Unknown discussion thread")
     with sessions.thread_scope(thread_id):
         try:
             return reader_jobs.candidates(slug, thread_id, assistant_index)

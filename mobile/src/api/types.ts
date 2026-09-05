@@ -417,11 +417,22 @@ export interface ReaderJob {
   targets: { slug: string; title: string; status: ReaderTargetStatus; error: string | null }[];
   current: string | null;
   delivery_mode: 'reading' | 'listening';
+  /** Every brief written so far — kept on the job so paid work survives a follow-up that never
+   *  starts or a wait that times out. */
+  briefs: ReaderBrief[];
+  /** The pass has its briefs and is waiting for a turn the reader started meanwhile to finish
+   *  before handing them over (a reply sent while the assistants were reading). */
+  waiting: boolean;
   /** Set when the spend ceiling stopped the pass part-way; the untouched papers are `skipped`. */
   stopped_reason: string | null;
   analysis_job_id: string | null;
   analysis_error: string | null;
   analysis_refusal?: SpendRefusalPayload | null;
+  started_at: string;
+  /** Null until the worker AND its accounting have finalized — a Stop flips `status` to
+   *  `cancelled` at once while the worker still unwinds (and may still chain the follow-up),
+   *  so pollers wait for this, not for `status`. */
+  finished_at: string | null;
 }
 
 /** Snapshot of a server-side chat turn job (app/chat_jobs.py). The turn runs in a backend

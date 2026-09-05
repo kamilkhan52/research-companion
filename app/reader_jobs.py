@@ -32,6 +32,7 @@ the discussion they belong to (invariant 4 untouched).
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 from . import (
@@ -49,6 +50,7 @@ from . import (
     store,
 )
 from .jobs import Job, JobRegistry, new_id
+from .models import IN_DISCUSSION
 
 log = logging_config.get("reader")
 
@@ -64,6 +66,14 @@ MAX_TARGET_TEXT_CHARS = 160_000
 MAX_ACCOUNT_CHARS = 24_000
 MAX_BRIEF_CHARS = 12_000
 MAX_TARGETS = 8
+
+#: How long a finished pass will wait for a turn the reader started meanwhile (Opus review of
+#: #492, P1): the composer stays open while assistants read, and a reply sent then runs an
+#: agentic turn for minutes. Refusing at that point threw away every paid brief; waiting
+#: delivers them after the reply is answered. The deadline is a backstop, not a budget — a
+#: turn is bounded by `operation_limits` well inside it, and past it the briefs stay on the job.
+WAIT_FOR_TURN_S = 30 * 60
+WAIT_POLL_S = 2.0
 
 
 class ReaderError(Exception):
@@ -82,6 +92,12 @@ class ReaderJob(Job):
     targets: list = field(default_factory=list)
     current: str | None = None
     delivery_mode: str = "reading"
+    #: Every brief written so far ({slug, title, text}), on the snapshot so paid work survives
+    #: whatever happens after it — a follow-up that never starts, a wait that times out.
+    briefs: list = field(default_factory=list)
+    #: True while the finished pass waits for a turn the reader started meanwhile (see
+    #: `WAIT_FOR_TURN_S`), so the card can say so instead of looking stuck.
+    waiting: bool = False
     #: Set when the spend ceiling stopped the pass part-way (DR-049 shape, like lab research).
     stopped_reason: str | None = None
     #: The chained follow-up turn, once the briefs are recorded — pollers follow this id to
@@ -200,12 +216,14 @@ def read_with_model(target_slug: str, account: str, current_slug: str) -> str:
     current_title = store.title_for(current_slug)
     target_title = store.title_for(target_slug)
     system = prompts.get("paper_reader") + "\n\n" + model_provenance.SYSTEM_POLICY
+    # Titles travel in the frames' `source` fields, never raw in the prompt: a reading-list
+    # title is reader-authored text, and the opening message frames even a lone title.
     user = (
-        f"CURRENT paper: {current_title}\nTARGET paper: {target_title}\n\n"
-        "The analyst's account of the current paper (it cites the target):\n"
+        "The analyst's account of the CURRENT paper (it cites the target; the current paper's "
+        "title is the data's source):\n"
         + model_provenance.frame("analyst_account", account or "(no account available)",
-                                 source=current_slug)
-        + "\n\nThe target paper's full text:\n"
+                                 source=f"{current_slug}: {current_title}")
+        + "\n\nThe TARGET paper's full text (its title is the data's source):\n"
         + model_provenance.frame("project_paper_full_text", target_text,
                                  source=f"{target_slug}: {target_title}")
         + "\n\nWrite the brief now."
@@ -224,8 +242,11 @@ def briefing_text(briefs: list[dict]) -> str:
     data — the briefs are model output over paper text, and neither is a trusted channel."""
     framed = []
     for brief in briefs:
+        # The slug is the link target the analyst must reuse; the title stays in the frame's
+        # source (reading-list text is reader-authored, and this reaches a tool-capable turn).
         framed.append(
-            f"Brief on [{brief['title']}](rc-paper:{brief['slug']}):\n"
+            f"Brief on the project paper whose link target is rc-paper:{brief['slug']} "
+            "(its title is the data's source):\n"
             + model_provenance.frame("reading_assistant_brief", brief["text"],
                                      source=f"{brief['slug']}: {brief['title']}")
         )
@@ -237,13 +258,22 @@ def start_reading(slug: str, targets: list[str], *, thread_id: str | None = None
                   reader_fn=None, turn_runner=None) -> ReaderJob:
     """Start (or join) the reading pass for `slug`'s conversation: brief each of `targets` in
     order, record the briefing turn, chain the analyst's follow-up. Validation is up front so a
-    bad request is a refusal, never a job that fails after admission. `reader_fn(target_slug,
-    account, current_slug) -> brief` and `turn_runner` are the tests' seams."""
+    bad request is a refusal, never a job that fails after admission. A second request for the
+    same conversation while a pass runs JOINS it (chat's semantics), whatever targets it names.
+    `reader_fn(target_slug, account, current_slug) -> brief` and `turn_runner` are the tests'
+    seams."""
     thread_id = _thread(thread_id)
     if delivery_mode not in ("reading", "listening"):
         raise ReaderError(f"Unknown delivery mode: {delivery_mode}")
-    if not sessions.get_state(slug):
+    state = sessions.get_state(slug)
+    if not state:
         raise ReaderError("No active session for this paper.")
+    # Only while the discussion is open: after Finish the last records are a proposal, and
+    # appending a briefing turn plus its answer behind them would leave `reopen_discussion`
+    # nothing it recognises to pop — the rejected draft would stay in the model's history.
+    if state != IN_DISCUSSION:
+        raise ReaderError("Reading assistants are available while the discussion is open — "
+                          "review or reopen the notes first.")
     if chat_jobs.active_for(slug, thread_id):
         raise ReaderError("A response is already being generated for this paper — wait for it.")
     wanted = list(dict.fromkeys(t.strip() for t in targets if t and t.strip()))
@@ -323,8 +353,11 @@ def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
             continue
         if len(text) > MAX_BRIEF_CHARS:
             text = text[:MAX_BRIEF_CHARS].rstrip() + "\n\n[...truncated...]"
+        brief = {"slug": row["slug"], "title": row["title"], "text": text}
+        briefs.append(brief)
+        with _registry.lock:
+            job.briefs.append(dict(brief))
         _set(job, index, "done")
-        briefs.append({"slug": row["slug"], "title": row["title"], "text": text})
     if not briefs:
         if refusal is not None:
             # The registry stamps the refusal centrally when a worker fails with it — the same
@@ -336,31 +369,54 @@ def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
             "None of the papers could be read"
             + (f": {last_error}" if last_error else ".")
         )
-    # The briefs become a turn. Same locks as every route that records a user message, and the
-    # same refusal if a turn started meanwhile: recording into a generating conversation would
-    # interleave a user message with the response being written.
-    with sessions.paper_lock(job.slug), sessions.mutation_lock(job.slug):
-        if chat_jobs.active_for(job.slug, job.thread_id):
-            raise ReaderError("A response started while the papers were being read; "
-                              "ask again once it finishes.")
-        sessions.record_briefing(job.slug, briefing_text(briefs), briefs)
-        try:
-            # A continuation of the pass the reader was admitted for (`metered=False`, like the
-            # auto-analysis after a retrieval); its analysis spend is still held by the turn.
-            chat = chat_jobs.start_turn(
-                job.slug, runner=turn_runner, delivery_mode=job.delivery_mode,
-                thread_id=job.thread_id, metered=False,
-            )
-        except (quotas.QuotaError, rate_limits.RateLimited) as exc:
-            with _registry.lock:
-                job.analysis_error = str(exc)[:240]
-                job.analysis_refusal = exc.refusal_payload()
-            return
-        except Exception as exc:  # noqa: BLE001 — the briefs are recorded; the retry exists
-            with _registry.lock:
-                job.analysis_error = str(exc)[:240]
-            log.warning("reader briefs recorded but the follow-up turn did not start "
-                        "(slug=%s): %s", job.slug, str(exc)[:200])
-            return
+    # The briefs become a turn. Same locks as every route that records a user message. If the
+    # reader sent a reply while the assistants read, its turn is generating now: recording into
+    # a generating conversation would interleave a user message with the response being
+    # written, so WAIT for it (outside the locks) and deliver the briefs after it — never refuse
+    # and discard paid work (Opus review of #492).
+    deadline = time.monotonic() + WAIT_FOR_TURN_S
+    while True:
+        with sessions.paper_lock(job.slug), sessions.mutation_lock(job.slug):
+            if not chat_jobs.active_for(job.slug, job.thread_id):
+                with _registry.lock:
+                    job.waiting = False
+                # The same gate `start_reading` applies, re-checked now: a Finish sent while
+                # the assistants read leaves a proposal as the tail, and a briefing behind it
+                # would strand the draft in the model's history. The briefs stay on the job.
+                if sessions.get_state(job.slug) != IN_DISCUSSION:
+                    raise ReaderError("The notes were drafted while the papers were being read; "
+                                      "the briefs are kept on this pass.")
+                _deliver(job, briefs, turn_runner)
+                return
+        if time.monotonic() > deadline:
+            raise ReaderError("A response kept generating for too long after the papers were "
+                              "read; the briefs are kept on this pass.")
+        with _registry.lock:
+            job.waiting = True
+        time.sleep(WAIT_POLL_S)
+
+
+def _deliver(job: ReaderJob, briefs: list[dict], turn_runner) -> None:
+    """Record the briefing turn and chain the analyst's follow-up. Caller holds the paper and
+    mutation locks and has just confirmed no turn is generating in this conversation."""
+    sessions.record_briefing(job.slug, briefing_text(briefs), briefs)
+    try:
+        # A continuation of the pass the reader was admitted for (`metered=False`, like the
+        # auto-analysis after a retrieval); its analysis spend is still held by the turn.
+        chat = chat_jobs.start_turn(
+            job.slug, runner=turn_runner, delivery_mode=job.delivery_mode,
+            thread_id=job.thread_id, metered=False,
+        )
+    except (quotas.QuotaError, rate_limits.RateLimited) as exc:
+        with _registry.lock:
+            job.analysis_error = str(exc)[:240]
+            job.analysis_refusal = exc.refusal_payload()
+        return
+    except Exception as exc:  # noqa: BLE001 — the briefs are recorded; the retry exists
+        with _registry.lock:
+            job.analysis_error = str(exc)[:240]
+        log.warning("reader briefs recorded but the follow-up turn did not start "
+                    "(slug=%s): %s", job.slug, str(exc)[:200])
+        return
     with _registry.lock:
         job.analysis_job_id = chat.id
