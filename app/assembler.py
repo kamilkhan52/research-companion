@@ -145,7 +145,10 @@ def build_context(slug: str) -> str:
 
     parts.append("# The full reading list (for situating this paper)\n\n"
                  "(Entries not yet read carry their abstract — enough to speak to how they "
-                 "relate to this paper, but not a substitute for having read them. Entries "
+                 "relate to this paper, but not a substitute for having read them: when you "
+                 "characterise this paper's relationship to an *unread* entry, say it has not "
+                 "been read here yet and stay within its abstract and the citing passage, or "
+                 "read its cached text first. Entries "
                  "already read contribute their Notes above instead. Whenever you name ANY paper "
                  "on this list — not only the related works above — render that name as a markdown "
                  "link to its `link:` target given below (an `rc-paper:<slug>`), verbatim, so the "

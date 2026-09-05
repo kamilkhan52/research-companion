@@ -177,6 +177,14 @@ _MAX_NANOUSD: dict[str, int] = {
     # It briefly did double duty, which meant a reader with $0.06 was admitted on a $0.04 ticket
     # and then could not afford the $0.04 author, and a crash mid-author charged both.
     "lab_research": 40_000_000,     # $0.04
+    # DR-140 — ONE reading assistant's pass over one cited-but-unread paper: its full text in,
+    # a bounded brief out, on reader_jobs.READER_MODEL (fixed independently of Settings). Held per
+    # paper inside
+    # `spend_ceiling.per_unit` like `lab_research`; the reader job's registry is `reserves=False`
+    # for the same reason (a ticket that authorizes no dispatch of its own). Its input/output caps,
+    # one accepted call, and the pinned model's price make this a pessimistic bound rather than an
+    # estimate that an operator-selected expensive model can cross.
+    "paper_read": 80_000_000,       # $0.08
 }
 
 #: ASSUMED stage-2 expansion of canonical text into narration. Not a measured distribution —

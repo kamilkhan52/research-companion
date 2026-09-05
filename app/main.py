@@ -46,6 +46,7 @@ from .routers import (
     legal,
     notes,
     projects_api,
+    reader,
     session,
     settings,
     system,
@@ -480,6 +481,7 @@ app.include_router(devtest.router)
 app.include_router(projects_api.project_router)
 app.include_router(usage.project_router)
 app.include_router(session.project_router)
+app.include_router(reader.project_router)
 app.include_router(covers.project_router)
 app.include_router(figures_api.project_router)
 app.include_router(notes.project_router)

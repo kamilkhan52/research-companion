@@ -82,6 +82,10 @@ _LIMITS: dict[str, tuple[int, float]] = {
     # reason — a response truncated before it emits its tool call is a paid call that bought
     # nothing, which is worse than the unbounded state this replaced.
     "retrieval_hunt": (8_000, 180.0),
+    # DR-140 — a reading assistant's brief on one cited paper: under 900 words by instruction.
+    # The fixed reader model is asked not to reason, but its provider may ignore that hint, so this
+    # keeps enough room for hidden reasoning instead of using the short-reply default.
+    "paper_read": (12_000, 300.0),
 }
 
 #: For an operation with no entry. Above every short call in the app and well below the long ones,

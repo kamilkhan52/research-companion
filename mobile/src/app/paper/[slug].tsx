@@ -90,6 +90,8 @@ import { showToast } from '@/ui/Toast';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, NotesUpdateLink, ToolLine, startedNotesUpdate } from '@/components/AgentTrail';
+import { ReaderBriefsTrail, ReaderOfferCard, ReaderProgressCard } from '@/components/ReaderBriefs';
+import { useReaderBriefing } from '@/hooks/useReaderBriefing';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
@@ -1559,6 +1561,20 @@ function DiscussionThread({
   );
   const editing = editDraft.value;
   const setEditing = editDraft.setValue;
+  // DR-140 — reading assistants for the project papers the latest response cited unread. The
+  // offer and the running pass render in the chat footer under that response; the follow-up
+  // turn the pass chains streams through `stream` like any other turn.
+  const { listeningMode: readerListening } = useListeningMode();
+  const reader = useReaderBriefing({
+    pid,
+    slug,
+    threadId,
+    state,
+    transcript,
+    streaming: stream.streaming,
+    deliveryMode: readerListening ? 'listening' : 'reading',
+    resumeTurn: stream.resume,
+  });
   const sentenceCommentsDraft = usePersistedDraft<PendingSentenceComment[]>(
     sentenceCommentsDraftKey(pid, slug, threadId),
     [],
@@ -2438,9 +2454,29 @@ function DiscussionThread({
         </Card>
       );
     }
+    // DR-140 — under the response that earned it: the offer to read its unread cited papers,
+    // or the pass reading them. Hidden while a turn streams (the follow-up it chains included).
+    if (reader.job && !stream.streaming) return (
+      <View style={{ marginBottom: composerHeight + space.md }}>
+        <ReaderProgressCard job={reader.job} onCancel={() => void reader.cancel()} onDismiss={reader.dismissJob} />
+      </View>
+    );
+    if (reader.offer) return (
+      <View style={{ marginBottom: composerHeight + space.md }}>
+        <ReaderOfferCard
+          candidates={reader.offer.candidates}
+          selected={reader.selected}
+          onToggle={reader.toggle}
+          onStart={() => void reader.start()}
+          onDismiss={reader.dismissOffer}
+          starting={reader.starting}
+          error={reader.error}
+        />
+      </View>
+    );
     return null;
   }, [pendingTurn, retryInterrupted, stream.clearError, stream.connectionNotice, stream.error,
-      stream.streaming, styles, theme, composerHeight]);
+      stream.streaming, styles, theme, composerHeight, reader]);
 
   const placeholder = editing
     ? 'Edit your message…'
@@ -3441,6 +3477,11 @@ function AssistantBody({
       ) : null}
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
         <AgentTrail trail={entry.agent_trail} />
+      ) : null}
+      {/* DR-140 — the reading-assistant briefs this response was revised from, collapsed like
+          the trail: context the reader can open, never part of the answer. */}
+      {entry.reader_briefs && entry.reader_briefs.length > 0 ? (
+        <ReaderBriefsTrail briefs={entry.reader_briefs} textScale={discussionTextScale} />
       ) : null}
       <Markdown
         text={canonical}

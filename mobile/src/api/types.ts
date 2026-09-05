@@ -138,6 +138,10 @@ export type TranscriptEntry =
       /** What the agent did before answering (tool calls + intermediate commentary) — the
        *  collapsed, expandable trail on a finished agentic message (R6.8). */
       agent_trail?: AgentTrailItem[] | null;
+      /** DR-140 — the reading-assistant briefs this response was written from: the papers it
+       *  had cited unread were read in full at the reader's request, and this turn revised the
+       *  relationships from their briefs. Rendered collapsed under the response. */
+      reader_briefs?: ReaderBrief[] | null;
       /** Retry-fork selector state (U.14): total branches / 1-based live branch at this fork
        *  point; null when the turn was never retried. */
       branch_count?: number | null;
@@ -372,6 +376,64 @@ export type StreamItem =
 
 /** A finished turn's persisted activity trail (tool calls + thoughts, no answer text). */
 export type AgentTrailItem = Exclude<StreamItem, { kind: 'text' }>;
+
+// ---------- DR-140: reading assistants for cited-but-unread project papers ----------
+
+/** One project paper a response cited without its having been read here
+ *  (GET /reader/candidates/{slug}). `has_text` false = never retrieved, so it cannot be read
+ *  until the reader opens it once. */
+export interface ReaderCandidate {
+  slug: string;
+  title: string;
+  year: number | null;
+  has_text: boolean;
+}
+
+export interface ReaderCandidates {
+  /** Which response the candidates were taken from; null when there is no response yet. */
+  assistant_index: number | null;
+  candidates: ReaderCandidate[];
+}
+
+/** One reading assistant's brief on one paper, as attached to the response it informed. */
+export interface ReaderBrief {
+  slug: string;
+  title: string;
+  text: string;
+}
+
+export type ReaderTargetStatus = 'queued' | 'reading' | 'done' | 'error' | 'skipped';
+
+/** Snapshot of the reading pass (app/reader_jobs.py): one assistant per chosen paper, then the
+ *  analyst's follow-up turn chained as an ordinary chat job (`analysis_job_id`). */
+export interface ReaderJob {
+  id: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error: string | null;
+  refusal?: SpendRefusalPayload | null;
+  slug: string;
+  thread_id: string;
+  assistant_index: number | null;
+  targets: { slug: string; title: string; status: ReaderTargetStatus; error: string | null }[];
+  current: string | null;
+  delivery_mode: 'reading' | 'listening';
+  /** Every brief written so far — kept on the job so paid work survives a follow-up that never
+   *  starts or a wait that times out. */
+  briefs: ReaderBrief[];
+  /** The pass has its briefs and is waiting for a turn the reader started meanwhile to finish
+   *  before handing them over (a reply sent while the assistants were reading). */
+  waiting: boolean;
+  /** Set when the spend ceiling stopped the pass part-way; the untouched papers are `skipped`. */
+  stopped_reason: string | null;
+  analysis_job_id: string | null;
+  analysis_error: string | null;
+  analysis_refusal?: SpendRefusalPayload | null;
+  started_at: string;
+  /** Null until the worker AND its accounting have finalized — a Stop flips `status` to
+   *  `cancelled` at once while the worker still unwinds (and may still chain the follow-up),
+   *  so pollers wait for this, not for `status`. */
+  finished_at: string | null;
+}
 
 /** Snapshot of a server-side chat turn job (app/chat_jobs.py). The turn runs in a backend
  *  thread and is recorded to the session the moment it completes, regardless of what any

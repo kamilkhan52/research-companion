@@ -407,6 +407,18 @@ class JobRegistry(Generic[J]):
         with self._lock:
             return self._running_for(key, pid)
 
+    def unfinished_for(self, key: str, *, project_id=_AMBIENT) -> J | None:
+        """The job whose worker has not published ``finished_at`` for this key and project.
+
+        Most clients treat cancellation as terminal immediately and want :meth:`active_for`.
+        Work that can still publish a paid result after cooperative cancellation instead uses
+        this stricter lifecycle view: the dedup slot stays occupied until the worker has unwound
+        and accounting has settled.
+        """
+        pid = _resolve_pid(project_id)
+        with self._lock:
+            return self._unfinished_for(key, pid)
+
     def latest_for(self, key: str, *, project_id=_AMBIENT) -> J | None:
         """Newest retained job for a dedup key, whether running or terminal.
 
@@ -431,6 +443,14 @@ class JobRegistry(Generic[J]):
             if (getattr(job, _KEY_ATTR, None) == key
                     and getattr(job, _PID_ATTR, None) == pid
                     and job.status == "running"):
+                return job
+        return None
+
+    def _unfinished_for(self, key: str, pid: str | None) -> J | None:  # caller holds the lock
+        for job in self._jobs.values():
+            if (getattr(job, _KEY_ATTR, None) == key
+                    and getattr(job, _PID_ATTR, None) == pid
+                    and job.finished_at is None):
                 return job
         return None
 
@@ -514,6 +534,7 @@ class JobRegistry(Generic[J]):
         metered: bool | None = None,
         reserves: bool | None = None,
         hold_max_nanousd: int | None = None,
+        join_unfinished: bool = False,
     ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
         `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
@@ -536,8 +557,11 @@ class JobRegistry(Generic[J]):
         Deciding per registry would charge a user's own turn against their concurrency ceiling —
         and because those calls happen inside a worker rather than a route, the refusal would be
         swallowed into an error string instead of surfacing as a 429. Continuations pass False.
-        `work` populates the job's fields and returns; the registry then marks it done (or error,
-        if `work` raised)."""
+        `join_unfinished` keeps a cooperatively cancelled job's dedup slot occupied until its
+        worker publishes ``finished_at``. Use it when that worker may retain or deliver the result
+        of an in-flight paid call; starting a replacement during that interval would duplicate
+        spend and side effects. `work` populates the job's fields and returns; the registry then
+        marks it done (or error, if `work` raised)."""
         pid = _resolve_pid(project_id)
         user_id = config.active_user_id()
         # The lifecycle lines carry the job's AUTHORITATIVE project (the resolved pid), passed
@@ -564,7 +588,11 @@ class JobRegistry(Generic[J]):
                 ]
                 if admit is not None:
                     admit(matching[-1] if matching else None)
-                existing = self._running_for(key, pid)
+                existing = (
+                    self._unfinished_for(key, pid)
+                    if join_unfinished
+                    else self._running_for(key, pid)
+                )
                 if existing:
                     log.debug(
                         "join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag,

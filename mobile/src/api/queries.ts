@@ -174,6 +174,26 @@ export function useReview(
   });
 }
 
+/** DR-140 — the project papers the latest response cited without their having been read here.
+ *  Keyed UNDER the session key so every turn settle (which invalidates the session) refreshes
+ *  the offer too; `enabled` lets the screen skip the fetch while a turn streams. */
+export function useReaderCandidates(
+  pid: string | null,
+  slug: string | null,
+  threadId = 'main',
+  enabled = true,
+) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && slug
+      ? [...keys.session(pid, slug, threadId), 'reader-candidates'] as const
+      : ['project', 'none', 'reader-candidates'] as const,
+    queryFn: () => api.getReaderCandidates(pid as string, slug as string, threadId),
+    enabled: !!pid && !!slug && hasUrl && enabled,
+    staleTime: 15_000,
+  });
+}
+
 export function useOpeningDraft(pid: string | null, slug: string | null, threadId = 'main') {
   const hasUrl = !!useBaseUrl();
   return useQuery({
