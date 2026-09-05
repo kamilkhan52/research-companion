@@ -9,6 +9,7 @@ const PLAYBACK_KEY = 'rc.audioPlayback';
 const RATE_KEY = 'rc.playbackRate';
 const NARRATION_FACE_KEY = 'rc.narration.face';
 const NARRATION_SCALE_KEY = 'rc.narration.textScale';
+const FOLLOW_DISCUSSION_KEY = 'rc.narration.followDiscussion';
 
 // DR-135 — how the rolling transcript is SET, as opposed to how it plays. Device-local, like
 // every other preference in this store: the right transcript size depends on the screen you
@@ -97,6 +98,9 @@ interface ListeningContextValue {
   /** DR-135 — multiplier on the chosen face's base size. */
   narrationTextScale: number;
   setNarrationTextScale: (scale: number) => void;
+  /** DR-133 — keep Discussion centered on the sentence represented by narration playback. */
+  followNarrationInDiscussion: boolean;
+  setFollowNarrationInDiscussion: (enabled: boolean) => void;
   ready: boolean;
 }
 
@@ -108,6 +112,9 @@ export function ListeningProvider({ children }: { children: ReactNode }) {
   const [playbackRate, setPlaybackRateState] = useState<PlaybackRate>(1);
   const [narrationFace, setNarrationFaceState] = useState<NarrationFace>(DEFAULT_NARRATION_FACE);
   const [narrationTextScale, setNarrationTextScaleState] = useState(DEFAULT_NARRATION_SCALE);
+  // Default-on is intentional: only an explicit stored "false" disables following. A missing
+  // or malformed value must not silently turn the feature off after an upgrade/storage reset.
+  const [followNarrationInDiscussion, setFollowNarrationInDiscussionState] = useState(true);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -131,6 +138,10 @@ export function ListeningProvider({ children }: { children: ReactNode }) {
         const parsed = value == null ? NaN : Number(value);
         if (Number.isFinite(parsed)) setNarrationTextScaleState(clampNarrationScale(parsed));
       }),
+      AsyncStorage.getItem(FOLLOW_DISCUSSION_KEY).then((value) => {
+        if (value === 'false') setFollowNarrationInDiscussionState(false);
+        else if (value === 'true') setFollowNarrationInDiscussionState(true);
+      }),
     ]).finally(() => setReady(true));
   }, []);
 
@@ -140,6 +151,7 @@ export function ListeningProvider({ children }: { children: ReactNode }) {
     playbackRate,
     narrationFace,
     narrationTextScale,
+    followNarrationInDiscussion,
     ready,
     setListeningMode: (enabled) => {
       setListeningModeState(enabled);
@@ -162,7 +174,19 @@ export function ListeningProvider({ children }: { children: ReactNode }) {
       setNarrationTextScaleState(clamped);
       AsyncStorage.setItem(NARRATION_SCALE_KEY, String(clamped));
     },
-  }), [listeningMode, narrationFace, narrationTextScale, playbackMode, playbackRate, ready]);
+    setFollowNarrationInDiscussion: (enabled) => {
+      setFollowNarrationInDiscussionState(enabled);
+      AsyncStorage.setItem(FOLLOW_DISCUSSION_KEY, String(enabled));
+    },
+  }), [
+    followNarrationInDiscussion,
+    listeningMode,
+    narrationFace,
+    narrationTextScale,
+    playbackMode,
+    playbackRate,
+    ready,
+  ]);
 
   if (!ready) return null;
   return <ListeningContext.Provider value={value}>{children}</ListeningContext.Provider>;

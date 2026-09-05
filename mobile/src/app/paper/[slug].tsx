@@ -20,7 +20,7 @@ import {
   type MessageTextProps,
 } from '@kesha-antonov/react-native-chat';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   ActivityIndicator,
@@ -61,7 +61,14 @@ import type {
 } from '@/api/types';
 import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
-import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
+import {
+  messageAudioId,
+  parseMessageAudioId,
+  sessionAddressFromAudioSlug,
+  useListeningHandoffRecovery,
+} from '@/audio/identity';
+import { alignNarrationToDiscussion } from '@/audio/discussionFollow';
+import { useNarrationCursor, type NarrationCursor } from '@/audio/useNarrationCursor';
 import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
 import {
@@ -108,6 +115,8 @@ import {
   type FigureContext,
   type LinkHandler,
   type SentenceAnnotations,
+  type NarrationSentenceFollow,
+  discussionSentenceAnchors,
 } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
@@ -140,6 +149,10 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useReadingSettings } from '@/store/readingSettings';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
+import {
+  narrationBoundaryKey,
+  startNarrationLanding,
+} from '@/lib/narrationDiscussionScroll';
 import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
@@ -1487,6 +1500,28 @@ function discussionDraftKey(
     : draftKey(pid, 'discussion', slug, threadId, kind);
 }
 
+type DiscussionNarrationCursor = Pick<
+  NarrationCursor,
+  'slotId' | 'narration' | 'sentences' | 'activeIndex'
+>;
+
+/** Own the fast playback clock below Discussion's heavy tree and publish only true boundaries. */
+function NarrationCursorBridge({
+  onBoundary,
+}: {
+  onBoundary: (cursor: DiscussionNarrationCursor | null) => void;
+}) {
+  const cursor = useNarrationCursor();
+  const key = narrationBoundaryKey(cursor);
+  const lastKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (key === lastKey.current) return;
+    lastKey.current = key;
+    onBoundary(key ? cursor : null);
+  }, [cursor, key, onBoundary]);
+  return null;
+}
+
 function DiscussionThread({
   pid,
   slug,
@@ -1534,6 +1569,10 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName, discussionTextScale } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  const isFocused = useIsFocused();
+  const audio = useAudio();
+  const { followNarrationInDiscussion } = useListeningMode();
+  const [narrationCursor, setNarrationCursor] = useState<DiscussionNarrationCursor | null>(null);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -1776,6 +1815,34 @@ function DiscussionThread({
     ],
   );
 
+  const narrationTarget = useMemo(() => {
+    if (!followNarrationInDiscussion || !narrationCursor?.slotId) return null;
+    const identity = parseMessageAudioId(narrationCursor.slotId);
+    if (!identity?.contentTag) return null;
+    const address = sessionAddressFromAudioSlug(identity.slug);
+    if (identity.project !== pid || address.slug !== slug || address.threadId !== threadId) return null;
+    const entry = transcript.find((candidate) =>
+      candidate.role === 'assistant' && candidate.assistant_index === identity.assistantIndex,
+    );
+    if (!entry || entry.role !== 'assistant'
+        || branchAudioId(pid, slug, entry, threadId) !== narrationCursor.slotId) return null;
+    const anchors = discussionSentenceAnchors(entry.canonical);
+    const aligned = alignNarrationToDiscussion(narrationCursor.narration, anchors);
+    const anchorId = aligned[narrationCursor.activeIndex] ?? null;
+    if (!anchorId) return null;
+    const rowIndex = messages.findIndex((message) => message.entry === entry);
+    if (rowIndex < 0) return null;
+    return { anchorId, rowIndex, slotId: narrationCursor.slotId };
+  }, [
+    followNarrationInDiscussion,
+    messages,
+    narrationCursor,
+    pid,
+    slug,
+    threadId,
+    transcript,
+  ]);
+
   // DR-115 — landmark stepping over the same inverted list. `messages.length` is what the
   // navigator counts: the rail steps over rendered rows, including the optimistic user echo
   // and the live streaming row, because those are exactly the landmarks a reader can see.
@@ -1788,6 +1855,76 @@ function DiscussionThread({
     // padding already gives the oldest message.
     topClearance: chromeLayout.topClearance,
   });
+  const listOffset = useRef(0);
+  const narrationMeasures = useRef(new Map<
+    string,
+    (done: (screenY: number, height: number) => void) => void
+  >());
+  const narrationLandingCancel = useRef<(() => void) | null>(null);
+  const followPausedUntil = useRef(0);
+  const registerNarrationAnchor = useCallback<NarrationSentenceFollow['registerAnchor']>(
+    (anchorId, measure) => {
+      narrationMeasures.current.set(anchorId, measure);
+      return () => {
+        if (narrationMeasures.current.get(anchorId) === measure) {
+          narrationMeasures.current.delete(anchorId);
+        }
+      };
+    },
+    [],
+  );
+  const narrationFollow = useMemo<NarrationSentenceFollow | undefined>(() =>
+    narrationTarget ? {
+      activeAnchorId: narrationTarget.anchorId,
+      registerAnchor: registerNarrationAnchor,
+    } : undefined,
+  [narrationTarget, registerNarrationAnchor]);
+
+  const landNarrationTarget = useCallback((force: boolean) => {
+    if (!narrationTarget || !isFocused || (!force && Date.now() < followPausedUntil.current)) return;
+    narrationLandingCancel.current?.();
+    narrationLandingCancel.current = startNarrationLanding({
+      approach: () => chatNav.goToIndex(narrationTarget.rowIndex),
+      measure: (done) => {
+        const measure = narrationMeasures.current.get(narrationTarget.anchorId);
+        if (!measure) return false;
+        measure(done);
+        return true;
+      },
+      correct: (screenY, height) => {
+        // Under the inverted list, decreasing native offset moves content toward the visual top.
+        const desiredY = chromeLayout.topClearance + space.md;
+        listRef.current?.scrollToOffset({
+          offset: Math.max(0, listOffset.current + desiredY - (screenY + height / 2)),
+          animated: !reduceMotion,
+        });
+      },
+    });
+  }, [chatNav.goToIndex, chromeLayout.topClearance, isFocused, narrationTarget, reduceMotion]);
+
+  useEffect(() => {
+    landNarrationTarget(false);
+    return () => narrationLandingCancel.current?.();
+  }, [landNarrationTarget]);
+
+  useEffect(() => {
+    const jump = audio.discussionJump;
+    if (!jump) return;
+    if (!followNarrationInDiscussion) {
+      audio.consumeDiscussionJump(jump.nonce);
+      return;
+    }
+    if (!narrationTarget || jump.slotId !== narrationTarget.slotId || !isFocused) return;
+    followPausedUntil.current = 0;
+    landNarrationTarget(true);
+    audio.consumeDiscussionJump(jump.nonce);
+  }, [
+    audio,
+    followNarrationInDiscussion,
+    isFocused,
+    landNarrationTarget,
+    narrationTarget,
+  ]);
   // FlatList requires the viewability pair's identity never to change across renders, and two
   // consumers need it: DR-100's first-paint signal and the rail's top-of-viewport anchor. Both
   // callbacks are ref-stable by construction, so composing them once here is safe.
@@ -1813,6 +1950,8 @@ function DiscussionThread({
   // rides along rather than adding a second listener.
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
+      const y = event?.contentOffset?.y ?? event?.nativeEvent?.contentOffset?.y;
+      if (typeof y === 'number') listOffset.current = y;
       readerPin.onScroll(event);
       // DR-115 — the navigator only records the offset, to tell a landing that clamped at the
       // live edge from one that did not. Same event shape as DR-089's.
@@ -2044,7 +2183,6 @@ function DiscussionThread({
   // menu is a shortcut to the same actions, not a different set). Rendered through the app's
   // own OptionsSheet — the native action sheet ignores the design language (polish plan F.5:
   // OptionsSheet is the only menu idiom anywhere in the app).
-  const audio = useAudio();
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
   // The transcript index, so the report carries a pointer an operator can resolve to the exact
   // turn. Null means the sheet is closed.
@@ -2201,6 +2339,9 @@ function DiscussionThread({
           switchDisabled={switchingBranch || stream.streaming}
           figureContext={figureContext}
           sentenceAnnotations={sentenceAnnotationsFor(msg.entry.assistant_index)}
+          narrationFollow={
+            narrationTarget?.rowIndex === messages.indexOf(msg) ? narrationFollow : undefined
+          }
         />
       );
     }
@@ -2215,7 +2356,7 @@ function DiscussionThread({
         <Markdown text={msg?.text ?? ''} textScale={discussionTextScale} />
       </View>
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale, narrationFollow, narrationTarget, messages]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2486,6 +2627,7 @@ function DiscussionThread({
 
   return (
     <>
+    <NarrationCursorBridge onBoundary={setNarrationCursor} />
     {/* DR-089 — while the reader is away from the live edge during a streaming turn, the
         streamed reveal (SmoothMarkdown) holds still so the transcript cannot drag under
         them. Streaming gates the flag so an idle reader browsing history pays nothing.
@@ -2541,7 +2683,11 @@ function DiscussionThread({
         onScroll: onListScroll,
         // DR-115 — a finger drag (never a programmatic scroll) retires the rail's remembered
         // landmark, so the next step re-aims at wherever the reader actually stopped.
-        onScrollBeginDrag: chatNav.onScrollBeginDrag,
+        onScrollBeginDrag: () => {
+          followPausedUntil.current = Date.now() + 4000;
+          narrationLandingCancel.current?.();
+          chatNav.onScrollBeginDrag();
+        },
         // DR-115 — `scrollToIndex` can only land on a row this list has measured, and it
         // deliberately renders a tiny window (see initialNumToRender below).
         onScrollToIndexFailed: chatNav.onScrollToIndexFailed,
@@ -3407,6 +3553,7 @@ function AssistantBody({
   switchDisabled,
   figureContext,
   sentenceAnnotations,
+  narrationFollow,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   /** The opening account of the paper, styled as an artifact rather than a reply. */
@@ -3428,6 +3575,7 @@ function AssistantBody({
   switchDisabled: boolean;
   figureContext?: FigureContext;
   sentenceAnnotations?: SentenceAnnotations;
+  narrationFollow?: NarrationSentenceFollow;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3501,6 +3649,7 @@ function AssistantBody({
         text={canonical}
         figureContext={figureContext}
         sentenceAnnotations={sentenceAnnotations}
+        narrationFollow={narrationFollow}
         textScale={discussionTextScale}
       />
       {/* DR-105 — the way into a notes proposal this turn started belongs where the reader

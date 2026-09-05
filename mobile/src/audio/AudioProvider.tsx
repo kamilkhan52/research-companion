@@ -83,6 +83,15 @@ interface AudioContextValue {
   setPlaylistAutoplay: (enabled: boolean) => void;
   /** Advance to, or prepare, the next existing response in the active track's thread. */
   playNextResponse: () => Promise<boolean>;
+  /** One-shot explicit landing request from a mini-player sentence skip. */
+  discussionJump: DiscussionJumpRequest | null;
+  publishDiscussionJump: (slotId: string) => void;
+  consumeDiscussionJump: (nonce: number) => void;
+}
+
+export interface DiscussionJumpRequest {
+  nonce: number;
+  slotId: string;
 }
 
 const POLL_MS = 1000;
@@ -186,6 +195,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [playbackStartedAtById, setPlaybackStartedAtById] = useState<Record<string, string>>({});
   const [playlistAutoplay, setPlaylistAutoplayState] = useState(false);
+  const [discussionJump, setDiscussionJump] = useState<DiscussionJumpRequest | null>(null);
+  const discussionJumpNonce = useRef(0);
   const playlistAutoplayRef = useRef(false);
   const playlistAdvanceRef = useRef<Promise<boolean> | null>(null);
   const prepRef = useRef<PrepState | null>(null);
@@ -248,6 +259,14 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const setPlaylistAutoplay = useCallback((enabled: boolean) => {
     playlistAutoplayRef.current = enabled;
     setPlaylistAutoplayState(enabled);
+  }, []);
+
+  const publishDiscussionJump = useCallback((slotId: string) => {
+    discussionJumpNonce.current += 1;
+    setDiscussionJump({ nonce: discussionJumpNonce.current, slotId });
+  }, []);
+  const consumeDiscussionJump = useCallback((nonce: number) => {
+    setDiscussionJump((current) => current?.nonce === nonce ? null : current);
   }, []);
 
   // R6.6 — apply the persisted speed live when the user changes it; harmless no-op when the
@@ -979,6 +998,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         playlistAutoplay,
         setPlaylistAutoplay,
         playNextResponse: () => playNextResponse(false),
+        discussionJump,
+        publishDiscussionJump,
+        consumeDiscussionJump,
       }}>
       {children}
     </AudioContext.Provider>

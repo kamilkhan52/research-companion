@@ -118,7 +118,12 @@ export default function SettingsScreen() {
   // itself.
   const [priorScope, setPriorScope] = useState<'related' | 'all'>('all');
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
-  const { playbackMode, setPlaybackMode } = useListeningMode();
+  const {
+    playbackMode,
+    setPlaybackMode,
+    followNarrationInDiscussion,
+    setFollowNarrationInDiscussion,
+  } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
   const { chatNavRail, setChatNavRail, libraryTitle, setLibraryTitle } = useReadingSettings();
   const {
@@ -405,6 +410,24 @@ export default function SettingsScreen() {
 
               {/* Audio */}
               <Section title="Audio">
+                <Label
+                  text="Follow narration in Discussion"
+                  hint="applies immediately, stored on this device"
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
+                  <Toggle
+                    label="On"
+                    local
+                    active={followNarrationInDiscussion}
+                    onPress={() => setFollowNarrationInDiscussion(true)}
+                  />
+                  <Toggle
+                    label="Off"
+                    local
+                    active={!followNarrationInDiscussion}
+                    onPress={() => setFollowNarrationInDiscussion(false)}
+                  />
+                </View>
                 <Label
                   text="Narration playback"
                   hint="applies immediately, stored on this device"

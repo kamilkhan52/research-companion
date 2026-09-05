@@ -4,7 +4,7 @@
 // MathView). Deliberately small — not a full CommonMark implementation — to keep reading
 // fast and the bundle lean.
 
-import { createContext, Fragment, useContext, useMemo, type ReactNode } from 'react';
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
 // RNGH's ScrollView, not core RN's: the discussion renders messages inside gifted-chat's
 // inverted list under a gesture-handler hierarchy, where a core horizontal ScrollView loses
@@ -21,6 +21,7 @@ import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, makeTextStyles, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import type { DiscussionSentenceAnchor } from '@/audio/discussionFollow';
 
 /** When present, the paper's figures are carded inline immediately before the first paragraph that
  *  references each one (R.10). Absent everywhere except the committed discussion transcript,
@@ -45,6 +46,16 @@ export interface SentenceAnnotations {
   active: boolean;
   onSentencePress: (quote: string) => void;
   stateForSentence?: (quote: string) => SentenceAnnotationVisual | undefined;
+}
+
+/** Passive narration marker. It deliberately has no press handler: links and the existing
+ * sentence-comment affordance retain ownership of touch and accessibility behaviour. */
+export interface NarrationSentenceFollow {
+  activeAnchorId: string;
+  registerAnchor: (
+    anchorId: string,
+    measure: (done: (screenY: number, height: number) => void) => void,
+  ) => () => void;
 }
 
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
@@ -115,12 +126,14 @@ export function Markdown({
   onLinkPress,
   figureContext,
   sentenceAnnotations,
+  narrationFollow,
   textScale,
 }: {
   text: string;
   onLinkPress?: LinkHandler;
   figureContext?: FigureContext;
   sentenceAnnotations?: SentenceAnnotations;
+  narrationFollow?: NarrationSentenceFollow;
   /** DR-068 — device-wide Discussion text-size multiplier. Omit (or 1) for every surface that
    *  isn't the Discussion transcript. */
   textScale?: number;
@@ -162,8 +175,10 @@ export function Markdown({
               ))}
               <Block
                 block={block}
+                path={`b${i}`}
                 onLinkPress={handleLink}
                 sentenceAnnotations={sentenceAnnotations}
+                narrationFollow={narrationFollow}
               />
             </Fragment>
           ))}
@@ -196,6 +211,27 @@ const HEADING_RE = /^(#{1,6})\s+(.*)$/;
 // from the ###MARKER### output protocol) that 2+ hashes with no space still count as a
 // heading. A single glued hash stays prose (#hashtag, #include).
 const GLUED_HEADING_RE = /^(#{2,6})([^#\s].*)$/;
+
+/** Stable canonical sentence addresses, derived only from committed Markdown structure and
+ * source order. The same path is handed to the renderer below; no native row index or narration
+ * ordinal is allowed to stand in for content identity. */
+export function discussionSentenceAnchors(text: string): DiscussionSentenceAnchor[] {
+  const out: DiscussionSentenceAnchor[] = [];
+  const visit = (blocks: Block[], prefix = '') => {
+    blocks.forEach((block, index) => {
+      const path = `${prefix}b${index}`;
+      if (block.kind === 'paragraph') {
+        splitAnnotatableSentences(block.text).forEach((sentence, sentenceIndex) => {
+          out.push({ id: `${path}.s${sentenceIndex}`, text: annotationQuote(sentence) });
+        });
+      } else if (block.kind === 'quote') {
+        visit(block.blocks, `${path}.`);
+      }
+    });
+  };
+  visit(parseBlocks(stripPseudoToolTags(text)));
+  return out;
+}
 
 function matchHeading(line: string): { level: number; text: string } | null {
   const m = HEADING_RE.exec(line) ?? GLUED_HEADING_RE.exec(line);
@@ -465,12 +501,16 @@ const TIGHT_HEADING_STYLES: Record<number, object> = {
 
 function Block({
   block,
+  path,
   onLinkPress,
   sentenceAnnotations,
+  narrationFollow,
 }: {
   block: Block;
+  path: string;
   onLinkPress: LinkHandler;
   sentenceAnnotations?: SentenceAnnotations;
+  narrationFollow?: NarrationSentenceFollow;
 }) {
   const t = useTheme();
   const density = useDensity();
@@ -497,12 +537,14 @@ function Block({
       );
     }
     case 'paragraph':
-      if (sentenceAnnotations?.active) {
+      if (sentenceAnnotations?.active || narrationFollow) {
         return (
           <AnnotatableParagraph
             text={block.text}
+            path={path}
             onLinkPress={onLinkPress}
             annotations={sentenceAnnotations}
+            narrationFollow={narrationFollow}
           />
         );
       }
@@ -515,7 +557,17 @@ function Block({
       return (
         <View style={styles.quote}>
           {block.blocks.map((child, index) => (
-            child.kind === 'paragraph' ? (
+            child.kind === 'paragraph' && (sentenceAnnotations?.active || narrationFollow) ? (
+              <AnnotatableParagraph
+                key={index}
+                text={child.text}
+                path={`${path}.b${index}`}
+                onLinkPress={onLinkPress}
+                annotations={sentenceAnnotations}
+                narrationFollow={narrationFollow}
+                italic
+              />
+            ) : child.kind === 'paragraph' ? (
               <Text key={index} variant="serifItalic" style={scaledQuoteStyle}>
                 <Inline text={child.text} onLinkPress={onLinkPress} />
               </Text>
@@ -523,8 +575,10 @@ function Block({
               <Block
                 key={index}
                 block={child}
+                path={`${path}.b${index}`}
                 onLinkPress={onLinkPress}
                 sentenceAnnotations={sentenceAnnotations}
+                narrationFollow={narrationFollow}
               />
             )
           ))}
@@ -565,41 +619,60 @@ function Block({
 
 function AnnotatableParagraph({
   text,
+  path,
   onLinkPress,
   annotations,
+  narrationFollow,
+  italic = false,
 }: {
   text: string;
+  path: string;
   onLinkPress: LinkHandler;
-  annotations: SentenceAnnotations;
+  annotations?: SentenceAnnotations;
+  narrationFollow?: NarrationSentenceFollow;
+  italic?: boolean;
 }) {
   const t = useTheme();
   const sentences = useMemo(() => splitAnnotatableSentences(text), [text]);
-  const scaledStyle = useScaledSerifStyle('serifBody');
+  const scaledStyle = useScaledSerifStyle(italic ? 'serifItalic' : 'serifBody');
+  const activeIndex = sentences.findIndex(
+    (_, index) => `${path}.s${index}` === narrationFollow?.activeAnchorId,
+  );
+  const activeRef = useRef<RNText>(null);
+  useEffect(() => {
+    if (!narrationFollow || activeIndex < 0) return undefined;
+    const anchorId = `${path}.s${activeIndex}`;
+    return narrationFollow.registerAnchor(anchorId, (done) => {
+      activeRef.current?.measureInWindow((_x, y, _width, height) => done(y, height));
+    });
+  }, [activeIndex, narrationFollow, path]);
   return (
-    <Text variant="serifBody" style={scaledStyle}>
+    <Text variant={italic ? 'serifItalic' : 'serifBody'} style={scaledStyle}>
       {sentences.map((sentence, index) => {
         // Queue/display the sentence the reader actually sees, not its Markdown control
         // syntax (`[label](url)`, emphasis markers). Equations retain explicit TeX delimiters
         // so the agent still receives the precise formula being discussed.
         const quote = annotationQuote(sentence);
-        const state = annotations.stateForSentence?.(quote);
+        const state = annotations?.stateForSentence?.(quote);
+        const active = index === activeIndex;
         return (
           <Fragment key={`${index}:${sentence}`}>
             <RNText
+              ref={active ? activeRef : undefined}
               testID={`md-sentence-${index}`}
-              accessibilityRole="button"
-              accessibilityLabel={`Comment on: ${quote}`}
-              accessibilityState={{ selected: !!state?.selected }}
-              onPress={() => annotations.onSentencePress(quote)}
+              accessibilityRole={annotations?.active ? 'button' : undefined}
+              accessibilityLabel={annotations?.active ? `Comment on: ${quote}` : undefined}
+              accessibilityState={annotations?.active ? { selected: !!state?.selected } : undefined}
+              onPress={annotations?.active ? () => annotations.onSentencePress(quote) : undefined}
               style={{
-                backgroundColor: state?.selected ? t.violetWash : undefined,
+                backgroundColor: state?.selected ? t.violetWash : active ? t.mintWashStrong : undefined,
                 borderLeftColor: state?.annotated ? t.violet : undefined,
                 borderLeftWidth: state?.annotated ? 2 : 0,
                 paddingLeft: state?.annotated ? 2 : 0,
                 textDecorationColor: state?.annotated ? t.violet : undefined,
                 textDecorationLine: state?.annotated ? 'underline' : 'none',
               }}>
-              <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks />
+              <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks={!!annotations?.active} />
               {state?.commentCount ? (
                 // DR-053 §1: was inheriting the sentence's line box and reading as an oversized
                 // rectangle rather than a badge. lineHeight (not the ~26px serif body line)

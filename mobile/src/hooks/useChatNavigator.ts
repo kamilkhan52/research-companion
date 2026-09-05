@@ -338,6 +338,10 @@ export function useChatNavigator({
   const goOldest = useCallback(() => scrollTo({ kind: 'oldest' }), [scrollTo]);
 
   const goLive = useCallback(() => scrollTo({ kind: 'live' }), [scrollTo]);
+  const goToIndex = useCallback((index: number) => {
+    if (index < 0 || index >= countRef.current) return;
+    scrollTo({ kind: 'index', index });
+  }, [scrollTo]);
 
   // Ref-stable: FlatList requires the viewability pair's identity never to change, and this
   // one is composed with DR-100's first-paint listener at the call site.
@@ -457,6 +461,7 @@ export function useChatNavigator({
     goDown,
     goOldest,
     goLive,
+    goToIndex,
     onScroll,
     onViewableItemsChanged,
     onScrollBeginDrag,

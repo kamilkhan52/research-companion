@@ -22,7 +22,10 @@ import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 
 import { useAudio } from '@/audio/AudioProvider';
+import { parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
+import { isContentQualifiedAudioId } from '@/audio/discussionFollow';
 import { SKIP_SECONDS } from '@/audio/setup';
+import { useListeningMode } from '@/store/listening';
 import { Marquee } from '@/ui/Marquee';
 import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
@@ -41,6 +44,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const audio = useAudio();
+  const { followNarrationInDiscussion } = useListeningMode();
   const pathname = usePathname();
   // Guard against stacking duplicate full-screen player routes when the bar is tapped
   // repeatedly (each raw push() would mount another copy). navigate() rewinds to an existing
@@ -52,6 +56,29 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const { playing } = useIsPlaying();
   const { state } = usePlaybackState();
   const { position, duration } = useProgress(500);
+
+  const seekAndFollow = async (direction: -1 | 1) => {
+    await seekSentence(TrackPlayer, direction, SKIP_SECONDS);
+    if (!followNarrationInDiscussion) return;
+
+    // Seeking a progressive narration can skip to a different queue track. Read identity only
+    // AFTER the seek settles, and publish that same exact slot to Discussion and the route.
+    const soughtTrack = await TrackPlayer.getActiveTrack();
+    const slotId = String(soughtTrack?.slotId ?? soughtTrack?.id ?? '');
+    if (!isContentQualifiedAudioId(slotId)) return;
+    const identity = parseMessageAudioId(slotId);
+    if (!identity?.contentTag) return;
+    const address = sessionAddressFromAudioSlug(identity.slug);
+    audio.publishDiscussionJump(slotId);
+    router.navigate({
+      pathname: '/paper/[slug]',
+      params: {
+        slug: address.slug,
+        project: identity.project,
+        thread: address.threadId,
+      },
+    });
+  };
 
   // DR-055: the STACK copy sits outside the screen's own KeyboardAvoidingView (it's a sibling
   // of the Stack at the root layout, not inside the composer's scope), so without this it stays
@@ -152,7 +179,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
              the title gives up weight and a line of size to the two controls that matter while
              listening; the full-screen player keeps the ±15s skips and the scrubber. */}
           <Pressable
-            onPress={() => void seekSentence(TrackPlayer, -1, SKIP_SECONDS)}
+            onPress={() => void seekAndFollow(-1)}
             hitSlop={8}
             style={styles.sideBtn}
             accessibilityLabel="Previous sentence">
@@ -170,7 +197,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
           </View>
 
           <Pressable
-            onPress={() => void seekSentence(TrackPlayer, 1, SKIP_SECONDS)}
+            onPress={() => void seekAndFollow(1)}
             hitSlop={8}
             style={styles.sideBtn}
             accessibilityLabel="Next sentence">
