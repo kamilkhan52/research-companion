@@ -45,6 +45,8 @@ import type {
   ProjectState,
   LabsResearchJob,
   ReadingMode,
+  ReaderCandidates,
+  ReaderJob,
   RecentSession,
   RetrievalJob,
   PreviewJob,
@@ -533,6 +535,50 @@ export const markPreviewPlayed = (pid: string, id: string) =>
     `${P(pid)}/preview/jobs/${encodeURIComponent(id)}/played`,
     {},
   ).then(noting((r) => r.job));
+
+// ---------- DR-140: reading assistants for cited-but-unread project papers ----------
+// A response's own `rc-paper:` links decide the candidates (no model asked); the pass reads
+// each chosen paper as a background job and chains the analyst's follow-up turn as an ordinary
+// chat job, which the screen reattaches to through getActiveChatJob like any other turn.
+
+/** The project papers a response cited without their having been read here. Defaults to the
+ *  latest response; `assistantIndex` pins an earlier one. */
+export const getReaderCandidates = (
+  pid: string, slug: string, threadId = 'main', assistantIndex?: number,
+) =>
+  apiGet<ReaderCandidates>(
+    `${P(pid)}/reader/candidates/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`
+    + (assistantIndex != null ? `&assistant_index=${assistantIndex}` : ''),
+  );
+/** Start (or join) the reading pass for the chosen papers. 409 while a turn is generating or a
+ *  chosen paper has no cached text; spend/rate refusals surface as the usual 429/402. */
+export const startReaderJob = (
+  pid: string,
+  slug: string,
+  targets: string[],
+  opts: { threadId?: string; assistantIndex?: number | null; deliveryMode?: 'reading' | 'listening' } = {},
+) =>
+  apiPost<{ job: ReaderJob }>(`${P(pid)}/reader/jobs`, {
+    slug,
+    targets,
+    thread_id: opts.threadId ?? 'main',
+    assistant_index: opts.assistantIndex ?? null,
+    delivery_mode: opts.deliveryMode ?? 'reading',
+  }).then(noting((r) => r.job));
+export const getReaderJob = (pid: string, id: string) =>
+  apiGet<{ job: ReaderJob }>(`${P(pid)}/reader/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
+/** The pass currently running for a conversation, if any — for reattaching on screen entry. */
+export const getActiveReaderJob = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<{ job: ReaderJob | null }>(
+    `${P(pid)}/reader/jobs/active/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  ).then(noting((r) => r.job));
+/** Newest retained pass, including one that finished while the reader was away. */
+export const getLatestReaderJob = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<{ job: ReaderJob | null }>(
+    `${P(pid)}/reader/jobs/latest/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  ).then(noting((r) => r.job));
+export const cancelReaderJob = (pid: string, id: string) =>
+  apiPost<{ job: ReaderJob }>(`${P(pid)}/reader/jobs/${encodeURIComponent(id)}/cancel`, {}).then(noting((r) => r.job));
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
 // target = a paper slug, or 'working' for the cross-paper Project Notes.

@@ -471,6 +471,12 @@ def reading_list_overview() -> str:
                      f"link: rc-paper:{e['slug']})")
         if e["abstract"] and not has_notes(e["slug"]):
             lines.append(f"  Abstract: {e['abstract']}")
+        # DR-140: an unread entry whose text is already cached can be READ (read_paper_text, or
+        # a reading assistant after the turn) rather than characterised from its abstract. Said
+        # on its own line so the exact entry line above stays as it always was.
+        if not has_notes(e["slug"]) and corpus_path(e["slug"]).exists():
+            lines.append("  Not yet read in this project; its full text is cached and available "
+                         "to read_paper_text.")
     return "\n".join(lines).strip()
 
 

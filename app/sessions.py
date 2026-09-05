@@ -450,6 +450,29 @@ def record_user(slug: str, text: str, kind: str = "reply", *, authored_text: str
                 _save_index_unlocked(idx)
 
 
+#: DR-140 — the user-record kind that carries reading-assistant briefs back to the analyst. Hidden
+#: from the transcript like `finish`/`revision` (its text is a rendered instruction), while the
+#: briefs themselves surface on the assistant turn that answered it (see `transcript`).
+BRIEFING_KIND = "briefing"
+
+
+def record_briefing(slug: str, text: str, briefs: list[dict]) -> None:
+    """Append the hidden briefing turn: `text` is what the model reads (the rendered instruction
+    with every brief framed as untrusted data); `briefs` is the reader-facing list
+    ({slug, title, text}) the transcript attaches to the response."""
+    _append_record(slug, {"role": "user", "kind": BRIEFING_KIND, "text": text,
+                          "briefs": briefs})
+
+
+def briefed_slugs(slug: str, thread_id: str | None = None) -> set[str]:
+    """Slugs already briefed in this conversation — a candidate list must not re-offer them."""
+    out: set[str] = set()
+    for rec in read_records(slug, thread_id):
+        if rec.get("role") == "user" and rec.get("kind") == BRIEFING_KIND:
+            out.update(b.get("slug", "") for b in rec.get("briefs") or [] if b.get("slug"))
+    return out
+
+
 def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
                      chat_job_id: str | None = None,
                      audio_job_id: str | None = None,
@@ -528,14 +551,20 @@ def transcript(slug: str) -> list[dict]:
     out = []
     branches = branch_map(slug)
     assistant_index = -1
+    # DR-140: the briefs of a hidden briefing turn ride on the response that answered it, so
+    # the reader can open them collapsed under that response rather than as a turn of their own.
+    pending_briefs: list[dict] | None = None
     for rec in read_records(slug):
         if rec["role"] == "user":
-            if rec.get("kind") == "reply":  # hide internal finish/revision prompts
+            if rec.get("kind") == "reply":  # hide internal finish/revision/briefing prompts
                 out.append({"role": "user", "text": rec["text"]})
+            pending_briefs = rec.get("briefs") if rec.get("kind") == BRIEFING_KIND else None
         else:
             assistant_index += 1
             fork = branches.get(assistant_index)
+            reader_briefs, pending_briefs = pending_briefs, None
             out.append({
+                **({"reader_briefs": reader_briefs} if reader_briefs else {}),
                 "role": "assistant",
                 "assistant_index": assistant_index,
                 "branch_count": fork["count"] if fork else None,
