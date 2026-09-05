@@ -37,7 +37,6 @@ from dataclasses import dataclass, field
 
 from . import (
     chat_jobs,
-    config,
     llm,
     logging_config,
     model_provenance,
@@ -66,6 +65,14 @@ MAX_TARGET_TEXT_CHARS = 160_000
 MAX_ACCOUNT_CHARS = 24_000
 MAX_BRIEF_CHARS = 12_000
 MAX_TARGETS = 8
+
+# Fixed independently of the account's Analysis model. The reservation below is $0.08 for one
+# paper and must remain a real ceiling even if an operator selects an expensive model in Settings.
+# At the pinned model's published $0.0938/M input and $0.1876/M output, the 184k-character input
+# caps plus 12k output remain below $0.02 even if every character tokenizes separately. One
+# accepted response only (`tries=1`) leaves 4x headroom for endpoint price spread while preserving
+# the product contract that one assistant reads one paper with one model call.
+READER_MODEL = "deepseek/deepseek-v4-flash-0731"
 
 #: How long a finished pass will wait for a turn the reader started meanwhile (Opus review of
 #: #492, P1): the composer stays open while assistants read, and a reply sent then runs an
@@ -127,7 +134,9 @@ def _key(slug: str, thread_id: str) -> str:
 
 
 def active_for(slug: str, thread_id: str | None = None) -> ReaderJob | None:
-    return _registry.active_for(_key(slug, _thread(thread_id)))
+    # Stop is cooperative. A cancelled worker can still return the already-billed paper brief,
+    # so it remains the active pass until finalization publishes `finished_at`.
+    return _registry.unfinished_for(_key(slug, _thread(thread_id)))
 
 
 def latest_for(slug: str, thread_id: str | None = None) -> ReaderJob | None:
@@ -183,12 +192,6 @@ def candidates(slug: str, thread_id: str | None = None,
 
 # ---------------------------------------------------------------------------- the reading
 
-def _model() -> str | None:
-    """The account's analysis model: comprehension is the point, and since 2026-08-15 the
-    default is also the cheap one. None lets `llm.complete` fall back to the settings default."""
-    return config.load_settings().get("model") or None
-
-
 def _account(slug: str, thread_id: str, assistant_index: int | None) -> str:
     """The analyst's own account the assistants read against: the chosen response's canonical
     text (latest by default), tail-capped because the relationships paragraph is at the end."""
@@ -206,7 +209,7 @@ def _account(slug: str, thread_id: str, assistant_index: int | None) -> str:
 
 def read_with_model(target_slug: str, account: str, current_slug: str) -> str:
     """One reading assistant, one paper: the production reader. A single non-streaming call on
-    the analysis model — no tools, the whole target text is the point — metered as
+    the fixed bounded reader model — no tools, the whole target text is the point — metered as
     `paper_read` against whatever reservation the caller bound (the per-unit hold)."""
     target_text = store.read_full_text(target_slug)
     if not target_text.strip():
@@ -230,9 +233,11 @@ def read_with_model(target_slug: str, account: str, current_slug: str) -> str:
     )
     return llm.complete(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model=_model(),
+        model=READER_MODEL,
         temperature=0.2,
         max_tokens=operation_limits.tokens_for("paper_read"),
+        reasoning=llm.no_reasoning_payload(),
+        tries=1,
         operation="paper_read",
     )
 
@@ -303,6 +308,7 @@ def start_reading(slug: str, targets: list[str], *, thread_id: str | None = None
                           assistant_index=assistant_index, targets=rows,
                           delivery_mode=delivery_mode),
         work,
+        join_unfinished=True,
     )
 
 
@@ -325,7 +331,7 @@ def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
         try:
             # Per paper, not per pass (see the module docstring): the account is checked against
             # what the NEXT paper costs, and a pass a reader can partly afford is partly done.
-            with spend_ceiling.per_unit("paper_read", job.id, model=_model()):
+            with spend_ceiling.per_unit("paper_read", job.id, model=READER_MODEL):
                 text = reader(row["slug"], account, job.slug)
         except quotas.QuotaError as exc:
             # Out of budget, or the ledger is unreachable (fails closed by design). Stop rather

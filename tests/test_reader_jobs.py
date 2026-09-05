@@ -7,10 +7,12 @@ transcript attaches the briefs to THAT response. Budget refusals stop the pass w
 what was already briefed; a pass that briefs nothing chains nothing."""
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
 
 import pytest
-from app import chat_jobs, preview_jobs, quotas, reader_jobs, sessions, store
+from app import chat_jobs, config, preview_jobs, quotas, reader_jobs, sessions, spend_limits, store
 from fastapi.testclient import TestClient
 
 from tests.conftest import add_paper
@@ -259,7 +261,6 @@ def test_start_refuses_bad_requests_up_front(temp_project):
 def test_start_refuses_while_a_turn_is_generating(temp_project):
     slug = _project(temp_project)
     sessions.record_user(slug, "q", kind="reply")
-    import threading
     release = threading.Event()
 
     def slow(s, h):
@@ -273,6 +274,83 @@ def test_start_refuses_while_a_turn_is_generating(temp_project):
     finally:
         release.set()
         _chat_settled(chat.id)
+
+
+def test_cancelled_pass_keeps_its_dedup_slot_until_the_worker_finishes(temp_project):
+    """Terra review of #492 (P1): Stop changes status immediately, but Python cannot kill the
+    paid call. A remount/start in that interval must rejoin it instead of buying a second pass."""
+    slug = _project(temp_project)
+    reading = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def reader(target, account, current):
+        nonlocal calls
+        calls += 1
+        reading.set()
+        release.wait(5)
+        return "H3 brief"
+
+    job = reader_jobs.start_reading(
+        slug, ["h3"], reader_fn=reader, turn_runner=_runner(FOLLOW_UP),
+    )
+    assert reading.wait(5)
+    cancelled = reader_jobs.request_cancel(job.id)
+    assert cancelled["status"] == "cancelled" and cancelled["finished_at"] is None
+    assert reader_jobs.active_for(slug).id == job.id
+
+    joined = reader_jobs.start_reading(
+        slug, ["h3"], reader_fn=reader, turn_runner=_runner(FOLLOW_UP),
+    )
+    assert joined.id == job.id
+    assert calls == 1
+
+    release.set()
+    deadline = time.time() + 5
+    while time.time() < deadline and reader_jobs.snapshot(job.id)["finished_at"] is None:
+        time.sleep(0.02)
+    final = reader_jobs.snapshot(job.id)
+    assert final["status"] == "cancelled" and final["finished_at"] is not None
+    assert reader_jobs.active_for(slug) is None
+    assert calls == 1
+
+
+def test_reader_model_and_hold_are_fixed_independently_of_account_settings(
+    temp_project, monkeypatch,
+):
+    """The $0.08 hold is valid only for the pinned bounded model/call. A reader-selected Opus
+    setting must not turn one admitted paper into spend above the account's hard ceiling."""
+    slug = _project(temp_project)
+    calls: list[dict] = []
+    holds: list[tuple[str, str | None]] = []
+
+    def complete(messages, **kwargs):
+        calls.append(kwargs)
+        return "H3 brief"
+
+    @contextlib.contextmanager
+    def per_unit(operation, job_id, *, model=None):
+        holds.append((operation, model))
+        yield None
+
+    monkeypatch.setattr(reader_jobs.llm, "complete", complete)
+    monkeypatch.setattr(reader_jobs.spend_ceiling, "per_unit", per_unit)
+    monkeypatch.setattr(config, "load_settings", lambda: {
+        "model": "anthropic/claude-opus-4.6",
+        "openrouter_api_key": "test-key",
+    })
+
+    expected_model = "deepseek/deepseek-v4-flash-0731"
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3"], turn_runner=_runner(FOLLOW_UP),
+    ).id)
+    assert job.status == "done", job.error
+    assert spend_limits.max_cost_nanousd("paper_read") == 80_000_000
+    assert holds == [("paper_read", expected_model)]
+    assert len(calls) == 1
+    assert calls[0]["model"] == expected_model
+    assert calls[0]["tries"] == 1
+    assert calls[0]["reasoning"] == {"enabled": False}
 
 
 def test_briefing_text_frames_every_brief_and_links_the_paper():

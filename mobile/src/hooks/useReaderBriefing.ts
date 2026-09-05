@@ -147,7 +147,10 @@ export function useReaderBriefing({
       try {
         const active = (await getActiveReaderJob(pid, slug, threadId)).job;
         if (epochRef.current !== epoch || !aliveRef.current) return;
-        if (active && active.status === 'running') await watch(active);
+        // The server also returns a cooperatively-cancelled pass until its worker has really
+        // finalized. Reattach to it too: the in-flight paid read may still retain and hand off a
+        // brief, and offering a replacement pass in this window would duplicate the call.
+        if (active) await watch(active);
       } catch {
         // No reattach; the offer flow below still works.
       }
