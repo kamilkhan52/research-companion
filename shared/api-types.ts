@@ -1404,6 +1404,120 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/reader/candidates/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reader Candidates
+         * @description The project papers a response cited without their having been read here — what the
+         *     offer lists. Deterministic (the response's own `rc-paper:` links); no model is asked.
+         */
+        get: operations["reader_candidates_api_projects__pid__reader_candidates__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/reader/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Reader Job
+         * @description Start (or join) the reading pass: one assistant per chosen paper, then the analyst's
+         *     follow-up turn on the briefs. Spend and rate refusals surface as the usual 429/402.
+         */
+        post: operations["start_reader_job_api_projects__pid__reader_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/reader/jobs/active/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Active Reader Job */
+        get: operations["active_reader_job_api_projects__pid__reader_jobs_active__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/reader/jobs/latest/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest Reader Job
+         * @description Newest retained pass for re-entry, including one that finished while the reader was
+         *     away (its `analysis_job_id` is how the client finds the follow-up turn).
+         */
+        get: operations["latest_reader_job_api_projects__pid__reader_jobs_latest__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/reader/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reader Job Status */
+        get: operations["reader_job_status_api_projects__pid__reader_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/reader/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Reader Job */
+        post: operations["cancel_reader_job_api_projects__pid__reader_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/papers/{slug}/cover": {
         parameters: {
             query?: never;
@@ -2459,6 +2573,26 @@ export interface components {
             key: string;
             /** Value */
             value?: string | null;
+        };
+        /** ReaderStartReq */
+        ReaderStartReq: {
+            /** Slug */
+            slug: string;
+            /** Targets */
+            targets: string[];
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
+            /** Assistant Index */
+            assistant_index?: number | null;
+            /**
+             * Delivery Mode
+             * @default reading
+             * @enum {string}
+             */
+            delivery_mode: "reading" | "listening";
         };
         /** RemoveBatchReq */
         RemoveBatchReq: {
@@ -4727,6 +4861,208 @@ export interface operations {
                 "application/json": components["schemas"]["ModeReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reader_candidates_api_projects__pid__reader_candidates__slug__get: {
+        parameters: {
+            query?: {
+                thread_id?: string;
+                assistant_index?: number | null;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_reader_job_api_projects__pid__reader_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReaderStartReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    active_reader_job_api_projects__pid__reader_jobs_active__slug__get: {
+        parameters: {
+            query?: {
+                thread_id?: string;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    latest_reader_job_api_projects__pid__reader_jobs_latest__slug__get: {
+        parameters: {
+            query?: {
+                thread_id?: string;
+            };
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reader_job_status_api_projects__pid__reader_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_reader_job_api_projects__pid__reader_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
