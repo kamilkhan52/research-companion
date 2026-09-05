@@ -3126,6 +3126,20 @@ export function ComposeFirst({
           </Text>
         </Card>
 
+        {/* The first turn has no transcript yet, so its failure cannot use the discussion
+            footer's error card. Keep the setup (and its deliberate Retry/change-model paths)
+            visible, but explain why the streaming surface returned here. DR-142. */}
+        {stream.error ? (
+          <Card style={styles.openingErrorCard} testID="opening-summary-error">
+            <Text variant="heading" color={t.danger}>Summary didn’t start</Text>
+            <Text variant="body" color={t.danger}>{stream.error}</Text>
+            <Text variant="caption" color={t.muted}>
+              Try Start reading again, or choose a different model below.
+            </Text>
+            <Button title="Dismiss" variant="ghost" onPress={stream.clearError} />
+          </Card>
+        ) : null}
+
         {/* Reading Modes are first-turn prompt templates; Customize is the full-control peer. */}
         <View style={{ marginTop: space.lg }}>
           <Text variant="overline">Reading modes</Text>
@@ -3864,6 +3878,11 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   thoughtLine: { fontStyle: 'italic', paddingLeft: space.sm },
   errorCard: { borderColor: t.danger, margin: space.md },
+  openingErrorCard: {
+    borderColor: t.danger,
+    gap: space.sm,
+    marginTop: space.md,
+  },
   connectionNotice: {
     margin: space.md,
   },
