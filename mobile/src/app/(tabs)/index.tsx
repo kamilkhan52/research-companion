@@ -340,24 +340,29 @@ export default function LibraryScreen() {
           { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
         ]}
       />
-      <EdgeFade
-        edge="top"
-        size={36}
-        testID="library-title-edge-fade"
-        style={styles.titleFade}
-      />
     </View>
+  ) : null;
+  const titleFade = libraryTitle ? (
+    <EdgeFade
+      edge="top"
+      size={36}
+      testID="library-title-edge-fade"
+      style={styles.titleFade}
+    />
   ) : null;
 
   if (!hasUrl) {
     return (
       <Screen edges={['top']}>
         {header}
-        <Empty
-          heading="Connect to your server"
-          body="Set your Scholiast server URL in Settings to load your library."
-          action={<Button title="Open Settings" onPress={() => router.push('/settings')} />}
-        />
+        <View testID="library-body" style={styles.libraryBody}>
+          {titleFade}
+          <Empty
+            heading="Connect to your server"
+            body="Set your Scholiast server URL in Settings to load your library."
+            action={<Button title="Open Settings" onPress={() => router.push('/settings')} />}
+          />
+        </View>
       </Screen>
     );
   }
@@ -366,19 +371,24 @@ export default function LibraryScreen() {
     <Screen edges={['top']}>
       {header}
 
-      <View style={{ flex: 1 }}>
-      {/* The pill floats over the list — papers scroll behind/around it, hidden only under the
-          rounded card itself (R12.6). Rendered BEFORE the ScrollView so screen readers reach it
-          first (it's visually at the top); an explicit zIndex keeps it painted above the list. */}
-      <View
-        style={styles.pillOverlay}
-        onLayout={(e) => setPillHeight(e.nativeEvent.layout.height)}>
-        <ProjectPill
-          name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
-          subtitle={activeProject ? undefined : 'Tap to choose or create'}
-          onPress={() => setSwitcherOpen(true)}
-        />
-      </View>
+      <View testID="library-body" style={styles.libraryBody}>
+        {/* The title fade belongs to the scrolling plane, below the project control. Putting it
+            inside the title's higher stacking context washed out the project name and icons on a
+            real device (DR-137 follow-up), even though the pill declared its own zIndex. */}
+        {titleFade}
+        {/* The pill floats over the list — papers scroll behind/around it, hidden only under the
+            rounded card itself (R12.6). Rendered BEFORE the ScrollView so screen readers reach it
+            first (it's visually at the top); an explicit zIndex keeps it painted above the list. */}
+        <View
+          testID="library-project-pill-overlay"
+          style={styles.pillOverlay}
+          onLayout={(e) => setPillHeight(e.nativeEvent.layout.height)}>
+          <ProjectPill
+            name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
+            subtitle={activeProject ? undefined : 'Tap to choose or create'}
+            onPress={() => setSwitcherOpen(true)}
+          />
+        </View>
       <FlashList
         data={rowsReady ? visiblePapers : NO_PAPERS}
         renderItem={renderPaperRow}
@@ -990,10 +1000,10 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   return StyleSheet.create({
   titleHeader: {
     position: 'relative',
-    zIndex: 3,
     backgroundColor: t.bg,
   },
-  titleFade: { top: '100%' },
+  libraryBody: { flex: 1 },
+  titleFade: { top: 0, zIndex: 1 },
   // Transparent absolute holder so the pill floats over the scrolling list (R12.6). Rendered
   // before the list for screen-reader order, so an explicit zIndex keeps it painted on top.
   pillOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 2, backgroundColor: 'transparent' },
