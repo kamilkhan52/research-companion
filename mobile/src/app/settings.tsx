@@ -416,13 +416,13 @@ export default function SettingsScreen() {
                 />
                 <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
                   <Toggle
-                    label="On"
+                    label="Follow"
                     local
                     active={followNarrationInDiscussion}
                     onPress={() => setFollowNarrationInDiscussion(true)}
                   />
                   <Toggle
-                    label="Off"
+                    label="Stay put"
                     local
                     active={!followNarrationInDiscussion}
                     onPress={() => setFollowNarrationInDiscussion(false)}

@@ -1,4 +1,5 @@
 import { splitSentences } from '../../sentence-seek';
+import { parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
 
 export interface DiscussionSentenceAnchor {
   id: string;
@@ -118,4 +119,56 @@ export function alignNarrationToDiscussion(
  * to a retry branch whose words no longer match the audio. */
 export function isContentQualifiedAudioId(id: string): boolean {
   return /#c[0-9a-z]+$/.test(id);
+}
+
+/** Resolve a narration to an assistant turn only when its complete tenant/conversation address
+ * matches the Discussion on screen. Content is checked separately against the selected branch's
+ * canonical hash, after that entry is loaded. */
+export function discussionAssistantIndexForAudio(
+  id: string,
+  project: string,
+  slug: string,
+  threadId: string,
+): number | null {
+  if (!isContentQualifiedAudioId(id)) return null;
+  const identity = parseMessageAudioId(id);
+  if (!identity?.contentTag || identity.project !== project) return null;
+  const address = sessionAddressFromAudioSlug(identity.slug);
+  if (address.slug !== slug || address.threadId !== threadId) return null;
+  return identity.assistantIndex;
+}
+
+/** An explicit mini-player jump is resolved after the seek and wins over the passive hook's
+ * previous poll, but only for the same narration slot. */
+export function discussionNarrationIndex(
+  slotId: string,
+  passiveIndex: number,
+  jump: { slotId: string; activeIndex: number } | null,
+): number {
+  return jump?.slotId === slotId ? jump.activeIndex : passiveIndex;
+}
+
+export type DiscussionJumpAction = 'wait' | 'consume' | 'land';
+
+/** Decide the one-shot jump lifecycle without letting an old screen consume a request while
+ * navigation is still mounting its destination. */
+export function discussionJumpAction({
+  enabled,
+  focused,
+  jump,
+  cursorSlotId,
+  conversationMatched,
+  targetNonce,
+}: {
+  enabled: boolean;
+  focused: boolean;
+  jump: { nonce: number; slotId: string } | null;
+  cursorSlotId: string | null;
+  conversationMatched: boolean;
+  targetNonce: number | null;
+}): DiscussionJumpAction {
+  if (!jump) return 'wait';
+  if (!enabled) return 'consume';
+  if (!focused || jump.slotId !== cursorSlotId || !conversationMatched) return 'wait';
+  return targetNonce === jump.nonce ? 'land' : 'consume';
 }

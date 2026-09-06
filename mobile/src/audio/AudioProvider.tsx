@@ -85,13 +85,16 @@ interface AudioContextValue {
   playNextResponse: () => Promise<boolean>;
   /** One-shot explicit landing request from a mini-player sentence skip. */
   discussionJump: DiscussionJumpRequest | null;
-  publishDiscussionJump: (slotId: string) => void;
+  publishDiscussionJump: (slotId: string, activeIndex: number) => void;
   consumeDiscussionJump: (nonce: number) => void;
 }
 
 export interface DiscussionJumpRequest {
   nonce: number;
   slotId: string;
+  /** The semantic landing resolved after the seek. Discussion must not use its still-stale
+   * playback hook value when the mini-player and the thread are already on the same screen. */
+  activeIndex: number;
 }
 
 const POLL_MS = 1000;
@@ -261,9 +264,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     setPlaylistAutoplayState(enabled);
   }, []);
 
-  const publishDiscussionJump = useCallback((slotId: string) => {
+  const publishDiscussionJump = useCallback((slotId: string, activeIndex: number) => {
     discussionJumpNonce.current += 1;
-    setDiscussionJump({ nonce: discussionJumpNonce.current, slotId });
+    setDiscussionJump({ nonce: discussionJumpNonce.current, slotId, activeIndex });
   }, []);
   const consumeDiscussionJump = useCallback((nonce: number) => {
     setDiscussionJump((current) => current?.nonce === nonce ? null : current);

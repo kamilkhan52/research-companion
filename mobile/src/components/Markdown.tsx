@@ -224,6 +224,15 @@ export function discussionSentenceAnchors(text: string): DiscussionSentenceAncho
         splitAnnotatableSentences(block.text).forEach((sentence, sentenceIndex) => {
           out.push({ id: `${path}.s${sentenceIndex}`, text: annotationQuote(sentence) });
         });
+      } else if (block.kind === 'list') {
+        block.items.forEach((item, itemIndex) => {
+          splitAnnotatableSentences(item.text).forEach((sentence, sentenceIndex) => {
+            out.push({
+              id: `${path}.i${itemIndex}.s${sentenceIndex}`,
+              text: annotationQuote(sentence),
+            });
+          });
+        });
       } else if (block.kind === 'quote') {
         visit(block.blocks, `${path}.`);
       }
@@ -606,9 +615,20 @@ function Block({
               <Text variant="serifBody" color={t.mint} style={[scaledParagraphStyle, { width: markerWidth }]}>
                 {ordinals[idx]}
               </Text>
-              <Text variant="serifBody" style={[scaledParagraphStyle, { flex: 1 }]}>
-                <Inline text={item.text} onLinkPress={onLinkPress} />
-              </Text>
+              {narrationFollow ? (
+                <View style={{ flex: 1 }}>
+                  <AnnotatableParagraph
+                    text={item.text}
+                    path={`${path}.i${idx}`}
+                    onLinkPress={onLinkPress}
+                    narrationFollow={narrationFollow}
+                  />
+                </View>
+              ) : (
+                <Text variant="serifBody" style={[scaledParagraphStyle, { flex: 1 }]}>
+                  <Inline text={item.text} onLinkPress={onLinkPress} />
+                </Text>
+              )}
             </View>
           ))}
         </View>

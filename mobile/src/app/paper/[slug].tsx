@@ -61,13 +61,13 @@ import type {
 } from '@/api/types';
 import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import {
-  messageAudioId,
-  parseMessageAudioId,
-  sessionAddressFromAudioSlug,
-  useListeningHandoffRecovery,
-} from '@/audio/identity';
-import { alignNarrationToDiscussion } from '@/audio/discussionFollow';
+  alignNarrationToDiscussion,
+  discussionAssistantIndexForAudio,
+  discussionJumpAction,
+  discussionNarrationIndex,
+} from '@/audio/discussionFollow';
 import { useNarrationCursor, type NarrationCursor } from '@/audio/useNarrationCursor';
 import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
@@ -1815,32 +1815,61 @@ function DiscussionThread({
     ],
   );
 
-  const narrationTarget = useMemo(() => {
+  // Resolve identity once per track/transcript change, and align once per narration. The active
+  // sentence changes at playback cadence; rerunning the O(spoken × source) alignment on every
+  // boundary made the already-heavy Discussion tree pay for the same work over and over.
+  const narrationEntry = useMemo(() => {
     if (!followNarrationInDiscussion || !narrationCursor?.slotId) return null;
-    const identity = parseMessageAudioId(narrationCursor.slotId);
-    if (!identity?.contentTag) return null;
-    const address = sessionAddressFromAudioSlug(identity.slug);
-    if (identity.project !== pid || address.slug !== slug || address.threadId !== threadId) return null;
+    const assistantIndex = discussionAssistantIndexForAudio(
+      narrationCursor.slotId,
+      pid,
+      slug,
+      threadId,
+    );
+    if (assistantIndex == null) return null;
     const entry = transcript.find((candidate) =>
-      candidate.role === 'assistant' && candidate.assistant_index === identity.assistantIndex,
+      candidate.role === 'assistant' && candidate.assistant_index === assistantIndex,
     );
     if (!entry || entry.role !== 'assistant'
         || branchAudioId(pid, slug, entry, threadId) !== narrationCursor.slotId) return null;
-    const anchors = discussionSentenceAnchors(entry.canonical);
-    const aligned = alignNarrationToDiscussion(narrationCursor.narration, anchors);
-    const anchorId = aligned[narrationCursor.activeIndex] ?? null;
+    return entry;
+  }, [followNarrationInDiscussion, narrationCursor?.slotId, pid, slug, threadId, transcript]);
+  const narrationAlignment = useMemo(() => {
+    if (!narrationEntry || !narrationCursor?.narration) return null;
+    return alignNarrationToDiscussion(
+      narrationCursor.narration,
+      discussionSentenceAnchors(narrationEntry.canonical),
+    );
+  }, [narrationCursor?.narration, narrationEntry]);
+  const narrationTarget = useMemo(() => {
+    if (!narrationEntry || !narrationCursor?.slotId || !narrationAlignment) return null;
+    const jump = audio.discussionJump?.slotId === narrationCursor.slotId
+      ? audio.discussionJump
+      : null;
+    // A mini-player seek updates TrackPlayer before useProgress's next poll. Its explicit index
+    // is authoritative for this one landing; passive following returns to the hook afterward.
+    const activeIndex = discussionNarrationIndex(
+      narrationCursor.slotId,
+      narrationCursor.activeIndex,
+      jump,
+    );
+    const anchorId = narrationAlignment[activeIndex] ?? null;
     if (!anchorId) return null;
-    const rowIndex = messages.findIndex((message) => message.entry === entry);
+    const rowIndex = messages.findIndex((message) => message.entry === narrationEntry);
     if (rowIndex < 0) return null;
-    return { anchorId, rowIndex, slotId: narrationCursor.slotId };
+    return {
+      anchorId,
+      rowIndex,
+      slotId: narrationCursor.slotId,
+      explicitNonce: jump?.nonce ?? null,
+    };
   }, [
-    followNarrationInDiscussion,
+    audio.discussionJump,
     messages,
-    narrationCursor,
-    pid,
-    slug,
-    threadId,
-    transcript,
+    narrationAlignment,
+    narrationCursor?.activeIndex,
+    narrationCursor?.slotId,
+    narrationEntry,
   ]);
 
   // DR-115 — landmark stepping over the same inverted list. `messages.length` is what the
@@ -1903,18 +1932,26 @@ function DiscussionThread({
   }, [chatNav.goToIndex, chromeLayout.topClearance, isFocused, narrationTarget, reduceMotion]);
 
   useEffect(() => {
-    landNarrationTarget(false);
+    if (narrationTarget?.explicitNonce == null) landNarrationTarget(false);
     return () => narrationLandingCancel.current?.();
-  }, [landNarrationTarget]);
+  }, [landNarrationTarget, narrationTarget?.explicitNonce]);
 
   useEffect(() => {
     const jump = audio.discussionJump;
     if (!jump) return;
-    if (!followNarrationInDiscussion) {
+    const action = discussionJumpAction({
+      enabled: followNarrationInDiscussion,
+      focused: isFocused,
+      jump,
+      cursorSlotId: narrationCursor?.slotId ?? null,
+      conversationMatched: !!narrationEntry,
+      targetNonce: narrationTarget?.explicitNonce ?? null,
+    });
+    if (action === 'wait') return;
+    if (action === 'consume') {
       audio.consumeDiscussionJump(jump.nonce);
       return;
     }
-    if (!narrationTarget || jump.slotId !== narrationTarget.slotId || !isFocused) return;
     followPausedUntil.current = 0;
     landNarrationTarget(true);
     audio.consumeDiscussionJump(jump.nonce);
@@ -1923,6 +1960,8 @@ function DiscussionThread({
     followNarrationInDiscussion,
     isFocused,
     landNarrationTarget,
+    narrationCursor?.slotId,
+    narrationEntry,
     narrationTarget,
   ]);
   // FlatList requires the viewability pair's identity never to change across renders, and two

@@ -19,11 +19,12 @@ import TrackPlayer, {
 } from 'react-native-track-player';
 import { useKeyboardState } from 'react-native-keyboard-controller';
 import { checkpointPlayback } from '../../playback-persistence';
-import { seekSentence } from '../../sentence-seek';
+import { SENTENCE_SEEK_PREROLL_SECONDS, seekSentence } from '../../sentence-seek';
 
 import { useAudio } from '@/audio/AudioProvider';
 import { parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
 import { isContentQualifiedAudioId } from '@/audio/discussionFollow';
+import { narrationCursorSnapshot } from '@/audio/useNarrationCursor';
 import { SKIP_SECONDS } from '@/audio/setup';
 import { useListeningMode } from '@/store/listening';
 import { Marquee } from '@/ui/Marquee';
@@ -63,13 +64,27 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
 
     // Seeking a progressive narration can skip to a different queue track. Read identity only
     // AFTER the seek settles, and publish that same exact slot to Discussion and the route.
-    const soughtTrack = await TrackPlayer.getActiveTrack();
+    const [soughtTrack, queue, soughtProgress] = await Promise.all([
+      TrackPlayer.getActiveTrack(),
+      TrackPlayer.getQueue(),
+      TrackPlayer.getProgress(),
+    ]);
     const slotId = String(soughtTrack?.slotId ?? soughtTrack?.id ?? '');
     if (!isContentQualifiedAudioId(slotId)) return;
     const identity = parseMessageAudioId(slotId);
     if (!identity?.contentTag) return;
+    // Sentence seeks intentionally pre-roll by 0.75 s. Resolve just past that boundary so the
+    // explicit landing highlights the sentence the reader requested immediately, rather than
+    // the preceding sentence until the passive playback clock catches up.
+    const target = narrationCursorSnapshot(
+      soughtTrack,
+      queue,
+      soughtProgress,
+      SENTENCE_SEEK_PREROLL_SECONDS + 0.05,
+    );
+    if (target.activeIndex < 0) return;
     const address = sessionAddressFromAudioSlug(identity.slug);
-    audio.publishDiscussionJump(slotId);
+    audio.publishDiscussionJump(slotId, target.activeIndex);
     router.navigate({
       pathname: '/paper/[slug]',
       params: {
