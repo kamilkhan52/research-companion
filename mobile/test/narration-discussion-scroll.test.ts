@@ -46,6 +46,29 @@ test('a measured sentence corrects once without an approach or retry', () => {
   expect(schedule).not.toHaveBeenCalled();
 });
 
+test('a zero-sized native measurement approaches and retries instead of scrolling to zero', () => {
+  const approach = jest.fn();
+  const correct = jest.fn();
+  const scheduled: Array<() => void> = [];
+  let valid = false;
+  startNarrationLanding({
+    approach,
+    measure: (done) => {
+      done(valid ? 240 : 0, valid ? 30 : 0);
+      return true;
+    },
+    correct,
+    schedule: (callback) => scheduled.push(callback),
+  });
+
+  expect(approach).toHaveBeenCalledTimes(1);
+  expect(correct).not.toHaveBeenCalled();
+  expect(scheduled).toHaveLength(1);
+  valid = true;
+  scheduled.shift()?.();
+  expect(correct).toHaveBeenCalledWith(240, 30);
+});
+
 test('cancellation prevents a delayed correction from fighting the reader', () => {
   const correct = jest.fn();
   const scheduled: Array<() => void> = [];

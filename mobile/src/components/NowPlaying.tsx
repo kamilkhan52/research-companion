@@ -40,6 +40,66 @@ function fmt(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+const TRACK_SETTLE_ATTEMPTS = 5;
+const TRACK_SETTLE_MS = 80;
+
+function trackInstanceId(track: unknown): string {
+  const value = track as { id?: unknown } | undefined;
+  return value?.id == null ? '' : String(value.id);
+}
+
+/** A progressive sentence step may switch queue tracks before TrackPlayer's imperative reads
+ * expose the new track and its queue metadata. Poll for that bounded transition and resolve the
+ * new segment at its deterministic start; its old segment's duration/position are incompatible. */
+async function cursorAfterTrackChange(previousTrackId: string) {
+  for (let attempt = 0; attempt < TRACK_SETTLE_ATTEMPTS; attempt += 1) {
+    const [soughtTrack, queue] = await Promise.all([
+      TrackPlayer.getActiveTrack(),
+      TrackPlayer.getQueue(),
+    ]);
+    if (soughtTrack && trackInstanceId(soughtTrack) !== previousTrackId) {
+      let target = narrationCursorSnapshot(soughtTrack, queue, { position: 0, duration: 1 }, 0);
+      const progressiveTrack = soughtTrack as {
+        narration?: unknown;
+        sentenceText?: unknown;
+        segmentIndex?: unknown;
+      };
+      const narration = typeof progressiveTrack.narration === 'string'
+        ? progressiveTrack.narration
+        : '';
+      const segmentText = typeof progressiveTrack.sentenceText === 'string'
+        ? progressiveTrack.sentenceText.trim()
+        : '';
+      const segmentIndex = typeof progressiveTrack.segmentIndex === 'number'
+        ? progressiveTrack.segmentIndex
+        : -1;
+      if (narration && segmentText && segmentIndex >= 0) {
+        const priorLength = queue.reduce((total, queuedValue) => {
+          const queued = queuedValue as { segmentIndex?: unknown; sentenceText?: unknown };
+          return typeof queued.segmentIndex === 'number'
+            && queued.segmentIndex < segmentIndex
+            && typeof queued.sentenceText === 'string'
+            ? total + queued.sentenceText.length
+            : total;
+        }, 0);
+        const segmentStart = narration.indexOf(segmentText, Math.max(0, priorLength - 2));
+        if (segmentStart >= 0) {
+          const fraction = segmentStart / narration.length;
+          const exactIndex = target.sentences.findIndex(
+            (sentence) => fraction >= sentence.startFrac && fraction < sentence.endFrac,
+          );
+          if (exactIndex >= 0) target = { ...target, activeIndex: exactIndex };
+        }
+      }
+      if (target.activeIndex >= 0) return { soughtTrack, target };
+    }
+    if (attempt + 1 < TRACK_SETTLE_ATTEMPTS) {
+      await new Promise<void>((resolve) => setTimeout(resolve, TRACK_SETTLE_MS));
+    }
+  }
+  return null;
+}
+
 export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -59,29 +119,39 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const { position, duration } = useProgress(500);
 
   const seekAndFollow = async (direction: -1 | 1) => {
-    await seekSentence(TrackPlayer, direction, SKIP_SECONDS);
+    const previousTrackId = trackInstanceId(track);
+    const outcome = await seekSentence(TrackPlayer, direction, SKIP_SECONDS);
     if (!followNarrationInDiscussion) return;
 
     // Seeking a progressive narration can skip to a different queue track. Read identity only
     // AFTER the seek settles, and publish that same exact slot to Discussion and the route.
-    const [soughtTrack, queue, soughtProgress] = await Promise.all([
-      TrackPlayer.getActiveTrack(),
-      TrackPlayer.getQueue(),
-      TrackPlayer.getProgress(),
-    ]);
+    const settled = outcome === 'track' ? await cursorAfterTrackChange(previousTrackId) : null;
+    if (outcome === 'track' && !settled) return;
+    let soughtTrack: Awaited<ReturnType<typeof TrackPlayer.getActiveTrack>>;
+    let target: ReturnType<typeof narrationCursorSnapshot>;
+    if (settled) {
+      ({ soughtTrack, target } = settled);
+    } else {
+      const [activeTrack, queue, soughtProgress] = await Promise.all([
+        TrackPlayer.getActiveTrack(),
+        TrackPlayer.getQueue(),
+        TrackPlayer.getProgress(),
+      ]);
+      soughtTrack = activeTrack;
+      // Sentence seeks intentionally pre-roll by 0.75 s. Resolve just past that boundary so the
+      // explicit landing highlights the sentence the reader requested immediately, rather than
+      // the preceding sentence until the passive playback clock catches up.
+      target = narrationCursorSnapshot(
+        activeTrack,
+        queue,
+        soughtProgress,
+        SENTENCE_SEEK_PREROLL_SECONDS + 0.05,
+      );
+    }
     const slotId = String(soughtTrack?.slotId ?? soughtTrack?.id ?? '');
     if (!isContentQualifiedAudioId(slotId)) return;
     const identity = parseMessageAudioId(slotId);
     if (!identity?.contentTag) return;
-    // Sentence seeks intentionally pre-roll by 0.75 s. Resolve just past that boundary so the
-    // explicit landing highlights the sentence the reader requested immediately, rather than
-    // the preceding sentence until the passive playback clock catches up.
-    const target = narrationCursorSnapshot(
-      soughtTrack,
-      queue,
-      soughtProgress,
-      SENTENCE_SEEK_PREROLL_SECONDS + 0.05,
-    );
     if (target.activeIndex < 0) return;
     const address = sessionAddressFromAudioSlug(identity.slug);
     audio.publishDiscussionJump(slotId, target.activeIndex);

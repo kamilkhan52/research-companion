@@ -41,11 +41,12 @@ export function narrationCursorSnapshot(
   queueValues: unknown[],
   progress: NarrationProgressLike,
   leadSeconds = PASSIVE_NARRATION_LEAD_SECONDS,
+  preparedSentences?: SentenceBoundary[],
 ): NarrationCursor {
   const track = trackValue as NarrationTrackLike | undefined;
   const queue = queueValues as NarrationTrackLike[];
   const narration = typeof track?.narration === 'string' ? track.narration : '';
-  const sentences = splitSentences(narration);
+  const sentences = preparedSentences ?? splitSentences(narration);
   const slotId = track?.slotId != null
     ? String(track.slotId)
     : track?.id != null ? String(track.id) : null;
@@ -92,6 +93,9 @@ export function useNarrationCursor(narrationOverride?: string): NarrationCursor 
     ? String(track.slotId)
     : track?.id != null ? String(track.id) : null;
   const activeSegment = typeof track?.segmentIndex === 'number' ? track.segmentIndex : -1;
+  const narration = narrationOverride
+    ?? (typeof track?.narration === 'string' ? track.narration : '');
+  const sentences = useMemo(() => splitSentences(narration), [narration]);
   const [queue, setQueue] = useState<unknown[]>([]);
 
   useEffect(() => {
@@ -111,6 +115,6 @@ export function useNarrationCursor(narrationOverride?: string): NarrationCursor 
     const sourceTrack = narrationOverride == null
       ? track
       : { ...(track as object | undefined), narration: narrationOverride };
-    return narrationCursorSnapshot(sourceTrack, queue, { position, duration });
-  }, [duration, narrationOverride, position, queue, track]);
+    return narrationCursorSnapshot(sourceTrack, queue, { position, duration }, undefined, sentences);
+  }, [duration, narrationOverride, position, queue, sentences, track]);
 }

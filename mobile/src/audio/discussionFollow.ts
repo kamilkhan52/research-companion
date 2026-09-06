@@ -29,17 +29,44 @@ function dice(left: string[], right: string[]): number {
   return (2 * overlap) / (left.length + right.length);
 }
 
-function similarity(left: string, right: string): number {
-  const a = words(left);
-  const b = words(right);
-  const token = dice(a, b);
+interface SentenceFeatures {
+  words: string[];
+  pairs: string[];
+}
+
+function sentenceFeatures(value: string): SentenceFeatures {
+  const tokens = words(value);
+  return {
+    words: tokens,
+    pairs: tokens.slice(1).map((word, i) => `${tokens[i]}\u0000${word}`),
+  };
+}
+
+function similarity(left: SentenceFeatures, right: SentenceFeatures): number {
+  const token = dice(left.words, right.words);
   if (token === 1) return 1;
-  const aPairs = a.slice(1).map((word, i) => `${a[i]}\u0000${word}`);
-  const bPairs = b.slice(1).map((word, i) => `${b[i]}\u0000${word}`);
-  return token * 0.8 + dice(aPairs, bPairs) * 0.2;
+  return token * 0.8 + dice(left.pairs, right.pairs) * 0.2;
 }
 
 type Step = { pi: number; pj: number; ids: string[] | null };
+
+// Narration preserves source order. Restrict the dynamic program to a generous diagonal band so
+// one long response cannot turn a render into an O(sentences²) tokenization storm.
+const ALIGNMENT_BAND = 16;
+
+function insideAlignmentBand(i: number, j: number, spokenCount: number, anchorCount: number) {
+  if (!spokenCount || !anchorCount) return i === spokenCount && j === anchorCount;
+  const expectedAnchor = (i * anchorCount) / spokenCount;
+  return Math.abs(j - expectedAnchor) <= ALIGNMENT_BAND;
+}
+
+function alignmentBandBounds(i: number, spokenCount: number, anchorCount: number) {
+  const expectedAnchor = (i * anchorCount) / spokenCount;
+  return {
+    first: Math.max(0, Math.ceil(expectedAnchor - ALIGNMENT_BAND)),
+    last: Math.min(anchorCount, Math.floor(expectedAnchor + ALIGNMENT_BAND)),
+  };
+}
 
 /**
  * Deterministically align the spoken rewrite to immutable discussion anchors.
@@ -54,6 +81,12 @@ export function alignNarrationToDiscussion(
   anchors: DiscussionSentenceAnchor[],
 ): Array<string | null> {
   const spoken = splitSentences(narration).map((sentence) => sentence.text);
+  if (!spoken.length) return [];
+  if (!anchors.length) return Array(spoken.length).fill(null);
+  const spokenFeatures = spoken.map(sentenceFeatures);
+  const anchorFeatures = anchors.map((anchor) => sentenceFeatures(anchor.text));
+  const joinedFeatures = spoken.map((sentence, i) =>
+    sentenceFeatures(i + 1 < spoken.length ? `${sentence} ${spoken[i + 1]}` : sentence));
   const rows = spoken.length + 1;
   const cols = anchors.length + 1;
   const scores = Array.from({ length: rows }, () => Array(cols).fill(Number.NEGATIVE_INFINITY));
@@ -62,6 +95,7 @@ export function alignNarrationToDiscussion(
   );
   scores[0][0] = 0;
   const update = (i: number, j: number, score: number, step: Step) => {
+    if (!insideAlignmentBand(i, j, spoken.length, anchors.length)) return;
     if (score > scores[i][j]) {
       scores[i][j] = score;
       steps[i][j] = step;
@@ -69,13 +103,14 @@ export function alignNarrationToDiscussion(
   };
 
   for (let i = 0; i <= spoken.length; i += 1) {
-    for (let j = 0; j <= anchors.length; j += 1) {
+    const { first, last } = alignmentBandBounds(i, spoken.length, anchors.length);
+    for (let j = first; j <= last; j += 1) {
       const base = scores[i][j];
       if (!Number.isFinite(base)) continue;
       if (i < spoken.length) update(i + 1, j, base - 0.18, { pi: i, pj: j, ids: null });
       if (j < anchors.length) update(i, j + 1, base - 0.14, { pi: i, pj: j, ids: [] });
       if (i < spoken.length && j < anchors.length) {
-        const match = similarity(spoken[i], anchors[j].text);
+        const match = similarity(spokenFeatures[i], anchorFeatures[j]);
         if (match >= 0.5) {
           update(i + 1, j + 1, base + match - 0.34, {
             pi: i,
@@ -85,9 +120,9 @@ export function alignNarrationToDiscussion(
         }
       }
       if (i + 1 < spoken.length && j < anchors.length) {
-        const first = similarity(spoken[i], anchors[j].text);
-        const second = similarity(spoken[i + 1], anchors[j].text);
-        const joined = similarity(`${spoken[i]} ${spoken[i + 1]}`, anchors[j].text);
+        const first = similarity(spokenFeatures[i], anchorFeatures[j]);
+        const second = similarity(spokenFeatures[i + 1], anchorFeatures[j]);
+        const joined = similarity(joinedFeatures[i], anchorFeatures[j]);
         if (joined >= 0.58 && first >= 0.2 && second >= 0.2) {
           update(i + 2, j + 1, base + joined - 0.27, {
             pi: i,
@@ -148,7 +183,7 @@ export function discussionNarrationIndex(
   return jump?.slotId === slotId ? jump.activeIndex : passiveIndex;
 }
 
-export type DiscussionJumpAction = 'wait' | 'consume' | 'land';
+export type DiscussionJumpAction = 'wait' | 'consume' | 'land' | 'land-and-consume';
 
 /** Decide the one-shot jump lifecycle without letting an old screen consume a request while
  * navigation is still mounting its destination. */
@@ -159,6 +194,9 @@ export function discussionJumpAction({
   cursorSlotId,
   conversationMatched,
   targetNonce,
+  passiveIndex,
+  jumpIndex,
+  alreadyLanded,
 }: {
   enabled: boolean;
   focused: boolean;
@@ -166,9 +204,14 @@ export function discussionJumpAction({
   cursorSlotId: string | null;
   conversationMatched: boolean;
   targetNonce: number | null;
+  passiveIndex: number;
+  jumpIndex: number;
+  alreadyLanded: boolean;
 }): DiscussionJumpAction {
   if (!jump) return 'wait';
   if (!enabled) return 'consume';
   if (!focused || jump.slotId !== cursorSlotId || !conversationMatched) return 'wait';
-  return targetNonce === jump.nonce ? 'land' : 'consume';
+  if (targetNonce !== jump.nonce) return 'consume';
+  if (passiveIndex === jumpIndex) return alreadyLanded ? 'consume' : 'land-and-consume';
+  return alreadyLanded ? 'wait' : 'land';
 }

@@ -1505,6 +1505,8 @@ type DiscussionNarrationCursor = Pick<
   'slotId' | 'narration' | 'sentences' | 'activeIndex'
 >;
 
+const DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS = 1_500;
+
 /** Own the fast playback clock below Discussion's heavy tree and publish only true boundaries. */
 function NarrationCursorBridge({
   onBoundary,
@@ -1573,6 +1575,14 @@ function DiscussionThread({
   const audio = useAudio();
   const { followNarrationInDiscussion } = useListeningMode();
   const [narrationCursor, setNarrationCursor] = useState<DiscussionNarrationCursor | null>(null);
+  const explicitLandedNonce = useRef<number | null>(null);
+  const explicitConsumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!followNarrationInDiscussion) setNarrationCursor(null);
+  }, [followNarrationInDiscussion]);
+  useEffect(() => () => {
+    if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+  }, []);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -1887,7 +1897,7 @@ function DiscussionThread({
   const listOffset = useRef(0);
   const narrationMeasures = useRef(new Map<
     string,
-    (done: (screenY: number, height: number) => void) => void
+    (done: (screenY: number, height: number) => void) => boolean
   >());
   const narrationLandingCancel = useRef<(() => void) | null>(null);
   const followPausedUntil = useRef(0);
@@ -1917,8 +1927,7 @@ function DiscussionThread({
       measure: (done) => {
         const measure = narrationMeasures.current.get(narrationTarget.anchorId);
         if (!measure) return false;
-        measure(done);
-        return true;
+        return measure(done);
       },
       correct: (screenY, height) => {
         // Under the inverted list, decreasing native offset moves content toward the visual top.
@@ -1939,6 +1948,11 @@ function DiscussionThread({
   useEffect(() => {
     const jump = audio.discussionJump;
     if (!jump) return;
+    if (explicitLandedNonce.current != null && explicitLandedNonce.current !== jump.nonce) {
+      if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+      explicitConsumeTimer.current = null;
+      explicitLandedNonce.current = null;
+    }
     const action = discussionJumpAction({
       enabled: followNarrationInDiscussion,
       focused: isFocused,
@@ -1946,21 +1960,39 @@ function DiscussionThread({
       cursorSlotId: narrationCursor?.slotId ?? null,
       conversationMatched: !!narrationEntry,
       targetNonce: narrationTarget?.explicitNonce ?? null,
+      passiveIndex: narrationCursor?.activeIndex ?? -1,
+      jumpIndex: jump.activeIndex,
+      alreadyLanded: explicitLandedNonce.current === jump.nonce,
     });
     if (action === 'wait') return;
     if (action === 'consume') {
+      if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+      explicitConsumeTimer.current = null;
+      explicitLandedNonce.current = null;
       audio.consumeDiscussionJump(jump.nonce);
       return;
     }
     followPausedUntil.current = 0;
     landNarrationTarget(true);
-    audio.consumeDiscussionJump(jump.nonce);
+    explicitLandedNonce.current = jump.nonce;
+    if (action === 'land-and-consume') {
+      audio.consumeDiscussionJump(jump.nonce);
+      explicitLandedNonce.current = null;
+      return;
+    }
+    if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+    explicitConsumeTimer.current = setTimeout(() => {
+      audio.consumeDiscussionJump(jump.nonce);
+      if (explicitLandedNonce.current === jump.nonce) explicitLandedNonce.current = null;
+      explicitConsumeTimer.current = null;
+    }, DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS);
   }, [
     audio,
     followNarrationInDiscussion,
     isFocused,
     landNarrationTarget,
     narrationCursor?.slotId,
+    narrationCursor?.activeIndex,
     narrationEntry,
     narrationTarget,
   ]);
@@ -2666,7 +2698,9 @@ function DiscussionThread({
 
   return (
     <>
-    <NarrationCursorBridge onBoundary={setNarrationCursor} />
+    {followNarrationInDiscussion ? (
+      <NarrationCursorBridge onBoundary={setNarrationCursor} />
+    ) : null}
     {/* DR-089 — while the reader is away from the live edge during a streaming turn, the
         streamed reveal (SmoothMarkdown) holds still so the transcript cannot drag under
         them. Streaming gates the flag so an idle reader browsing history pays nothing.

@@ -39,6 +39,17 @@ test('weak unrelated prose remains unmapped instead of highlighting confidently'
   )).toEqual([null, null]);
 });
 
+test('a long same-order response stays aligned across the bounded search band', () => {
+  const longAnchors = Array.from({ length: 80 }, (_, index) => ({
+    id: `b${index}.s0`,
+    text: `Claim number ${index} reports result ${index}.`,
+  }));
+  expect(alignNarrationToDiscussion(
+    longAnchors.map((anchor) => anchor.text).join(' '),
+    longAnchors,
+  )).toEqual(longAnchors.map((anchor) => anchor.id));
+});
+
 test('only content-qualified narration ids are eligible for Discussion following', () => {
   expect(isContentQualifiedAudioId('project:paper:2#cabc123')).toBe(true);
   expect(isContentQualifiedAudioId('project:paper:2')).toBe(false);
@@ -77,10 +88,18 @@ test('an explicit request waits for its focused conversation, then lands exactly
     cursorSlotId: jump.slotId,
     conversationMatched: true,
     targetNonce: 7,
+    passiveIndex: 3,
+    jumpIndex: 4,
+    alreadyLanded: false,
   };
   expect(discussionJumpAction({ ...base, focused: false })).toBe('wait');
   expect(discussionJumpAction({ ...base, cursorSlotId: 'project:other:0#ctag' })).toBe('wait');
   expect(discussionJumpAction(base)).toBe('land');
+  // Keep the request authoritative while the 500 ms passive poll still reports the old
+  // sentence, then retire it only after that cursor catches the requested boundary.
+  expect(discussionJumpAction({ ...base, alreadyLanded: true })).toBe('wait');
+  expect(discussionJumpAction({ ...base, passiveIndex: 4, alreadyLanded: true })).toBe('consume');
+  expect(discussionJumpAction({ ...base, passiveIndex: 4 })).toBe('land-and-consume');
   // A matching conversation with no safe alignment retires the request instead of leaving a
   // stale force-jump that might fire on a later passive boundary.
   expect(discussionJumpAction({ ...base, targetNonce: null })).toBe('consume');

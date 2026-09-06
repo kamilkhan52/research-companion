@@ -3,6 +3,7 @@ import { fireEventAsync, renderAsync, screen } from '@testing-library/react-nati
 import {
   Markdown,
   discussionSentenceAnchors,
+  narrationLineForSentence,
   splitAnnotatableSentences,
 } from '@/components/Markdown';
 import { themes } from '@/theme/tokens';
@@ -248,6 +249,19 @@ describe('sentence annotation render path', () => {
 });
 
 describe('narration follow render path', () => {
+  test('targets the host-text line containing the active sentence', () => {
+    const lines = [
+      { text: 'First claim. ', y: 0, height: 26 },
+      { text: 'Second claim wraps', y: 26, height: 26 },
+      { text: 'onto this line.', y: 52, height: 26 },
+    ];
+    expect(narrationLineForSentence(
+      lines,
+      ['First claim.', 'Second claim wraps onto this line.'],
+      1,
+    )).toEqual(lines[1]);
+  });
+
   test('derives stable anchors across prose, quotes, and list items', () => {
     expect(discussionSentenceAnchors(
       'First claim.\n\n> Quoted claim.\n\n- Listed claim. Another listed sentence.',
@@ -257,6 +271,17 @@ describe('narration follow render path', () => {
       { id: 'b2.i0.s0', text: 'Listed claim.' },
       { id: 'b2.i0.s1', text: 'Another listed sentence.' },
     ]);
+  });
+
+  test('does not expand sentence-comment behavior into quote blocks', async () => {
+    await renderAsync(
+      <Markdown
+        text="> Quoted claim."
+        sentenceAnnotations={{ active: true, onSentencePress: jest.fn() }}
+      />,
+    );
+    expect(screen.queryByTestId('md-sentence-0')).toBeNull();
+    expect(screen.getByText('Quoted claim.')).toBeTruthy();
   });
 
   test('highlights and registers only the active passive sentence', async () => {

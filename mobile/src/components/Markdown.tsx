@@ -5,7 +5,14 @@
 // fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
+import {
+  Linking,
+  Platform,
+  StyleSheet,
+  Text as RNText,
+  View,
+  type TextLayoutEvent,
+} from 'react-native';
 // RNGH's ScrollView, not core RN's: the discussion renders messages inside gifted-chat's
 // inverted list under a gesture-handler hierarchy, where a core horizontal ScrollView loses
 // the Android gesture negotiation and simply doesn't pan.
@@ -54,7 +61,7 @@ export interface NarrationSentenceFollow {
   activeAnchorId: string;
   registerAnchor: (
     anchorId: string,
-    measure: (done: (screenY: number, height: number) => void) => void,
+    measure: (done: (screenY: number, height: number) => void) => boolean,
   ) => () => void;
 }
 
@@ -566,7 +573,7 @@ function Block({
       return (
         <View style={styles.quote}>
           {block.blocks.map((child, index) => (
-            child.kind === 'paragraph' && (sentenceAnnotations?.active || narrationFollow) ? (
+            child.kind === 'paragraph' && narrationFollow ? (
               <AnnotatableParagraph
                 key={index}
                 text={child.text}
@@ -654,20 +661,45 @@ function AnnotatableParagraph({
 }) {
   const t = useTheme();
   const sentences = useMemo(() => splitAnnotatableSentences(text), [text]);
-  const scaledStyle = useScaledSerifStyle(italic ? 'serifItalic' : 'serifBody');
+  const variant = italic ? 'serifItalic' : 'serifBody';
+  const baseStyle = useThemedStyles(makeTextStyles)[variant];
+  const scaledStyle = useScaledSerifStyle(variant);
   const activeIndex = sentences.findIndex(
     (_, index) => `${path}.s${index}` === narrationFollow?.activeAnchorId,
   );
-  const activeRef = useRef<RNText>(null);
+  const paragraphRef = useRef<RNText>(null);
+  const lineRects = useRef<Array<{ text: string; y: number; height: number }>>([]);
   useEffect(() => {
     if (!narrationFollow || activeIndex < 0) return undefined;
     const anchorId = `${path}.s${activeIndex}`;
     return narrationFollow.registerAnchor(anchorId, (done) => {
-      activeRef.current?.measureInWindow((_x, y, _width, height) => done(y, height));
+      const paragraph = paragraphRef.current;
+      const line = narrationLineForSentence(lineRects.current, sentences, activeIndex);
+      if (!paragraph || !line) return false;
+      paragraph.measureInWindow((_x, y, width, height) => {
+        // Fabric exposes nested Text as virtual text with a zero rectangle. This ref is the
+        // top-level host Text; still reject an invalid native measurement rather than turning
+        // (0, 0, 0, 0) into a confident scroll correction.
+        if (width <= 0 || height <= 0 || line.height <= 0) {
+          done(Number.NaN, 0);
+          return;
+        }
+        done(y + line.y, line.height);
+      });
+      return true;
     });
-  }, [activeIndex, narrationFollow, path]);
+  }, [activeIndex, narrationFollow, path, sentences]);
   return (
-    <Text variant={italic ? 'serifItalic' : 'serifBody'} style={scaledStyle}>
+    <RNText
+      ref={paragraphRef}
+      style={[baseStyle, scaledStyle]}
+      onTextLayout={narrationFollow ? (event: TextLayoutEvent) => {
+        lineRects.current = event.nativeEvent.lines.map((line) => ({
+          text: line.text,
+          y: line.y,
+          height: line.height,
+        }));
+      } : undefined}>
       {sentences.map((sentence, index) => {
         // Queue/display the sentence the reader actually sees, not its Markdown control
         // syntax (`[label](url)`, emphasis markers). Equations retain explicit TeX delimiters
@@ -678,7 +710,6 @@ function AnnotatableParagraph({
         return (
           <Fragment key={`${index}:${sentence}`}>
             <RNText
-              ref={active ? activeRef : undefined}
               testID={`md-sentence-${index}`}
               accessibilityRole={annotations?.active ? 'button' : undefined}
               accessibilityLabel={annotations?.active ? `Comment on: ${quote}` : undefined}
@@ -717,8 +748,28 @@ function AnnotatableParagraph({
           </Fragment>
         );
       })}
-    </Text>
+    </RNText>
   );
+}
+
+/** Locate the first rendered line containing the active sentence's first visible character.
+ * React Native reports line rectangles relative to the top-level Text host. */
+export function narrationLineForSentence(
+  lines: Array<{ text: string; y: number; height: number }>,
+  sentences: string[],
+  activeIndex: number,
+) {
+  if (activeIndex < 0 || activeIndex >= sentences.length || !lines.length) return null;
+  const targetOffset = sentences
+    .slice(0, activeIndex)
+    .reduce((offset, sentence) => offset + annotationQuote(sentence).length + 1, 0);
+  let offset = 0;
+  for (const line of lines) {
+    const nextOffset = offset + line.text.length;
+    if (targetOffset < nextOffset) return line;
+    offset = nextOffset;
+  }
+  return lines[lines.length - 1];
 }
 
 /** The marker for item `idx`. Ordered items keep their SOURCE number — a blank-line-separated

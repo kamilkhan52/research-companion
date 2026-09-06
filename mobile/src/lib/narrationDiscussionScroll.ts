@@ -31,14 +31,24 @@ export function startNarrationLanding({
   const run = () => {
     if (cancelled || attempts >= NARRATION_SCROLL_MAX_ATTEMPTS) return;
     attempts += 1;
+    let callbackRan = false;
+    const retry = () => {
+      if (cancelled) return;
+      if (attempts === 1) approach();
+      if (attempts < NARRATION_SCROLL_MAX_ATTEMPTS) {
+        schedule(run, NARRATION_SCROLL_RETRY_MS);
+      }
+    };
     const found = measure((screenY, height) => {
-      if (!cancelled) correct(screenY, height);
+      callbackRan = true;
+      if (cancelled) return;
+      if (Number.isFinite(screenY) && Number.isFinite(height) && height > 0) {
+        correct(screenY, height);
+      } else {
+        retry();
+      }
     });
-    if (found) return;
-    if (attempts === 1) approach();
-    if (attempts < NARRATION_SCROLL_MAX_ATTEMPTS) {
-      schedule(run, NARRATION_SCROLL_RETRY_MS);
-    }
+    if (!found && !callbackRan) retry();
   };
   run();
   return () => { cancelled = true; };

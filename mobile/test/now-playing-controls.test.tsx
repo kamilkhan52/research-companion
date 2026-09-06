@@ -44,6 +44,7 @@ const TITLE = 'HBF Sucks! A Full-Stack Characterization of High-Bandwidth Flash'
 
 beforeEach(() => {
   seekSentence.mockClear();
+  seekSentence.mockResolvedValue('sentence');
   mockPublishDiscussionJump.mockClear();
   router.navigate.mockClear();
   mockFollowNarration = false;
@@ -114,6 +115,35 @@ test('a sentence jump publishes the post-seek semantic target and opens its exac
   expect(router.navigate).toHaveBeenCalledWith({
     pathname: '/paper/[slug]',
     params: { slug: 'paper-a', project: 'project-a', thread: 'abcdef123456' },
+  });
+});
+
+test('a progressive track jump uses the new segment start even while progress is still zero', async () => {
+  mockFollowNarration = true;
+  seekSentence.mockResolvedValueOnce('track');
+  const slotId = 'project-a:paper-a:2#ctag';
+  const narration = 'First sentence. Second sentence. Third sentence.';
+  jest.mocked(useActiveTrack).mockReturnValue({ id: 'segment-0', title: TITLE } as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue({
+    id: 'segment-1',
+    slotId,
+    narration,
+    segmentIndex: 1,
+    sentenceText: 'Third sentence.',
+  } as never);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValue([
+    { id: 'segment-0', slotId, segmentIndex: 0, sentenceText: 'First sentence. Second sentence.' },
+    { id: 'segment-1', slotId, segmentIndex: 1, sentenceText: 'Third sentence.' },
+  ] as never);
+  // This is the stale/empty progress value that previously made the jump disappear.
+  jest.mocked(TrackPlayer.getProgress).mockResolvedValue({ position: 0, duration: 0, buffered: 0 });
+  await renderAsync(<NowPlaying inset={false} />);
+
+  await fireEventAsync.press(screen.getByLabelText('Next sentence'));
+  expect(mockPublishDiscussionJump).toHaveBeenCalledWith(slotId, 2);
+  expect(router.navigate).toHaveBeenCalledWith({
+    pathname: '/paper/[slug]',
+    params: { slug: 'paper-a', project: 'project-a', thread: 'main' },
   });
 });
 
