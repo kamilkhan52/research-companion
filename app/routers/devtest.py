@@ -233,8 +233,17 @@ def _feedback_path() -> Path:
     return _dir() / "feedback.jsonl"
 
 
-def _read_feedback() -> list[dict]:
-    p = _feedback_path()
+def _visibility_path() -> Path:
+    """Append-only operational state, deliberately separate from the triage inbox.
+
+    Hide/unhide is a queue view preference, not feedback for an agent to process. Keeping it in
+    its own log means it cannot inflate `/status`, appear in a card's conversation, or move the
+    triage cursor while still preserving every transition instead of rewriting Kamil's input.
+    """
+    return _dir() / "item-visibility.jsonl"
+
+
+def _read_jsonl(p: Path) -> list[dict]:
     if not p.exists():
         return []
     out = []
@@ -242,20 +251,25 @@ def _read_feedback() -> list[dict]:
         line = line.strip()
         if line:
             try:
-                out.append(json.loads(line))
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    out.append(entry)
             except json.JSONDecodeError:
                 continue  # a torn write loses one entry, never the file
     return out
 
 
-def _append_feedback(entry: dict) -> dict:
+def _read_feedback() -> list[dict]:
+    return _read_jsonl(_feedback_path())
+
+
+def _append_jsonl(p: Path, entry: dict) -> dict:
     from datetime import UTC, datetime
 
     # UTC with microseconds: a naive local timestamp made two same-second entries share a ts
     # (the strict-> cursor then skipped the second) and let a DST step-back hide an hour of
     # feedback behind an already-advanced cursor.
     entry = {"ts": datetime.now(UTC).isoformat(), **entry}
-    p = _feedback_path()
     # A torn append ends mid-line WITHOUT a newline; blindly appending welds the next entry
     # onto the fragment and loses both. Check the last byte first (append handles are not
     # readable) and heal with a leading newline.
@@ -271,6 +285,29 @@ def _append_feedback(entry: dict) -> dict:
         # they split one entry into unreadable fragments — a 200 that silently lost the input.
         f.write((json.dumps(entry, ensure_ascii=True) + "\n").encode("utf-8"))
     return entry
+
+
+def _append_feedback(entry: dict) -> dict:
+    return _append_jsonl(_feedback_path(), entry)
+
+
+def _visibility_by_item(aliases: dict[str, str]) -> dict[str, bool]:
+    """Canonical item id → latest explicit hidden state.
+
+    File order is the event order: hide appends true, unhide appends false. Provisional ids are
+    folded through the same alias map as feedback and dispatch state, so a phone-raised item does
+    not pop back into the queue merely because triage assigned its permanent DR id.
+    """
+    out: dict[str, bool] = {}
+    for entry in _read_jsonl(_visibility_path()):
+        if entry.get("kind") != "visibility":
+            continue
+        item_id = entry.get("item_id")
+        hidden = entry.get("hidden")
+        if not isinstance(item_id, str) or not item_id or not isinstance(hidden, bool):
+            continue
+        out[aliases.get(item_id, item_id)] = hidden
+    return out
 
 
 #: How many dispatch records the activity scan below reads. Their filenames embed the spawn
@@ -435,6 +472,7 @@ def list_items():
     dispatched = _dispatch_activity(aliases)
     for target, when in dispatched.items():
         note(target, when, "dispatch")
+    visibility = _visibility_by_item(aliases)
     # DR-134 — Kamil: "I made comments on Passed items expecting they'd be seen." They were not.
     #
     # The cause, corrected in review: NOT that the default filter is "Not reviewed" — the
@@ -448,6 +486,10 @@ def list_items():
     running = aliases.get(running or "", running)
     worked = set(dispatched)
     for item in items:
+        # DR-132: queue visibility is server-shared operational state, independent of the
+        # ledger lifecycle and of this phone's local verdict. Absence means visible so an old
+        # server/log and a newly-created row both fail open into the recoverable full list.
+        item["hidden"] = visibility.get(item["id"], False)
         item["feedback_count"] = counts.get(item["id"], 0)
         # DR-080: an agent reply is the signal the tester can decide pass/close from — the
         # card surfaces its presence without having to open the history first.
@@ -563,9 +605,35 @@ def create_item(req: NewItemReq):
     # a toast claiming "with screenshot" from request intent hides a dropped image.
     return {"item": {"id": entry["id"], "title": entry["title"],
                      "state": "new — untriaged", "raised": entry["ts"][:10],
-                     "how_to_test": entry.get("description", ""), "feedback_count": 0},
+                     "how_to_test": entry.get("description", ""), "feedback_count": 0,
+                     "hidden": False},
             "screenshot": shot_path,
             **({"screenshot_error": shot_error} if shot_error else {})}
+
+
+class VisibilityReq(BaseModel):
+    item_id: str
+    hidden: bool
+
+
+@router.post("/api/devtest/visibility")
+def set_visibility(req: VisibilityReq):
+    """Park or restore one item without rewriting the ledger or the feedback inbox.
+
+    The event log is shared by every device pointed at this dev backend. Unhide appends the
+    inverse event rather than deleting the hide, preserving the same no-rewrite guarantee as the
+    rest of Kamil's device input while keeping this operational state out of agent triage.
+    """
+    _require_dev()
+    item_id = req.item_id.strip()
+    if not item_id:
+        raise HTTPException(status_code=400, detail="An item id is required.")
+    entry = _append_jsonl(_visibility_path(), {
+        "kind": "visibility",
+        "item_id": item_id[:40],
+        "hidden": req.hidden,
+    })
+    return {"entry": entry}
 
 
 class FeedbackReq(BaseModel):
