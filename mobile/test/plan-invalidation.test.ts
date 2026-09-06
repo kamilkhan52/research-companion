@@ -135,6 +135,13 @@ jest.mock('@/api/client', () => ({
   authenticatedMediaSource: jest.fn(() => ({ uri: 'x' })),
 }));
 
+// This suite exercises endpoint job-notification wiring, not Expo's multipart encoder. Give
+// Node's stricter native FormData a Blob-compatible stand-in; paper-upload.test.ts separately
+// pins the production Expo File/bytes contract.
+jest.mock('expo-file-system', () => ({
+  File: jest.fn(() => new Blob(['pdf'], { type: 'application/pdf' })),
+}));
+
 /* eslint-disable @typescript-eslint/no-var-requires */
 const client = require('@/api/client');
 // The global test setup replaces endpoints with loud fakes; the wiring under test IS the real
