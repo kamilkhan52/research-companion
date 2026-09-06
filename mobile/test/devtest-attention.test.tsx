@@ -72,6 +72,10 @@ test('a parked row appears only in Hidden, regardless of its other queue propert
   expect(passes(item({ hidden: false }), 'hidden', undefined)).toBe(false);
 });
 
+test('an older server response with no hidden field remains visible', () => {
+  expect(passes(item({ hidden: undefined }), 'all', undefined)).toBe(true);
+});
+
 test('a card says when a session is on it right now, and stays quiet otherwise', () => {
   expect(cardMeta(item({ agent_state: 'working' }), undefined)).toContain('Claude is on it');
   // `worked` is already implied by the reply count; only the LIVE state earns a word.

@@ -43,6 +43,18 @@ async function openBubble() {
 beforeEach(() => jest.clearAllMocks());
 afterEach(async () => AsyncStorage.clear());
 
+test('the default queue says what it omitted and offers a direct route to Hidden', async () => {
+  const screen = await openBubble();
+
+  expect(screen.getByText('1 of 2 shown · 1 hidden')).toBeTruthy();
+  expect(screen.getByLabelText('Options — filter, sort and dispatch. 1 item is parked in Hidden.'))
+    .toBeTruthy();
+
+  fireEvent.press(screen.getByText('Show hidden 1'));
+  await waitFor(() => expect(screen.getByText('Parked item')).toBeTruthy());
+  expect(screen.queryByText('Visible item')).toBeNull();
+});
+
 test('Hide for now appends shared state and removes the card from the visible queue', async () => {
   const screen = await openBubble();
   expect(screen.queryByText('Parked item')).toBeNull();

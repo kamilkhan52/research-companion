@@ -495,9 +495,14 @@ export function narrowingReasons(query: string, filter: ReviewFilter): string[] 
  *  answers "is anything set in there", which sort certainly is. Leaving sort out of both would
  *  make a restored "Recently reviewed" the one persisted choice with nothing on screen — the
  *  state DR-118's row warned about in advance, now that the chips are behind a menu. */
-export function optionsNote(narrowedBy: string[], sort: SortMode): string {
+export function optionsNote(
+  narrowedBy: string[], sort: SortMode, hiddenCount = 0,
+): string {
   const parts: string[] = [];
   if (narrowedBy.length) parts.push('A filter or search is narrowing the list.');
+  if (hiddenCount > 0) {
+    parts.push(`${hiddenCount} ${hiddenCount === 1 ? 'item is' : 'items are'} parked in Hidden.`);
+  }
   if (sort !== 'default') {
     parts.push(`Sorted by ${SORT_MODES.find((s) => s.key === sort)?.label ?? sort}.`);
   }
@@ -637,14 +642,18 @@ export function DevTestBubble() {
   // DR-116: what is currently hiding rows, named rather than merely counted. Empty ⇒ the list
   // is complete and no caption/reset is warranted.
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
-  const narrowed = narrowedBy.length > 0;
+  // A parked row shortens the default list too. Keep that fact visible even though the persisted
+  // internal key remains `all` for backwards compatibility; otherwise DR-116 returns with a
+  // default-looking sheet whose section totals silently omit rows.
+  const hiddenDefaultNotice = hiddenCount > 0 && filter === 'all' && !query.trim();
+  const narrowed = narrowedBy.length > 0 || hiddenDefaultNotice;
   // DR-123: what the ⋮ has to announce, which is NOT the same set as what narrows the list.
   // Sort hides nothing, so it is deliberately absent from `narrowingReasons` and from the count
   // caption — but it is persisted, and with the chips behind a menu it became the one toolbar
   // choice with no trace on screen at all. DR-118's own row predicted this exactly: "nothing on
   // screen would have explained the order" (Opus review, PR #479).
   const optionsSummary = useMemo(
-    () => optionsNote(narrowedBy, sort), [narrowedBy, sort],
+    () => optionsNote(narrowedBy, sort, hiddenCount), [hiddenCount, narrowedBy, sort],
   );
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
 
@@ -681,6 +690,7 @@ export function DevTestBubble() {
     setFilter('all');
     setQuery('');
   };
+  const showHidden = () => setFilter('hidden');
   // "Everything else" is force-open while narrowed, so LEAVING that state must not re-collapse it:
   // the closed rows a filter had put on screen would vanish a frame later, which is a miniature of
   // the very complaint DR-116 is about. Bound to the narrowed state rather than to the "Show all"
@@ -962,15 +972,21 @@ export function DevTestBubble() {
           {narrowed ? (
             <View style={styles.matchRow} testID="devtest-match-row">
               <Text variant="caption" color={t.muted} style={styles.matchCount}>
-                {filteredItems.length} of {filter === 'hidden' ? hiddenCount : visibleCount} shown · narrowed by {narrowedBy.join(' and ')}
+                {hiddenDefaultNotice
+                  ? `${visibleCount} of ${items.length} shown · ${hiddenCount} hidden`
+                  : `${filteredItems.length} of ${filter === 'hidden' ? hiddenCount : visibleCount} shown · narrowed by ${narrowedBy.join(' and ')}${filter !== 'hidden' && hiddenCount ? ` · ${hiddenCount} hidden` : ''}`}
               </Text>
               <SmallButton
-                title={`Show visible ${visibleCount}`}
+                title={hiddenDefaultNotice
+                  ? `Show hidden ${hiddenCount}`
+                  : `Show visible ${visibleCount}`}
                 icon="rotate-ccw"
                 // Says what it DOES, not what it is — this is the escape hatch the whole row
                 // exists for, and "Show all 117" alone does not say the filter goes with it.
-                accessibilityLabel={`Show ${visibleCount} visible items — clears the filter and search`}
-                onPress={showEverything}
+                accessibilityLabel={hiddenDefaultNotice
+                  ? `Show ${hiddenCount} hidden ${hiddenCount === 1 ? 'item' : 'items'}`
+                  : `Show ${visibleCount} visible items — clears the filter and search`}
+                onPress={hiddenDefaultNotice ? showHidden : showEverything}
               />
             </View>
           ) : null}
