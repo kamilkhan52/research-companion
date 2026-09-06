@@ -36,7 +36,24 @@ test('enrichment is a named stage, not text that appears and vanishes', () => {
     true,
   );
   expect(p.steps.map((s) => s.state)).toEqual(['done', 'active']);
+  expect(p.steps[1].label).toBe('Background context');
+  expect(p.detail).toBe('Mapping references… You can start reading while this continues.');
+});
+
+test('background context never tells an unfetched paper that it is ready to read', () => {
+  const p = retrievalProgress(
+    job({ enrichment: { status: 'running', step: 'Mapping references…' } }),
+    false,
+  );
   expect(p.detail).toBe('Mapping references…');
+});
+
+test('the final enrichment snapshot does not say ready work is still continuing', () => {
+  const p = retrievalProgress(
+    job({ enrichment: { status: 'running', step: 'Paper context ready.' } }),
+    true,
+  );
+  expect(p.detail).toBe('Background context is ready.');
 });
 
 test('a retrieved paper with no enrichment reported is finished, not waiting forever', () => {

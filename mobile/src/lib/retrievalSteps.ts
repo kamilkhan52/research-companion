@@ -44,7 +44,15 @@ export function retrievalProgress(
   // enrichment ran, and a green check would be an assertion we cannot support. Omitting the stage
   // is honest; inventing a state is not.
   if (job) {
-    steps.push({ key: 'context', label: 'Paper context', state: contextStateFor(job, isRetrieved) });
+    // This warm is useful for later relationship/Map surfaces, but it is not on the reading
+    // critical path. Calling it simply "Paper context" in a connected progress rail made it look
+    // like Start reading was waiting for the second step, even though full text was already ready
+    // and the action below was enabled. Keep its real status visible while naming the distinction.
+    steps.push({
+      key: 'context',
+      label: 'Background context',
+      state: contextStateFor(job, isRetrieved),
+    });
   }
 
   return { steps, detail: detailFor(job, isRetrieved, awaitingChoice) };
@@ -73,9 +81,17 @@ function detailFor(
   if (awaitingChoice) return 'Waiting for you to confirm the source.';
   // Enrichment wins once the text is in: it is the part still moving, and naming it is the whole
   // point — "Mapping references…" as a labelled stage rather than a line that appears and goes.
-  if (job?.enrichment?.status === 'running' && job.enrichment.step) return job.enrichment.step;
-  if (job?.enrichment?.status === 'error') return 'Paper context could not be prepared.';
-  if (job?.enrichment?.status === 'cancelled') return 'Paper context preparation was stopped.';
+  if (job?.enrichment?.status === 'running') {
+    const step = job.enrichment.step || 'Preparing paper context…';
+    // canonical_jobs publishes this final detail just before the parent retrieval snapshot
+    // settles. Do not describe already-ready work as something that "continues" in that gap.
+    if (step === 'Paper context ready.') return 'Background context is ready.';
+    return isRetrieved
+      ? `${step} You can start reading while this continues.`
+      : step;
+  }
+  if (job?.enrichment?.status === 'error') return 'Background context could not be prepared.';
+  if (job?.enrichment?.status === 'cancelled') return 'Background context preparation was stopped.';
   if (job?.status === 'running') return job.detail || 'This continues if you leave the screen.';
   if (isRetrieved) return null;
   return null;
