@@ -109,6 +109,9 @@ export interface DevTestItem {
   state: string;
   how_to_test: string;
   feedback_count: number;
+  /** DR-132: shared queue visibility. Missing means visible for compatibility with an older
+   *  dev backend and with a newly-created item returned before this field existed. */
+  hidden?: boolean;
   /** DR-080: agent replies recorded by triage — the card flags their presence. */
   response_count?: number;
   /** DR-134: his word came last, so this one is unanswered. Independent of the VERDICT on
@@ -164,6 +167,11 @@ export const recordDevTestFeedback = (body: {
 export const getDevTestFeedback = (itemId: string) =>
   apiGet<{ entries: DevTestFeedbackEntry[] }>(
     `/api/devtest/feedback?item_id=${encodeURIComponent(itemId)}`,
+  );
+export const setDevTestItemVisibility = (itemId: string, hidden: boolean) =>
+  apiPost<{ entry: { ts: string; kind: 'visibility'; item_id: string; hidden: boolean } }>(
+    '/api/devtest/visibility',
+    { item_id: itemId, hidden },
   );
 // DISPATCH_MODELS / DispatchModel live in ./dispatch (a constant, not mocked by endpoint tests).
 export type { DispatchModel } from './dispatch';

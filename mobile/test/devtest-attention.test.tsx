@@ -61,6 +61,17 @@ test('the filter is offered in the menu, before the verdict-keyed ones', () => {
   expect(keys.indexOf('needsreply')).toBeLessThan(keys.indexOf('unreviewed'));
 });
 
+test('a parked row appears only in Hidden, regardless of its other queue properties', () => {
+  const hidden = item({ hidden: true, awaiting_reply: true, state: 'closed' });
+
+  expect(passes(hidden, 'all', undefined)).toBe(false);
+  expect(passes(hidden, 'needsreply', 'pass')).toBe(false);
+  expect(passes(hidden, 'closed', 'pass')).toBe(false);
+  expect(passes(hidden, 'passed', 'pass')).toBe(false);
+  expect(passes(hidden, 'hidden', 'pass')).toBe(true);
+  expect(passes(item({ hidden: false }), 'hidden', undefined)).toBe(false);
+});
+
 test('a card says when a session is on it right now, and stays quiet otherwise', () => {
   expect(cardMeta(item({ agent_state: 'working' }), undefined)).toContain('Claude is on it');
   // `worked` is already implied by the reply count; only the LIVE state earns a word.
