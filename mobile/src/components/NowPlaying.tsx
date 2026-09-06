@@ -24,7 +24,10 @@ import { SENTENCE_SEEK_PREROLL_SECONDS, seekSentence } from '../../sentence-seek
 import { useAudio } from '@/audio/AudioProvider';
 import { parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
 import { isContentQualifiedAudioId } from '@/audio/discussionFollow';
-import { narrationCursorSnapshot } from '@/audio/useNarrationCursor';
+import {
+  narrationCursorSnapshot,
+  PASSIVE_NARRATION_LEAD_SECONDS,
+} from '@/audio/useNarrationCursor';
 import { SKIP_SECONDS } from '@/audio/setup';
 import { useListeningMode } from '@/store/listening';
 import { Marquee } from '@/ui/Marquee';
@@ -137,8 +140,12 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
     if (outcome === 'track' && !settled) return;
     let soughtTrack: Awaited<ReturnType<typeof TrackPlayer.getActiveTrack>>;
     let target: ReturnType<typeof narrationCursorSnapshot>;
+    let passiveIndex: number;
     if (settled) {
       ({ soughtTrack, target } = settled);
+      // A progressive track transition starts at the new segment boundary. Both explicit and
+      // passive cursors therefore name that segment's sentence without consulting stale progress.
+      passiveIndex = target.activeIndex;
     } else {
       const [activeTrack, queue, soughtProgress] = await Promise.all([
         TrackPlayer.getActiveTrack(),
@@ -155,6 +162,16 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
         soughtProgress,
         SENTENCE_SEEK_PREROLL_SECONDS + 0.05,
       );
+      // Carry the passive interpretation of this same post-seek snapshot. Discussion's own hook
+      // can still describe the pre-seek position for another 500 ms, so it cannot supply the
+      // baseline used to decide whether playback has genuinely crossed a later boundary.
+      passiveIndex = narrationCursorSnapshot(
+        activeTrack,
+        queue,
+        soughtProgress,
+        PASSIVE_NARRATION_LEAD_SECONDS,
+        target.sentences,
+      ).activeIndex;
     }
     const slotId = String(soughtTrack?.slotId ?? soughtTrack?.id ?? '');
     if (!isContentQualifiedAudioId(slotId)) return;
@@ -162,7 +179,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
     if (!identity?.contentTag) return;
     if (target.activeIndex < 0) return;
     const address = sessionAddressFromAudioSlug(identity.slug);
-    audio.publishDiscussionJump(slotId, target.activeIndex);
+    audio.publishDiscussionJump(slotId, target.activeIndex, passiveIndex);
     router.navigate({
       pathname: '/paper/[slug]',
       params: {

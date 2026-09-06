@@ -111,7 +111,9 @@ test('a sentence jump publishes the post-seek semantic target and opens its exac
   await renderAsync(<NowPlaying inset={false} />);
 
   await fireEventAsync.press(screen.getByLabelText('Next sentence'));
-  expect(mockPublishDiscussionJump).toHaveBeenCalledWith(slotId, 1);
+  // The explicit 0.8 s resolver crosses the requested boundary, while the passive 0.35 s
+  // resolver remains on the pre-roll sentence. Both come from the same post-seek progress.
+  expect(mockPublishDiscussionJump).toHaveBeenCalledWith(slotId, 1, 0);
   expect(router.navigate).toHaveBeenCalledWith({
     pathname: '/paper/[slug]',
     params: { slug: 'paper-a', project: 'project-a', thread: 'abcdef123456' },
@@ -146,7 +148,7 @@ test('a progressive track jump uses the new segment start even while progress is
   await renderAsync(<NowPlaying inset={false} />);
 
   await fireEventAsync.press(screen.getByLabelText('Next sentence'));
-  expect(mockPublishDiscussionJump).toHaveBeenCalledWith(slotId, 2);
+  expect(mockPublishDiscussionJump).toHaveBeenCalledWith(slotId, 2, 2);
   expect(router.navigate).toHaveBeenCalledWith({
     pathname: '/paper/[slug]',
     params: { slug: 'paper-a', project: 'project-a', thread: 'main' },

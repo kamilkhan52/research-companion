@@ -2004,12 +2004,12 @@ function DiscussionThread({
     followPausedUntil.current = 0;
     landNarrationTarget(true);
     explicitLandedNonce.current = jump.nonce;
-    explicitPassiveIndexAtLanding.current = narrationCursor?.activeIndex ?? -1;
+    explicitPassiveIndexAtLanding.current = jump.passiveIndex;
     setNarrationHold({
       nonce: jump.nonce,
       slotId: jump.slotId,
       activeIndex: jump.activeIndex,
-      passiveIndexAtLanding: narrationCursor?.activeIndex ?? -1,
+      passiveIndexAtLanding: jump.passiveIndex,
     });
     if (action === 'land-and-consume') {
       audio.consumeDiscussionJump(jump.nonce);

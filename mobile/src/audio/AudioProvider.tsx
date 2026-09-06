@@ -85,7 +85,7 @@ interface AudioContextValue {
   playNextResponse: () => Promise<boolean>;
   /** One-shot explicit landing request from a mini-player sentence skip. */
   discussionJump: DiscussionJumpRequest | null;
-  publishDiscussionJump: (slotId: string, activeIndex: number) => void;
+  publishDiscussionJump: (slotId: string, activeIndex: number, passiveIndex: number) => void;
   consumeDiscussionJump: (nonce: number) => void;
 }
 
@@ -95,6 +95,9 @@ export interface DiscussionJumpRequest {
   /** The semantic landing resolved after the seek. Discussion must not use its still-stale
    * playback hook value when the mini-player and the thread are already on the same screen. */
   activeIndex: number;
+  /** The passive cursor resolved from that same post-seek snapshot. It is the baseline that
+   * must change before Discussion releases an explicit landing, including while paused. */
+  passiveIndex: number;
 }
 
 const POLL_MS = 1000;
@@ -264,9 +267,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     setPlaylistAutoplayState(enabled);
   }, []);
 
-  const publishDiscussionJump = useCallback((slotId: string, activeIndex: number) => {
+  const publishDiscussionJump = useCallback((
+    slotId: string,
+    activeIndex: number,
+    passiveIndex: number,
+  ) => {
     discussionJumpNonce.current += 1;
-    setDiscussionJump({ nonce: discussionJumpNonce.current, slotId, activeIndex });
+    setDiscussionJump({ nonce: discussionJumpNonce.current, slotId, activeIndex, passiveIndex });
   }, []);
   const consumeDiscussionJump = useCallback((nonce: number) => {
     setDiscussionJump((current) => current?.nonce === nonce ? null : current);
