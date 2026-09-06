@@ -132,6 +132,12 @@ test('a progressive track jump uses the new segment start even while progress is
     sentenceText: 'Third sentence.',
   } as never);
   jest.mocked(TrackPlayer.getQueue).mockResolvedValue([
+    {
+      id: 'other-segment-0',
+      slotId: 'project-a:other-paper:0#ctag',
+      segmentIndex: 0,
+      sentenceText: 'Unrelated queued narration whose length must not shift this slot.',
+    },
     { id: 'segment-0', slotId, segmentIndex: 0, sentenceText: 'First sentence. Second sentence.' },
     { id: 'segment-1', slotId, segmentIndex: 1, sentenceText: 'Third sentence.' },
   ] as never);

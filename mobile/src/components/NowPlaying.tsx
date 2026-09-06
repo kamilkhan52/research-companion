@@ -74,9 +74,17 @@ async function cursorAfterTrackChange(previousTrackId: string) {
         ? progressiveTrack.segmentIndex
         : -1;
       if (narration && segmentText && segmentIndex >= 0) {
+        const slotId = String((soughtTrack as { slotId?: unknown }).slotId ?? soughtTrack.id);
         const priorLength = queue.reduce((total, queuedValue) => {
-          const queued = queuedValue as { segmentIndex?: unknown; sentenceText?: unknown };
+          const queued = queuedValue as {
+            id?: unknown;
+            slotId?: unknown;
+            segmentIndex?: unknown;
+            sentenceText?: unknown;
+          };
+          const queuedSlotId = String(queued.slotId ?? queued.id);
           return typeof queued.segmentIndex === 'number'
+            && queuedSlotId === slotId
             && queued.segmentIndex < segmentIndex
             && typeof queued.sentenceText === 'string'
             ? total + queued.sentenceText.length

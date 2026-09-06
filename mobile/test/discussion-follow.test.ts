@@ -91,14 +91,30 @@ test('an explicit request waits for its focused conversation, then lands exactly
     passiveIndex: 3,
     jumpIndex: 4,
     alreadyLanded: false,
+    passiveIndexAtLanding: null,
   };
   expect(discussionJumpAction({ ...base, focused: false })).toBe('wait');
   expect(discussionJumpAction({ ...base, cursorSlotId: 'project:other:0#ctag' })).toBe('wait');
   expect(discussionJumpAction(base)).toBe('land');
-  // Keep the request authoritative while the 500 ms passive poll still reports the old
-  // sentence, then retire it only after that cursor catches the requested boundary.
-  expect(discussionJumpAction({ ...base, alreadyLanded: true })).toBe('wait');
-  expect(discussionJumpAction({ ...base, passiveIndex: 4, alreadyLanded: true })).toBe('consume');
+  // Keep the explicit landing authoritative while a paused player still reports the same
+  // passive sentence. Retire it only after playback produces a real boundary transition.
+  expect(discussionJumpAction({
+    ...base,
+    alreadyLanded: true,
+    passiveIndexAtLanding: 3,
+  })).toBe('wait');
+  expect(discussionJumpAction({
+    ...base,
+    passiveIndex: 4,
+    alreadyLanded: true,
+    passiveIndexAtLanding: 3,
+  })).toBe('consume');
+  expect(discussionJumpAction({
+    ...base,
+    passiveIndex: 2,
+    alreadyLanded: true,
+    passiveIndexAtLanding: 3,
+  })).toBe('consume');
   expect(discussionJumpAction({ ...base, passiveIndex: 4 })).toBe('land-and-consume');
   // A matching conversation with no safe alignment retires the request instead of leaving a
   // stale force-jump that might fire on a later passive boundary.

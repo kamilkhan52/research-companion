@@ -1505,6 +1505,13 @@ type DiscussionNarrationCursor = Pick<
   'slotId' | 'narration' | 'sentences' | 'activeIndex'
 >;
 
+interface DiscussionNarrationHold {
+  nonce: number;
+  slotId: string;
+  activeIndex: number;
+  passiveIndexAtLanding: number;
+}
+
 const DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS = 1_500;
 
 /** Own the fast playback clock below Discussion's heavy tree and publish only true boundaries. */
@@ -1575,10 +1582,15 @@ function DiscussionThread({
   const audio = useAudio();
   const { followNarrationInDiscussion } = useListeningMode();
   const [narrationCursor, setNarrationCursor] = useState<DiscussionNarrationCursor | null>(null);
+  const [narrationHold, setNarrationHold] = useState<DiscussionNarrationHold | null>(null);
   const explicitLandedNonce = useRef<number | null>(null);
+  const explicitPassiveIndexAtLanding = useRef<number | null>(null);
   const explicitConsumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!followNarrationInDiscussion) setNarrationCursor(null);
+    if (!followNarrationInDiscussion) {
+      setNarrationCursor(null);
+      setNarrationHold(null);
+    }
   }, [followNarrationInDiscussion]);
   useEffect(() => () => {
     if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
@@ -1855,7 +1867,7 @@ function DiscussionThread({
     if (!narrationEntry || !narrationCursor?.slotId || !narrationAlignment) return null;
     const jump = audio.discussionJump?.slotId === narrationCursor.slotId
       ? audio.discussionJump
-      : null;
+      : narrationHold?.slotId === narrationCursor.slotId ? narrationHold : null;
     // A mini-player seek updates TrackPlayer before useProgress's next poll. Its explicit index
     // is authoritative for this one landing; passive following returns to the hook afterward.
     const activeIndex = discussionNarrationIndex(
@@ -1880,7 +1892,19 @@ function DiscussionThread({
     narrationCursor?.activeIndex,
     narrationCursor?.slotId,
     narrationEntry,
+    narrationHold,
   ]);
+
+  // A paused player cannot advance through the 0.75 s seek pre-roll, so a timeout may consume
+  // the one-shot request while its explicit sentence remains the correct reading position. Keep
+  // that anchor until the passive cursor actually crosses a boundary (or changes tracks).
+  useEffect(() => {
+    if (!narrationHold || !narrationCursor) return;
+    if (narrationCursor.slotId !== narrationHold.slotId
+        || narrationCursor.activeIndex !== narrationHold.passiveIndexAtLanding) {
+      setNarrationHold(null);
+    }
+  }, [narrationCursor, narrationHold]);
 
   // DR-115 — landmark stepping over the same inverted list. `messages.length` is what the
   // navigator counts: the rail steps over rendered rows, including the optimistic user echo
@@ -1952,6 +1976,8 @@ function DiscussionThread({
       if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
       explicitConsumeTimer.current = null;
       explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold(null);
     }
     const action = discussionJumpAction({
       enabled: followNarrationInDiscussion,
@@ -1963,27 +1989,40 @@ function DiscussionThread({
       passiveIndex: narrationCursor?.activeIndex ?? -1,
       jumpIndex: jump.activeIndex,
       alreadyLanded: explicitLandedNonce.current === jump.nonce,
+      passiveIndexAtLanding: explicitPassiveIndexAtLanding.current,
     });
     if (action === 'wait') return;
     if (action === 'consume') {
       if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
       explicitConsumeTimer.current = null;
       explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold((hold) => hold?.nonce === jump.nonce ? null : hold);
       audio.consumeDiscussionJump(jump.nonce);
       return;
     }
     followPausedUntil.current = 0;
     landNarrationTarget(true);
     explicitLandedNonce.current = jump.nonce;
+    explicitPassiveIndexAtLanding.current = narrationCursor?.activeIndex ?? -1;
+    setNarrationHold({
+      nonce: jump.nonce,
+      slotId: jump.slotId,
+      activeIndex: jump.activeIndex,
+      passiveIndexAtLanding: narrationCursor?.activeIndex ?? -1,
+    });
     if (action === 'land-and-consume') {
       audio.consumeDiscussionJump(jump.nonce);
       explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold(null);
       return;
     }
     if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
     explicitConsumeTimer.current = setTimeout(() => {
       audio.consumeDiscussionJump(jump.nonce);
       if (explicitLandedNonce.current === jump.nonce) explicitLandedNonce.current = null;
+      if (explicitLandedNonce.current == null) explicitPassiveIndexAtLanding.current = null;
       explicitConsumeTimer.current = null;
     }, DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS);
   }, [

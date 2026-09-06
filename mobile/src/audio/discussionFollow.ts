@@ -197,6 +197,7 @@ export function discussionJumpAction({
   passiveIndex,
   jumpIndex,
   alreadyLanded,
+  passiveIndexAtLanding,
 }: {
   enabled: boolean;
   focused: boolean;
@@ -207,11 +208,16 @@ export function discussionJumpAction({
   passiveIndex: number;
   jumpIndex: number;
   alreadyLanded: boolean;
+  passiveIndexAtLanding: number | null;
 }): DiscussionJumpAction {
   if (!jump) return 'wait';
   if (!enabled) return 'consume';
   if (!focused || jump.slotId !== cursorSlotId || !conversationMatched) return 'wait';
   if (targetNonce !== jump.nonce) return 'consume';
-  if (passiveIndex === jumpIndex) return alreadyLanded ? 'consume' : 'land-and-consume';
-  return alreadyLanded ? 'wait' : 'land';
+  if (alreadyLanded) {
+    return passiveIndexAtLanding != null && passiveIndex !== passiveIndexAtLanding
+      ? 'consume'
+      : 'wait';
+  }
+  return passiveIndex === jumpIndex ? 'land-and-consume' : 'land';
 }

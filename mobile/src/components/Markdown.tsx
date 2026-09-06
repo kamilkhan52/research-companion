@@ -579,7 +579,6 @@ function Block({
                 text={child.text}
                 path={`${path}.b${index}`}
                 onLinkPress={onLinkPress}
-                annotations={sentenceAnnotations}
                 narrationFollow={narrationFollow}
                 italic
               />
