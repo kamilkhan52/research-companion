@@ -238,3 +238,18 @@ test('a map-status failure does not blank related cards that loaded successfully
   expect(screen.getByText(/Could not check the map or its current build/)).toBeTruthy();
   expect(screen.queryByText('Build related works')).toBeNull();
 });
+
+test('a failed reopen refresh does not trust a cached pre-build snapshot', async () => {
+  graphResult = {
+    data: graphResponse(STATUS),
+    isLoading: false,
+    isError: true,
+    isRefetchError: true,
+    refetch: graphRefetch,
+  };
+  await renderAsync(sheet());
+
+  expect(screen.getByText(/Could not refresh the current map or build status/)).toBeTruthy();
+  expect(screen.getByText('Map status is unavailable right now.')).toBeTruthy();
+  expect(screen.queryByText('Build related works')).toBeNull();
+});

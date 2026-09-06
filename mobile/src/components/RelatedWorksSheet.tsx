@@ -56,11 +56,12 @@ export function RelatedWorksSheet({
 
   // Project queries remain fresh for 30 seconds. Without an explicit read on this edge, a quick
   // close/reopen can reuse the pre-start `{build: null}` snapshot and falsely offer another build
-  // while the durable server job is already running. Force this cheap status read on every open;
-  // TanStack deduplicates it with an ordinary stale refetch when both are due.
+  // while the durable server job is already running. Force this read on every open. When the
+  // query is genuinely stale and its normal refetch already started, join that in-flight request
+  // instead of cancelling it and sending the graph payload twice.
   useEffect(() => {
     if (!visible || !pid) return;
-    void refetchGraph();
+    void refetchGraph({ cancelRefetch: false });
   }, [visible, pid, refetchGraph]);
 
   useEffect(() => {
@@ -91,6 +92,7 @@ export function RelatedWorksSheet({
     (!related.data && related.isLoading) || (!graph.data && graph.isLoading);
   const initialError = !related.data && related.isError;
   const graphUnavailable = !graph.data && graph.isError;
+  const graphRefreshFailed = graph.isRefetchError;
   const needsUpdate = Boolean(
     status?.has_graph && (status.graph_needs_enrichment || status.stale_papers.length > 0),
   );
@@ -127,11 +129,12 @@ export function RelatedWorksSheet({
         </Card>
       ) : (
         <View style={styles.content}>
-          {graphUnavailable ? (
+          {graphUnavailable || graphRefreshFailed ? (
             <Card style={styles.errorCard}>
               <Text variant="body" color={t.danger}>
-                Could not check the map or its current build. Related works already loaded are
-                still available below.
+                {graphRefreshFailed
+                  ? 'Could not refresh the current map or build status. Related works already loaded are still available below.'
+                  : 'Could not check the map or its current build. Related works already loaded are still available below.'}
               </Text>
               <Button
                 title="Retry status"
@@ -169,7 +172,7 @@ export function RelatedWorksSheet({
             <Text variant="body" color={t.muted} style={styles.emptyCopy}>
               {build.building
                 ? 'Related works will appear here as the map gains evidence.'
-                : !status
+                : !status || graphRefreshFailed
                   ? 'Map status is unavailable right now.'
                   : status.has_graph
                   ? 'No significant related works surfaced for this paper yet.'
@@ -177,7 +180,8 @@ export function RelatedWorksSheet({
             </Text>
           ) : null}
 
-          {!build.building && !build.error && status && (!status.has_graph || needsUpdate) ? (
+          {!build.building && !build.error && !graphRefreshFailed && status
+            && (!status.has_graph || needsUpdate) ? (
             <View style={styles.buildOffer}>
               <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>
                 {status?.has_graph
