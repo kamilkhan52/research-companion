@@ -48,6 +48,14 @@ test('background context never tells an unfetched paper that it is ready to read
   expect(p.detail).toBe('Mapping references…');
 });
 
+test('the final enrichment snapshot does not say ready work is still continuing', () => {
+  const p = retrievalProgress(
+    job({ enrichment: { status: 'running', step: 'Paper context ready.' } }),
+    true,
+  );
+  expect(p.detail).toBe('Background context is ready.');
+});
+
 test('a retrieved paper with no enrichment reported is finished, not waiting forever', () => {
   expect(states(job({ status: 'done', phase: 'done' }), true)).toEqual(['done', 'done']);
 });

@@ -83,12 +83,15 @@ function detailFor(
   // point — "Mapping references…" as a labelled stage rather than a line that appears and goes.
   if (job?.enrichment?.status === 'running') {
     const step = job.enrichment.step || 'Preparing paper context…';
+    // canonical_jobs publishes this final detail just before the parent retrieval snapshot
+    // settles. Do not describe already-ready work as something that "continues" in that gap.
+    if (step === 'Paper context ready.') return 'Background context is ready.';
     return isRetrieved
       ? `${step} You can start reading while this continues.`
       : step;
   }
-  if (job?.enrichment?.status === 'error') return 'Paper context could not be prepared.';
-  if (job?.enrichment?.status === 'cancelled') return 'Paper context preparation was stopped.';
+  if (job?.enrichment?.status === 'error') return 'Background context could not be prepared.';
+  if (job?.enrichment?.status === 'cancelled') return 'Background context preparation was stopped.';
   if (job?.status === 'running') return job.detail || 'This continues if you leave the screen.';
   if (isRetrieved) return null;
   return null;

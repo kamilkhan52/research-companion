@@ -485,9 +485,15 @@ export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) =
   body.append('slug', slug);
   // Expo 56's fetch implementation deliberately rejects React Native's legacy
   // `{ uri, name, type }` FormData part with "Unsupported FormDataPart implementation".
-  // Its filesystem File implements the blob/bytes contract the multipart encoder accepts and
-  // reads the picker cache lazily, without copying a PDF into JavaScript memory first.
-  body.append('file', new ExpoFile(file.uri) as unknown as Blob, file.name);
+  // Its filesystem File supplies the accepted bytes() contract. Keep the picker-visible name
+  // and MIME type on the wrapper because Expo ignores FormData.append's filename argument for
+  // file-like objects that are not an actual Blob.
+  const picked = new ExpoFile(file.uri);
+  body.append('file', {
+    name: file.name,
+    type: file.mimeType || 'application/pdf',
+    bytes: () => picked.bytes(),
+  } as unknown as Blob);
   return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body).then(noting((r) => r.job));
 };
 
