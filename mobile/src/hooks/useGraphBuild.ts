@@ -42,6 +42,7 @@ export interface GraphBuildProgress {
   total: number;
   ready: number;
   done: number;
+  currentSlug: string | null;
   currentTitle: string | null;
   perPaper: Record<string, PaperBuildStatus>;
   retrievalCandidates: Record<string, GraphRetrievalCandidate[]>;
@@ -67,13 +68,17 @@ function toProgress(job: GraphBuildJob): GraphBuildProgress {
     total: job.total,
     ready: job.ready,
     done: job.done,
+    currentSlug: job.current_slug,
     currentTitle: job.current_title,
     perPaper,
     retrievalCandidates: job.retrieval_candidates,
   };
 }
 
-export function useGraphBuild(pid: string | null): GraphBuildState {
+export function useGraphBuild(
+  pid: string | null,
+  { completionToast = true }: { completionToast?: boolean } = {},
+): GraphBuildState {
   const qc = useQueryClient();
   const [building, setBuilding] = useState(false);
   const [progress, setProgress] = useState<GraphBuildProgress | null>(null);
@@ -183,15 +188,16 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       }
       // R6.5 — a build takes minutes and finishes while the user is usually elsewhere in the
       // app (tab screens stay mounted, so this poll loop keeps running); a quiet toast is the
-      // only completion signal off the Map tab. applyJob only ever sees a settled job once
-      // (polling stops right here), so this can't double-fire.
+      // Map observer's completion signal. Secondary observers (the Related works sheet) turn
+      // it off so two pollers attached to the same durable job cannot announce it twice.
+      // applyJob only ever sees a settled job once per observer (polling stops right here).
       // DR-069: the count turns this into a real signal ("did my new papers make it in?"), not
       // just a "something happened" chime. Opus review caught that `completeness.total_papers`
       // (the reading-list paper count) is a different, smaller number than what the Map header
       // itself shows (`graph.nodes.length`, project papers PLUS external works) — a toast
       // disagreeing with the count directly above it would read as a second, contradictory
       // source of truth. Match the header's own number.
-      if (job.status === 'done') {
+      if (job.status === 'done' && completionToast) {
         const n = job.graph?.nodes.length;
         showToast(n != null ? `Map updated · ${n} paper${n === 1 ? '' : 's'}` : 'Reference map ready');
       }
@@ -202,7 +208,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       }
     },
-    [pid, qc],
+    [pid, qc, completionToast],
   );
 
   // Poll while a build is running. Effect-driven off `building`, so it starts when a build
@@ -248,7 +254,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       setBuilding(true); // optimistic: disables the button immediately; applyJob corrects it
       setProgress({
         phase: 'preparing', graphStage: null,
-        total: 0, ready: 0, done: 0, currentTitle: null, perPaper: {},
+        total: 0, ready: 0, done: 0, currentSlug: null, currentTitle: null, perPaper: {},
         retrievalCandidates: {},
       });
       try {

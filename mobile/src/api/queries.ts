@@ -395,12 +395,12 @@ export function useSaveSettings() {
   });
 }
 
-export function useGraph(pid: string | null) {
+export function useGraph(pid: string | null, enabled = true) {
   const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
     queryFn: () => api.getGraph(pid as string),
-    enabled: !!pid && hasUrl,
+    enabled: !!pid && hasUrl && enabled,
   });
 }
 

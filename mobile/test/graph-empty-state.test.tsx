@@ -63,6 +63,7 @@ test('a build already in progress shows its own banner, not the prior-work line'
     total: 3,
     ready: 0,
     done: 0,
+    currentSlug: null,
     currentTitle: null,
     perPaper: {},
     retrievalCandidates: {},

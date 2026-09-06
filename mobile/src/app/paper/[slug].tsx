@@ -844,6 +844,7 @@ export default function DiscussionScreen() {
       <RelatedWorksSheet
         pid={pid}
         slug={slug ?? null}
+        papers={pid ? qc.getQueryData<ProjectState>(keys.projectState(pid))?.papers ?? [] : []}
         visible={showRelated}
         onClose={() => setShowRelated(false)}
         onOpenPaper={(target) => {

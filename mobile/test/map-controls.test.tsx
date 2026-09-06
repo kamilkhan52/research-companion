@@ -115,6 +115,7 @@ test('a running build adds a segment that opens its own progress sheet', async (
         total: 10,
         ready: 10,
         done: 4,
+        currentSlug: 'attention-is-all-you-need',
         currentTitle: 'Attention Is All You Need',
         perPaper: {},
         retrievalCandidates: {},
@@ -139,7 +140,7 @@ test('a running build adds a segment that opens its own progress sheet', async (
 test('the build sheet closes itself once the build finishes', async () => {
   const progress = {
     phase: 'extraction' as const, graphStage: 'enriched' as const,
-    total: 10, ready: 10, done: 4, currentTitle: null,
+    total: 10, ready: 10, done: 4, currentSlug: null, currentTitle: null,
     perPaper: {}, retrievalCandidates: {},
   };
   const { rerenderAsync } = await renderAsync(
@@ -181,7 +182,7 @@ test('the build sheet closes itself once the build finishes', async () => {
 test('the skeleton-ready hint announces once and does not return on a sheet reopen', async () => {
   const progress = {
     phase: 'extraction' as const, graphStage: 'skeleton' as const,
-    total: 10, ready: 10, done: 4, currentTitle: null,
+    total: 10, ready: 10, done: 4, currentSlug: null, currentTitle: null,
     perPaper: {}, retrievalCandidates: {},
   };
   await renderAsync(
