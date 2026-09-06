@@ -1,6 +1,11 @@
 import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
 
-import { Markdown, splitAnnotatableSentences } from '@/components/Markdown';
+import {
+  Markdown,
+  discussionSentenceAnchors,
+  narrationLineForSentence,
+  splitAnnotatableSentences,
+} from '@/components/Markdown';
 import { themes } from '@/theme/tokens';
 
 // U.15 — rendering defects Kamil hit on device with a long analysis response (the AWQ
@@ -240,5 +245,65 @@ describe('sentence annotation render path', () => {
     await fireEventAsync.press(screen.getByTestId('md-sentence-0'));
     expect(onSentencePress).toHaveBeenCalledWith('Linked paper matters.');
     expect(onLinkPress).not.toHaveBeenCalled();
+  });
+});
+
+describe('narration follow render path', () => {
+  test('targets the host-text line containing the active sentence', () => {
+    const lines = [
+      { text: 'First claim. ', y: 0, height: 26 },
+      { text: 'Second claim wraps', y: 26, height: 26 },
+      { text: 'onto this line.', y: 52, height: 26 },
+    ];
+    expect(narrationLineForSentence(
+      lines,
+      ['First claim.', 'Second claim wraps onto this line.'],
+      1,
+    )).toEqual(lines[1]);
+  });
+
+  test('derives stable anchors across prose, quotes, and list items', () => {
+    expect(discussionSentenceAnchors(
+      'First claim.\n\n> Quoted claim.\n\n- Listed claim. Another listed sentence.',
+    )).toEqual([
+      { id: 'b0.s0', text: 'First claim.' },
+      { id: 'b1.b0.s0', text: 'Quoted claim.' },
+      { id: 'b2.i0.s0', text: 'Listed claim.' },
+      { id: 'b2.i0.s1', text: 'Another listed sentence.' },
+    ]);
+  });
+
+  test('does not expand sentence-comment behavior into quote blocks', async () => {
+    await renderAsync(
+      <Markdown
+        text="> Quoted claim."
+        sentenceAnnotations={{ active: true, onSentencePress: jest.fn() }}
+      />,
+    );
+    expect(screen.queryByTestId('md-sentence-0')).toBeNull();
+    expect(screen.getByText('Quoted claim.')).toBeTruthy();
+  });
+
+  test('highlights and registers only the active passive sentence', async () => {
+    const unregister = jest.fn();
+    const registerAnchor = jest.fn(() => unregister);
+    const { unmountAsync } = await renderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        narrationFollow={{ activeAnchorId: 'b0.s1', registerAnchor }}
+      />,
+    );
+
+    expect(screen.getByTestId('md-sentence-0')).not.toHaveStyle({
+      backgroundColor: themes.dim.mintWashStrong,
+    });
+    expect(screen.getByTestId('md-sentence-1')).toHaveStyle({
+      backgroundColor: themes.dim.mintWashStrong,
+    });
+    expect(screen.getByTestId('md-sentence-1').props.accessibilityRole).toBeUndefined();
+    expect(registerAnchor).toHaveBeenCalledWith('b0.s1', expect.any(Function));
+
+    await unmountAsync();
+    expect(unregister).toHaveBeenCalledTimes(1);
   });
 });

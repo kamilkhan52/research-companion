@@ -34,6 +34,10 @@ jest.mock('@/audio/AudioProvider', () => ({
   }),
 }));
 
+jest.mock('@/store/listening', () => ({
+  useListeningMode: () => ({ followNarrationInDiscussion: false }),
+}));
+
 function marginBottom(node: ReactTestInstance): number | string | undefined {
   return (StyleSheet.flatten(node.props.style) as { marginBottom?: number | string }).marginBottom;
 }

@@ -6,13 +6,13 @@
 // neighbors are dimmed for orientation; tapping a sentence seeks to (approximately) its start.
 // Also home to GeneratingBar/prepLabel, the audio-preparation progress UI.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, View, type TextStyle } from 'react-native';
-import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
+import TrackPlayer from 'react-native-track-player';
 
-import { sentenceSeekPosition, splitSentences, type SentenceBoundary } from '../../sentence-seek';
-import { useSmoothPosition } from '@/audio/useSmoothPosition';
-import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
+import { sentenceSeekPosition } from '../../sentence-seek';
+import { segmentForChar } from '@/audio/transcriptSync';
+import { useNarrationCursor } from '@/audio/useNarrationCursor';
 import { narrationTextStyle, useListeningMode } from '@/store/listening';
 import { Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -21,10 +21,6 @@ import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 /** How long a manual scroll suspends auto-follow, so the roll never fights the user's thumb. */
 const FOLLOW_RESUME_MS = 4000;
-/** Highlight slightly AHEAD of the estimated position. The proportional mapping plus the eye's
- *  reaction time both make a "exact" highlight feel late; a small preemptive lead reads right. */
-const LEAD_S = 0.35;
-
 /** One transcript sentence. Memoized (with stable handlers) so the 10Hz position clock in the
  *  parent only re-renders the two lines whose active state actually changed; the highlight
  *  crossfades instead of snapping. */
@@ -81,38 +77,15 @@ export function RollingTranscript({ narration }: { narration: string }) {
     () => narrationTextStyle(narrationFace, narrationTextScale),
     [narrationFace, narrationTextScale],
   );
-  // Smooth, dead-reckoned playback clock (see useSmoothPosition) instead of raw coarse polls.
-  const { position, duration } = useSmoothPosition();
-  const sentences = useMemo(() => splitSentences(narration), [narration]);
-
-  // Progressive narration (#28) plays as several segment tracks, each reporting its own
-  // position/duration. `useActiveTrack` tells us which segment is playing; we load the char
-  // length of every segment for this slot so playback maps back onto the whole-narration
-  // fractions above instead of resetting each segment.
-  const active = useActiveTrack();
-  const slotId = active?.slotId != null ? String(active.slotId) : null;
-  const activeSeg = typeof active?.segmentIndex === 'number' ? active.segmentIndex : -1;
-  const [segLens, setSegLens] = useState<number[]>([]);
-
-  useEffect(() => {
-    if (slotId == null || activeSeg < 0) {
-      setSegLens((cur) => (cur.length ? [] : cur));
-      return;
-    }
-    let cancelled = false;
-    // Re-read as playback advances: later segments are still being appended, so the queue grows.
-    TrackPlayer.getQueue().then((queue) => {
-      if (cancelled) return;
-      const lens: number[] = [];
-      for (const track of queue) {
-        const sId = track.slotId != null ? String(track.slotId) : String(track.id);
-        if (sId !== slotId || typeof track.segmentIndex !== 'number') continue;
-        lens[track.segmentIndex] = String(track.sentenceText ?? '').length || 1;
-      }
-      setSegLens(lens);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [slotId, activeSeg]);
+  const cursor = useNarrationCursor(narration);
+  const {
+    sentences,
+    activeIndex: activeIdx,
+    duration,
+    progressive,
+    segmentLengths: segLens,
+    slotId,
+  } = cursor;
 
   const scrollRef = useRef<ScrollView>(null);
   const offsets = useRef<Record<number, { y: number; h: number }>>({});
@@ -120,18 +93,6 @@ export function RollingTranscript({ narration }: { narration: string }) {
   // Timestamp until which auto-follow stays suspended (user is reading somewhere else).
   const followPausedUntil = useRef(0);
   const lastCentered = useRef(-1);
-
-  // Only highlight once playback has actually started and we know the duration; before that
-  // (duration 0) show the plain roll rather than pinning the first sentence.
-  const progressive = activeSeg >= 0 && segLens.length > 0;
-  const frac = duration <= 0
-    ? -1
-    : progressive
-      ? globalFraction({
-          segLens, activeSeg, within: (position + LEAD_S) / duration, totalChars: narration.length,
-        })
-      : Math.min(1, (position + LEAD_S) / duration);
-  const activeIdx = activeSentenceIndex(sentences, frac);
 
   useEffect(() => {
     if (activeIdx < 0 || activeIdx === lastCentered.current) return;

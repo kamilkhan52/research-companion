@@ -138,6 +138,7 @@ const LOCAL_TOGGLES = [
   'System', 'Dim', 'Black', 'Light',      // theme
   'Comfortable', 'Tight',                 // density
   'Hidden', 'Shown',                      // the map's "All" filter
+  'Follow', 'Stay put',                   // DR-133 Discussion narration following
   'Off', 'On',                            // DR-115 chat navigation controls
 ];
 

@@ -20,7 +20,7 @@ import {
   type MessageTextProps,
 } from '@kesha-antonov/react-native-chat';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   ActivityIndicator,
@@ -62,6 +62,13 @@ import type {
 import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
+import {
+  alignNarrationToDiscussion,
+  discussionAssistantIndexForAudio,
+  discussionJumpAction,
+  discussionNarrationIndex,
+} from '@/audio/discussionFollow';
+import { useNarrationCursor, type NarrationCursor } from '@/audio/useNarrationCursor';
 import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
 import {
@@ -108,6 +115,8 @@ import {
   type FigureContext,
   type LinkHandler,
   type SentenceAnnotations,
+  type NarrationSentenceFollow,
+  discussionSentenceAnchors,
 } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
@@ -140,6 +149,10 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useReadingSettings } from '@/store/readingSettings';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
+import {
+  narrationBoundaryKey,
+  startNarrationLanding,
+} from '@/lib/narrationDiscussionScroll';
 import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
@@ -1487,6 +1500,37 @@ function discussionDraftKey(
     : draftKey(pid, 'discussion', slug, threadId, kind);
 }
 
+type DiscussionNarrationCursor = Pick<
+  NarrationCursor,
+  'slotId' | 'narration' | 'sentences' | 'activeIndex'
+>;
+
+interface DiscussionNarrationHold {
+  nonce: number;
+  slotId: string;
+  activeIndex: number;
+  passiveIndexAtLanding: number;
+}
+
+const DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS = 1_500;
+
+/** Own the fast playback clock below Discussion's heavy tree and publish only true boundaries. */
+function NarrationCursorBridge({
+  onBoundary,
+}: {
+  onBoundary: (cursor: DiscussionNarrationCursor | null) => void;
+}) {
+  const cursor = useNarrationCursor();
+  const key = narrationBoundaryKey(cursor);
+  const lastKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (key === lastKey.current) return;
+    lastKey.current = key;
+    onBoundary(key ? cursor : null);
+  }, [cursor, key, onBoundary]);
+  return null;
+}
+
 function DiscussionThread({
   pid,
   slug,
@@ -1534,6 +1578,23 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName, discussionTextScale } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  const isFocused = useIsFocused();
+  const audio = useAudio();
+  const { followNarrationInDiscussion } = useListeningMode();
+  const [narrationCursor, setNarrationCursor] = useState<DiscussionNarrationCursor | null>(null);
+  const [narrationHold, setNarrationHold] = useState<DiscussionNarrationHold | null>(null);
+  const explicitLandedNonce = useRef<number | null>(null);
+  const explicitPassiveIndexAtLanding = useRef<number | null>(null);
+  const explicitConsumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!followNarrationInDiscussion) {
+      setNarrationCursor(null);
+      setNarrationHold(null);
+    }
+  }, [followNarrationInDiscussion]);
+  useEffect(() => () => {
+    if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+  }, []);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -1776,6 +1837,75 @@ function DiscussionThread({
     ],
   );
 
+  // Resolve identity once per track/transcript change, and align once per narration. The active
+  // sentence changes at playback cadence; rerunning the O(spoken × source) alignment on every
+  // boundary made the already-heavy Discussion tree pay for the same work over and over.
+  const narrationEntry = useMemo(() => {
+    if (!followNarrationInDiscussion || !narrationCursor?.slotId) return null;
+    const assistantIndex = discussionAssistantIndexForAudio(
+      narrationCursor.slotId,
+      pid,
+      slug,
+      threadId,
+    );
+    if (assistantIndex == null) return null;
+    const entry = transcript.find((candidate) =>
+      candidate.role === 'assistant' && candidate.assistant_index === assistantIndex,
+    );
+    if (!entry || entry.role !== 'assistant'
+        || branchAudioId(pid, slug, entry, threadId) !== narrationCursor.slotId) return null;
+    return entry;
+  }, [followNarrationInDiscussion, narrationCursor?.slotId, pid, slug, threadId, transcript]);
+  const narrationAlignment = useMemo(() => {
+    if (!narrationEntry || !narrationCursor?.narration) return null;
+    return alignNarrationToDiscussion(
+      narrationCursor.narration,
+      discussionSentenceAnchors(narrationEntry.canonical),
+    );
+  }, [narrationCursor?.narration, narrationEntry]);
+  const narrationTarget = useMemo(() => {
+    if (!narrationEntry || !narrationCursor?.slotId || !narrationAlignment) return null;
+    const jump = audio.discussionJump?.slotId === narrationCursor.slotId
+      ? audio.discussionJump
+      : narrationHold?.slotId === narrationCursor.slotId ? narrationHold : null;
+    // A mini-player seek updates TrackPlayer before useProgress's next poll. Its explicit index
+    // is authoritative for this one landing; passive following returns to the hook afterward.
+    const activeIndex = discussionNarrationIndex(
+      narrationCursor.slotId,
+      narrationCursor.activeIndex,
+      jump,
+    );
+    const anchorId = narrationAlignment[activeIndex] ?? null;
+    if (!anchorId) return null;
+    const rowIndex = messages.findIndex((message) => message.entry === narrationEntry);
+    if (rowIndex < 0) return null;
+    return {
+      anchorId,
+      rowIndex,
+      slotId: narrationCursor.slotId,
+      explicitNonce: jump?.nonce ?? null,
+    };
+  }, [
+    audio.discussionJump,
+    messages,
+    narrationAlignment,
+    narrationCursor?.activeIndex,
+    narrationCursor?.slotId,
+    narrationEntry,
+    narrationHold,
+  ]);
+
+  // A paused player cannot advance through the 0.75 s seek pre-roll, so a timeout may consume
+  // the one-shot request while its explicit sentence remains the correct reading position. Keep
+  // that anchor until the passive cursor actually crosses a boundary (or changes tracks).
+  useEffect(() => {
+    if (!narrationHold || !narrationCursor) return;
+    if (narrationCursor.slotId !== narrationHold.slotId
+        || narrationCursor.activeIndex !== narrationHold.passiveIndexAtLanding) {
+      setNarrationHold(null);
+    }
+  }, [narrationCursor, narrationHold]);
+
   // DR-115 — landmark stepping over the same inverted list. `messages.length` is what the
   // navigator counts: the rail steps over rendered rows, including the optimistic user echo
   // and the live streaming row, because those are exactly the landmarks a reader can see.
@@ -1788,6 +1918,123 @@ function DiscussionThread({
     // padding already gives the oldest message.
     topClearance: chromeLayout.topClearance,
   });
+  const listOffset = useRef(0);
+  const narrationMeasures = useRef(new Map<
+    string,
+    (done: (screenY: number, height: number) => void) => boolean
+  >());
+  const narrationLandingCancel = useRef<(() => void) | null>(null);
+  const followPausedUntil = useRef(0);
+  const registerNarrationAnchor = useCallback<NarrationSentenceFollow['registerAnchor']>(
+    (anchorId, measure) => {
+      narrationMeasures.current.set(anchorId, measure);
+      return () => {
+        if (narrationMeasures.current.get(anchorId) === measure) {
+          narrationMeasures.current.delete(anchorId);
+        }
+      };
+    },
+    [],
+  );
+  const narrationFollow = useMemo<NarrationSentenceFollow | undefined>(() =>
+    narrationTarget ? {
+      activeAnchorId: narrationTarget.anchorId,
+      registerAnchor: registerNarrationAnchor,
+    } : undefined,
+  [narrationTarget, registerNarrationAnchor]);
+
+  const landNarrationTarget = useCallback((force: boolean) => {
+    if (!narrationTarget || !isFocused || (!force && Date.now() < followPausedUntil.current)) return;
+    narrationLandingCancel.current?.();
+    narrationLandingCancel.current = startNarrationLanding({
+      approach: () => chatNav.goToIndex(narrationTarget.rowIndex),
+      measure: (done) => {
+        const measure = narrationMeasures.current.get(narrationTarget.anchorId);
+        if (!measure) return false;
+        return measure(done);
+      },
+      correct: (screenY, height) => {
+        // Under the inverted list, decreasing native offset moves content toward the visual top.
+        const desiredY = chromeLayout.topClearance + space.md;
+        listRef.current?.scrollToOffset({
+          offset: Math.max(0, listOffset.current + desiredY - (screenY + height / 2)),
+          animated: !reduceMotion,
+        });
+      },
+    });
+  }, [chatNav.goToIndex, chromeLayout.topClearance, isFocused, narrationTarget, reduceMotion]);
+
+  useEffect(() => {
+    if (narrationTarget?.explicitNonce == null) landNarrationTarget(false);
+    return () => narrationLandingCancel.current?.();
+  }, [landNarrationTarget, narrationTarget?.explicitNonce]);
+
+  useEffect(() => {
+    const jump = audio.discussionJump;
+    if (!jump) return;
+    if (explicitLandedNonce.current != null && explicitLandedNonce.current !== jump.nonce) {
+      if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+      explicitConsumeTimer.current = null;
+      explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold(null);
+    }
+    const action = discussionJumpAction({
+      enabled: followNarrationInDiscussion,
+      focused: isFocused,
+      jump,
+      cursorSlotId: narrationCursor?.slotId ?? null,
+      conversationMatched: !!narrationEntry,
+      targetNonce: narrationTarget?.explicitNonce ?? null,
+      passiveIndex: narrationCursor?.activeIndex ?? -1,
+      jumpIndex: jump.activeIndex,
+      alreadyLanded: explicitLandedNonce.current === jump.nonce,
+      passiveIndexAtLanding: explicitPassiveIndexAtLanding.current,
+    });
+    if (action === 'wait') return;
+    if (action === 'consume') {
+      if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+      explicitConsumeTimer.current = null;
+      explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold((hold) => hold?.nonce === jump.nonce ? null : hold);
+      audio.consumeDiscussionJump(jump.nonce);
+      return;
+    }
+    followPausedUntil.current = 0;
+    landNarrationTarget(true);
+    explicitLandedNonce.current = jump.nonce;
+    explicitPassiveIndexAtLanding.current = jump.passiveIndex;
+    setNarrationHold({
+      nonce: jump.nonce,
+      slotId: jump.slotId,
+      activeIndex: jump.activeIndex,
+      passiveIndexAtLanding: jump.passiveIndex,
+    });
+    if (action === 'land-and-consume') {
+      audio.consumeDiscussionJump(jump.nonce);
+      explicitLandedNonce.current = null;
+      explicitPassiveIndexAtLanding.current = null;
+      setNarrationHold(null);
+      return;
+    }
+    if (explicitConsumeTimer.current) clearTimeout(explicitConsumeTimer.current);
+    explicitConsumeTimer.current = setTimeout(() => {
+      audio.consumeDiscussionJump(jump.nonce);
+      if (explicitLandedNonce.current === jump.nonce) explicitLandedNonce.current = null;
+      if (explicitLandedNonce.current == null) explicitPassiveIndexAtLanding.current = null;
+      explicitConsumeTimer.current = null;
+    }, DISCUSSION_JUMP_CATCHUP_TIMEOUT_MS);
+  }, [
+    audio,
+    followNarrationInDiscussion,
+    isFocused,
+    landNarrationTarget,
+    narrationCursor?.slotId,
+    narrationCursor?.activeIndex,
+    narrationEntry,
+    narrationTarget,
+  ]);
   // FlatList requires the viewability pair's identity never to change across renders, and two
   // consumers need it: DR-100's first-paint signal and the rail's top-of-viewport anchor. Both
   // callbacks are ref-stable by construction, so composing them once here is safe.
@@ -1813,6 +2060,8 @@ function DiscussionThread({
   // rides along rather than adding a second listener.
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
+      const y = event?.contentOffset?.y ?? event?.nativeEvent?.contentOffset?.y;
+      if (typeof y === 'number') listOffset.current = y;
       readerPin.onScroll(event);
       // DR-115 — the navigator only records the offset, to tell a landing that clamped at the
       // live edge from one that did not. Same event shape as DR-089's.
@@ -2044,7 +2293,6 @@ function DiscussionThread({
   // menu is a shortcut to the same actions, not a different set). Rendered through the app's
   // own OptionsSheet — the native action sheet ignores the design language (polish plan F.5:
   // OptionsSheet is the only menu idiom anywhere in the app).
-  const audio = useAudio();
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
   // The transcript index, so the report carries a pointer an operator can resolve to the exact
   // turn. Null means the sheet is closed.
@@ -2201,6 +2449,9 @@ function DiscussionThread({
           switchDisabled={switchingBranch || stream.streaming}
           figureContext={figureContext}
           sentenceAnnotations={sentenceAnnotationsFor(msg.entry.assistant_index)}
+          narrationFollow={
+            narrationTarget?.rowIndex === messages.indexOf(msg) ? narrationFollow : undefined
+          }
         />
       );
     }
@@ -2215,7 +2466,7 @@ function DiscussionThread({
         <Markdown text={msg?.text ?? ''} textScale={discussionTextScale} />
       </View>
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale, narrationFollow, narrationTarget, messages]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2486,6 +2737,9 @@ function DiscussionThread({
 
   return (
     <>
+    {followNarrationInDiscussion ? (
+      <NarrationCursorBridge onBoundary={setNarrationCursor} />
+    ) : null}
     {/* DR-089 — while the reader is away from the live edge during a streaming turn, the
         streamed reveal (SmoothMarkdown) holds still so the transcript cannot drag under
         them. Streaming gates the flag so an idle reader browsing history pays nothing.
@@ -2541,7 +2795,11 @@ function DiscussionThread({
         onScroll: onListScroll,
         // DR-115 — a finger drag (never a programmatic scroll) retires the rail's remembered
         // landmark, so the next step re-aims at wherever the reader actually stopped.
-        onScrollBeginDrag: chatNav.onScrollBeginDrag,
+        onScrollBeginDrag: () => {
+          followPausedUntil.current = Date.now() + 4000;
+          narrationLandingCancel.current?.();
+          chatNav.onScrollBeginDrag();
+        },
         // DR-115 — `scrollToIndex` can only land on a row this list has measured, and it
         // deliberately renders a tiny window (see initialNumToRender below).
         onScrollToIndexFailed: chatNav.onScrollToIndexFailed,
@@ -3407,6 +3665,7 @@ function AssistantBody({
   switchDisabled,
   figureContext,
   sentenceAnnotations,
+  narrationFollow,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   /** The opening account of the paper, styled as an artifact rather than a reply. */
@@ -3428,6 +3687,7 @@ function AssistantBody({
   switchDisabled: boolean;
   figureContext?: FigureContext;
   sentenceAnnotations?: SentenceAnnotations;
+  narrationFollow?: NarrationSentenceFollow;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3501,6 +3761,7 @@ function AssistantBody({
         text={canonical}
         figureContext={figureContext}
         sentenceAnnotations={sentenceAnnotations}
+        narrationFollow={narrationFollow}
         textScale={discussionTextScale}
       />
       {/* DR-105 — the way into a notes proposal this turn started belongs where the reader
