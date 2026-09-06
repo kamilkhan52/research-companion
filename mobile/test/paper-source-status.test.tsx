@@ -231,9 +231,12 @@ test('first-read enrichment uses the existing retrieval status surface', async (
     ),
   );
 
-  expect(await screen.findByText(
-    'Reading first page… · Mapping references… · Finding figures…',
+  expect(await screen.findByText('Background context')).toBeTruthy();
+  expect(screen.getByText(
+    'Reading first page… · Mapping references… · Finding figures… '
+      + 'You can start reading while this continues.',
   )).toBeTruthy();
+  expect(screen.getByText('Start reading')).toBeEnabled();
 });
 
 test('Start reading automatically fetches before it starts the opening turn', async () => {
