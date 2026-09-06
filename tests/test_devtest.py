@@ -49,6 +49,8 @@ def test_every_route_is_absent_outside_dev(tmp_path, monkeypatch):
     assert c.post("/api/devtest/items", json={"title": "x"}).status_code == 404
     assert c.post("/api/devtest/feedback",
                   json={"item_id": "DR-001", "verdict": "pass"}).status_code == 404
+    assert c.post("/api/devtest/visibility",
+                  json={"item_id": "DR-001", "hidden": True}).status_code == 404
     assert c.get("/api/devtest/feedback").status_code == 404
     assert c.get("/api/devtest/status").status_code == 404
 
@@ -301,6 +303,117 @@ def test_untriaged_new_item_still_lists(client, monkeypatch, tmp_path):
     devtest._append_feedback({"kind": "new_item", "id": "NEW-1", "title": "t", "description": ""})
     items = client.get("/api/devtest/items").json()["items"]
     assert next(i for i in items if i["id"] == "NEW-1")["state"] == "new — untriaged"
+
+
+# --- per-item queue parking (DR-132) ----------------------------------------------------------
+
+def test_visibility_is_shared_append_only_state_not_feedback(client, monkeypatch, tmp_path):
+    """A hide follows the dev backend rather than one phone's AsyncStorage, and unhide appends
+    the inverse event. Neither action may rewrite Kamil's inbox or the canonical ledger."""
+    ledger = _ledger(tmp_path, monkeypatch)
+    ledger_before = ledger.read_bytes()
+    client.post("/api/devtest/feedback", json={"item_id": "DR-058", "verdict": "pass"})
+    feedback = devtest._feedback_path()
+    feedback_before = feedback.read_bytes()
+
+    hidden = client.post("/api/devtest/visibility",
+                         json={"item_id": "DR-001", "hidden": True})
+    assert hidden.status_code == 200
+    assert _by_id(client)["DR-001"]["hidden"] is True
+    first_event = devtest._visibility_path().read_bytes()
+
+    # A second client has no device-local state to share; it still sees the server event.
+    from app.main import app
+    other_device = TestClient(app)
+    assert _by_id(other_device)["DR-001"]["hidden"] is True
+
+    restored = client.post("/api/devtest/visibility",
+                           json={"item_id": "DR-001", "hidden": False})
+    assert restored.status_code == 200
+    visibility = devtest._visibility_path().read_bytes()
+    assert visibility.startswith(first_event)
+    assert len(visibility) > len(first_event)
+    assert _by_id(other_device)["DR-001"]["hidden"] is False
+
+    assert feedback.read_bytes() == feedback_before
+    assert ledger.read_bytes() == ledger_before
+    assert client.get("/api/devtest/status").json()["pending"] == 1
+    history = client.get("/api/devtest/feedback", params={"item_id": "DR-001"}).json()["entries"]
+    assert history == []
+
+
+def test_visibility_follows_a_provisional_item_into_its_dr_row(client, monkeypatch, tmp_path):
+    """The normal path is NEW on the phone, then DR after triage. Hiding before that rename must
+    not silently resurrect the item, and a later unhide under its permanent id must win."""
+    ledger = _ledger(tmp_path, monkeypatch, LEDGER_WITH_ALIAS)
+    devtest._append_feedback({"kind": "new_item", "id": "NEW-1787325358",
+                              "title": "Only one figure?", "description": ""})
+    assert client.post("/api/devtest/visibility", json={
+        "item_id": "NEW-1787325358", "hidden": True,
+    }).status_code == 200
+
+    items = _by_id(client)
+    assert "NEW-1787325358" not in items
+    assert items["DR-091"]["hidden"] is True
+
+    assert client.post("/api/devtest/visibility", json={
+        "item_id": "DR-091", "hidden": False,
+    }).status_code == 200
+    assert _by_id(client)["DR-091"]["hidden"] is False
+    assert ledger.read_text(encoding="utf-8") == LEDGER_WITH_ALIAS
+
+
+def test_malformed_and_torn_visibility_records_cannot_empty_or_freeze_the_list(
+        client, monkeypatch, tmp_path):
+    _ledger(tmp_path, monkeypatch)
+    visibility = devtest._visibility_path()
+    visibility.write_text(
+        json.dumps({"kind": "visibility", "item_id": "DR-001", "hidden": True}) + "\n"
+        + "not json\n"
+        + "[]\n"
+        + json.dumps({"kind": "visibility", "item_id": "DR-001", "hidden": "false"}) + "\n"
+        + '{"torn": ',
+        encoding="utf-8",
+    )
+
+    # The valid hide survives every bad sibling record.
+    response = client.get("/api/devtest/items")
+    assert response.status_code == 200
+    assert {i["id"]: i for i in response.json()["items"]}["DR-001"]["hidden"] is True
+
+    # Appending heals the missing newline, just as feedback does, and the new valid event wins.
+    assert client.post("/api/devtest/visibility", json={
+        "item_id": "DR-001", "hidden": False,
+    }).status_code == 200
+    response = client.get("/api/devtest/items")
+    assert response.status_code == 200
+    assert {i["id"]: i for i in response.json()["items"]}["DR-001"]["hidden"] is False
+
+
+def test_visibility_does_not_change_attention_or_activity(client, monkeypatch, tmp_path):
+    _ledger(tmp_path, monkeypatch)
+    inbox = devtest._feedback_path()
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(
+        json.dumps({"item_id": "DR-001", "kind": "response",
+                    "ts": "2026-09-01T00:00:00+00:00", "text": "shipped"}) + "\n"
+        + json.dumps({"item_id": "DR-001", "kind": "feedback",
+                      "ts": "2026-09-02T00:00:00+00:00", "verdict": "remark",
+                      "comment": "one more thing"}) + "\n",
+        encoding="utf-8",
+    )
+    client.post("/api/devtest/visibility", json={"item_id": "DR-001", "hidden": True})
+
+    item = _by_id(client)["DR-001"]
+    assert item["hidden"] is True
+    assert item["awaiting_reply"] is True
+    assert item["last_activity_kind"] == "you"
+    assert item["last_activity"] == _epoch("2026-09-02T00:00:00+00:00")
+
+
+def test_visibility_requires_an_item_id(client):
+    assert client.post("/api/devtest/visibility",
+                       json={"item_id": "   ", "hidden": True}).status_code == 400
 
 
 # --- last activity per item (DR-118) ----------------------------------------------------------

@@ -555,6 +555,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/devtest/visibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Visibility
+         * @description Park or restore one item without rewriting the ledger or the feedback inbox.
+         *
+         *     The event log is shared by every device pointed at this dev backend. Unhide appends the
+         *     inverse event rather than deleting the hide, preserving the same no-rewrite guarantee as the
+         *     rest of Kamil's device input while keeping this operational state out of agent triage.
+         */
+        post: operations["set_visibility_api_devtest_visibility_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/devtest/feedback": {
         parameters: {
             query?: never;
@@ -2768,6 +2792,13 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** VisibilityReq */
+        VisibilityReq: {
+            /** Item Id */
+            item_id: string;
+            /** Hidden */
+            hidden: boolean;
+        };
     };
     responses: never;
     parameters: never;
@@ -3556,6 +3587,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NewItemReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_visibility_api_devtest_visibility_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VisibilityReq"];
             };
         };
         responses: {

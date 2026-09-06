@@ -43,7 +43,7 @@ async function openBubble() {
 }
 
 /** DR-123: the filter and sort chip rows moved behind the header's ⋮, closed on every open. The
- *  count caption and its "Show all" deliberately did NOT move — see the comment at their usage
+ *  count caption and its reset button deliberately did NOT move — see the comment at their usage
  *  site — so they stay reachable without this. */
 function openOptions(screen: ReturnType<typeof render>) {
   fireEvent.press(screen.getByTestId('devtest-options-toggle'));
@@ -87,32 +87,32 @@ test('the count caption says WHAT is narrowing the list, not just how many survi
   await waitFor(() => expect(screen.getByText(/narrowed by filter “Failed” and search “beta”/)).toBeTruthy());
 });
 
-test('"Show all" restores every item, clearing both the filter and the search in one tap', async () => {
+test('"Show visible" restores every visible item, clearing both filter and search in one tap', async () => {
   const screen = await openBubble();
   openOptions(screen);
   fireEvent.press(screen.getByLabelText('Passed'));
   fireEvent.changeText(screen.getByPlaceholderText('Search by id or title'), 'zulu');
   await waitFor(() => expect(screen.queryByText('Beta gadget')).toBeNull());
 
-  fireEvent.press(screen.getByText('Show all 3'));
+  fireEvent.press(screen.getByText('Show visible 3'));
 
   await waitFor(() => expect(screen.getByText('Beta gadget')).toBeTruthy());
   expect(screen.getByText('Zulu widget')).toBeTruthy();
   expect(screen.getByPlaceholderText('Search by id or title').props.value).toBe('');
-  expect(screen.getByLabelText('All').props.accessibilityState.selected).toBe(true);
+  expect(screen.getByLabelText('Visible').props.accessibilityState.selected).toBe(true);
   expect(screen.queryByTestId('devtest-match-row')).toBeNull();
 });
 
 // Sort reorders the matched set; it never hides a row. Resetting it would undo a choice that has
-// nothing to do with the complaint, so "Show all" must leave it exactly where the tester put it.
-test('"Show all" leaves the sort mode alone', async () => {
+// nothing to do with the complaint, so the reset must leave it exactly where the tester put it.
+test('"Show visible" leaves the sort mode alone', async () => {
   const screen = await openBubble();
   openOptions(screen);
   fireEvent.press(screen.getByLabelText('A–Z'));
   fireEvent.press(screen.getByLabelText('Reviewed'));
   await waitFor(() => expect(screen.getByTestId('devtest-match-row')).toBeTruthy());
 
-  fireEvent.press(screen.getByText('Show all 3'));
+  fireEvent.press(screen.getByText('Show visible 3'));
 
   await waitFor(() => expect(screen.getByLabelText('A–Z').props.accessibilityState.selected).toBe(true));
   expect(screen.getByText(/^Results \(3\)/)).toBeTruthy();
@@ -124,8 +124,8 @@ test('"Show all" leaves the sort mode alone', async () => {
 // special-cased the button and both other doors still reproduced it (and the All chip is the more
 // likely one here — Kamil's complaint is literally about the filter chips).
 describe.each([
-  ['the "Show all" button', (s: ReturnType<typeof render>) => fireEvent.press(s.getByText('Show all 3'))],
-  ['the "All" chip', (s: ReturnType<typeof render>) => fireEvent.press(s.getByLabelText('All'))],
+  ['the "Show visible" button', (s: ReturnType<typeof render>) => fireEvent.press(s.getByText('Show visible 3'))],
+  ['the "Visible" chip', (s: ReturnType<typeof render>) => fireEvent.press(s.getByLabelText('Visible'))],
 ])('leaving a filter via %s', (_label, leave) => {
   test('does not hide the closed items the filter had just put on screen', async () => {
     await seedVerdict('DR-C', 'fail');
@@ -244,9 +244,9 @@ test('the reveal still happens when the chip is measured before the filter is re
     return toolbarDraft;
   };
   try {
-    const screen = await openBubble();                     // renders on the pre-hydration "All"
+    const screen = await openBubble();                     // renders on the default "Visible"
     openOptions(screen);
-    expect(screen.getByLabelText('All').props.accessibilityState.selected).toBe(true);
+    expect(screen.getByLabelText('Visible').props.accessibilityState.selected).toBe(true);
     fireEvent(screen.getByLabelText('Failed'), 'layout', { nativeEvent: { layout: { x: 320, y: 0, width: 70, height: 28 } } });
     expect(scrollTo).not.toHaveBeenCalled();               // nothing is selected there yet
 
@@ -333,11 +333,11 @@ test('closing the sheet closes the options menu and re-arms the reveal', async (
   scrollTo.mockRestore();
 });
 
-test('the default "All" chip never triggers a scroll — it is already the leftmost chip', async () => {
+test('the default "Visible" chip never triggers a scroll — it is already the leftmost chip', async () => {
   const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
   const screen = await openBubble();
   openOptions(screen);
-  fireEvent(screen.getByLabelText('All'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 40, height: 28 } } });
+  fireEvent(screen.getByLabelText('Visible'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 56, height: 28 } } });
   expect(scrollTo).not.toHaveBeenCalled();
   scrollTo.mockRestore();
 });

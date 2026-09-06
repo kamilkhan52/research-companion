@@ -155,12 +155,16 @@ export function sectionItems(items: DevTestItem[]): {
 // to be easily able to jump back into whatever I was working on and then find the next one to
 // work on." Filtering needs to know which items already carry a pass/fail verdict; sorting by
 // recency needs to know WHEN. Both live in the DR-075 per-item persisted draft already.
-export type ReviewFilter = 'all' | 'needsreply' | 'unreviewed' | 'reviewed' | 'passed' | 'failed' | 'closed';
+export type ReviewFilter = 'all' | 'hidden' | 'needsreply' | 'unreviewed' | 'reviewed' | 'passed' | 'failed' | 'closed';
 export type SortMode = 'default' | 'activity' | 'recent' | 'az';
 export type VerdictInfo = { verdict: 'pass' | 'fail'; at: number };
 
 export const REVIEW_FILTERS: { key: ReviewFilter; label: string }[] = [
-  { key: 'all', label: 'All' },
+  // DR-132: this is intentionally called Visible rather than All. Hidden items leave every
+  // working view, while the adjacent Hidden filter is the explicit, recoverable way back.
+  // Keeping the old internal key preserves every phone's persisted toolbar state.
+  { key: 'all', label: 'Visible' },
+  { key: 'hidden', label: 'Hidden' },
   // DR-134 — Kamil: "I made comments on Passed items expecting they'd be seen." They were not.
   // Every other filter here keys on the VERDICT, and recording a Pass drops the card out of the
   // default "Not reviewed" view — so a comment added afterwards lands somewhere he cannot see.
@@ -410,12 +414,16 @@ function stateTone(state: string, t: ThemePalette): string {
 export function matchesFilter(
   item: DevTestItem, filter: ReviewFilter, verdict: 'pass' | 'fail' | undefined,
 ): boolean {
+  // DR-132's hide is orthogonal to lifecycle and verdict: once parked, a row must not leak back
+  // into Needs reply, Closed, or a verdict filter merely because it also has that property.
+  // The dedicated Hidden view is the one recovery path. Missing is visible for old responses.
+  if (filter === 'hidden') return item.hidden === true;
+  if (item.hidden === true) return false;
   // DR-132 — "Those closed should also move out of the way. There should be a filter so I don't
   // have to see closed issues when I'm not trying to." They are 42 of 137 and only grow.
   //
-  // Excluded from the WORKING views, not from `all`. Making "All" quietly mean "all except 42"
-  // is the DR-116 failure — a list that is short for a reason nothing on screen states — and it
-  // broke fourteen existing tests that were right to assume All means all.
+  // Excluded from the WORKING views, not from the visible collection as a whole. The default
+  // filter is now labelled Visible (rather than claiming to be All), so this remains explicit.
   //
   // `needsreply` is the other exception, and it has to be: a closed row only carries
   // `awaiting_reply` when he came back to it AFTER a reply, which is him reopening something.
@@ -440,6 +448,7 @@ export function matchesFilter(
 
 export function cardMeta(item: DevTestItem, verdict: 'pass' | 'fail' | undefined): string {
   const parts: string[] = [];
+  if (item.hidden) parts.push('Hidden');
   // The verdict leads, and it is the one ordering decision here worth explaining. This line is
   // bounded, so whatever is last is what an OS font scale truncates away — and the verdict is
   // both the shortest token and the one DR-075 exists for ("this helps me see what next to
@@ -486,9 +495,14 @@ export function narrowingReasons(query: string, filter: ReviewFilter): string[] 
  *  answers "is anything set in there", which sort certainly is. Leaving sort out of both would
  *  make a restored "Recently reviewed" the one persisted choice with nothing on screen — the
  *  state DR-118's row warned about in advance, now that the chips are behind a menu. */
-export function optionsNote(narrowedBy: string[], sort: SortMode): string {
+export function optionsNote(
+  narrowedBy: string[], sort: SortMode, hiddenCount = 0,
+): string {
   const parts: string[] = [];
   if (narrowedBy.length) parts.push('A filter or search is narrowing the list.');
+  if (hiddenCount > 0) {
+    parts.push(`${hiddenCount} ${hiddenCount === 1 ? 'item is' : 'items are'} parked in Hidden.`);
+  }
   if (sort !== 'default') {
     parts.push(`Sorted by ${SORT_MODES.find((s) => s.key === sort)?.label ?? sort}.`);
   }
@@ -623,17 +637,24 @@ export function DevTestBubble() {
     draftKey('devtest-toolbar'), { query: '', filter: 'all', sort: 'default' },
   );
   const { query, filter, sort } = toolbar.value;
+  const visibleCount = useMemo(() => items.filter((item) => !item.hidden).length, [items]);
+  const hiddenCount = items.length - visibleCount;
   // DR-116: what is currently hiding rows, named rather than merely counted. Empty ⇒ the list
   // is complete and no caption/reset is warranted.
   const narrowedBy = useMemo(() => narrowingReasons(query, filter), [query, filter]);
+  // A parked row shortens the default list too. Keep that fact visible even though the persisted
+  // internal key remains `all` for backwards compatibility; otherwise DR-116 returns with a
+  // default-looking sheet whose section totals silently omit rows.
+  const hiddenDefaultNotice = hiddenCount > 0 && filter === 'all' && !query.trim();
   const narrowed = narrowedBy.length > 0;
+  const showMatchNotice = narrowed || hiddenDefaultNotice;
   // DR-123: what the ⋮ has to announce, which is NOT the same set as what narrows the list.
   // Sort hides nothing, so it is deliberately absent from `narrowingReasons` and from the count
   // caption — but it is persisted, and with the chips behind a menu it became the one toolbar
   // choice with no trace on screen at all. DR-118's own row predicted this exactly: "nothing on
   // screen would have explained the order" (Opus review, PR #479).
   const optionsSummary = useMemo(
-    () => optionsNote(narrowedBy, sort), [narrowedBy, sort],
+    () => optionsNote(narrowedBy, sort, hiddenCount), [hiddenCount, narrowedBy, sort],
   );
   const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
 
@@ -663,11 +684,14 @@ export function DevTestBubble() {
     sortChips.markChosen();
     toolbar.setValue((v) => ({ ...v, sort: next }));
   };
-  // DR-116: one tap back to the whole list. Sort is left alone — see `narrowingReasons`.
+  // DR-116: one tap back to the visible list. Sort is left alone — see `narrowingReasons`.
+  // DR-132 gives hidden rows their own explicit filter; this reset must not undo that deliberate
+  // parking by mixing those rows back into the queue.
   const showEverything = () => {
     setFilter('all');
     setQuery('');
   };
+  const showHidden = () => setFilter('hidden');
   // "Everything else" is force-open while narrowed, so LEAVING that state must not re-collapse it:
   // the closed rows a filter had put on screen would vanish a frame later, which is a miniature of
   // the very complaint DR-116 is about. Bound to the narrowed state rather than to the "Show all"
@@ -697,6 +721,17 @@ export function DevTestBubble() {
     } catch {
       /* a failed refresh leaves the last good list; the next open re-fetches. */
     }
+  }, []);
+
+  // A successful append is authoritative, so update the row in place instead of adding a
+  // refetch race after the write. Every normal filter excludes a hidden row; restoring removes
+  // it from the Hidden view. A just-created pin must leave too, or it would bypass filtering.
+  const changeVisibility = useCallback(async (id: string, nextHidden: boolean) => {
+    await api.setDevTestItemVisibility(id, nextHidden);
+    setItems((prev) => prev.map((item) => (
+      item.id === id ? { ...item, hidden: nextHidden } : item
+    )));
+    if (nextHidden) setJustCreated((item) => (item?.id === id ? null : item));
   }, []);
 
   // DR-134: the badge is derived from which item a LIVE session is on, so it has to move when
@@ -935,18 +970,24 @@ export function DevTestBubble() {
               DR-116 itself: unnarrowed it renders NOTHING (so it costs him no top space, which is
               the actual complaint), and narrowed it is the only thing on screen that says why the
               list is short. Hiding that behind a menu is the state DR-116 was filed about. */}
-          {narrowed ? (
+          {showMatchNotice ? (
             <View style={styles.matchRow} testID="devtest-match-row">
               <Text variant="caption" color={t.muted} style={styles.matchCount}>
-                {filteredItems.length} of {items.length} shown · narrowed by {narrowedBy.join(' and ')}
+                {hiddenDefaultNotice
+                  ? `${visibleCount} visible · ${hiddenCount} hidden · ${items.length} total`
+                  : `${filteredItems.length} of ${filter === 'hidden' ? hiddenCount : visibleCount} shown · narrowed by ${narrowedBy.join(' and ')}${filter !== 'hidden' && hiddenCount ? ` · ${hiddenCount} hidden` : ''}`}
               </Text>
               <SmallButton
-                title={`Show all ${items.length}`}
+                title={hiddenDefaultNotice
+                  ? `Show hidden ${hiddenCount}`
+                  : `Show visible ${visibleCount}`}
                 icon="rotate-ccw"
                 // Says what it DOES, not what it is — this is the escape hatch the whole row
                 // exists for, and "Show all 117" alone does not say the filter goes with it.
-                accessibilityLabel={`Show all ${items.length} items — clears the filter and search`}
-                onPress={showEverything}
+                accessibilityLabel={hiddenDefaultNotice
+                  ? `Show ${hiddenCount} hidden ${hiddenCount === 1 ? 'item' : 'items'}`
+                  : `Show ${visibleCount} visible items — clears the filter and search`}
+                onPress={hiddenDefaultNotice ? showHidden : showEverything}
               />
             </View>
           ) : null}
@@ -1087,6 +1128,7 @@ export function DevTestBubble() {
                     startExpanded
                     onExpandChange={onExpandChange}
                     onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
+                    onVisibilityChange={changeVisibility}
                     onVerdictChange={reportVerdict}
                     dispatchModel={modelDraft.value}
                   />
@@ -1113,6 +1155,7 @@ export function DevTestBubble() {
                       // which made it the first place the fail prompt was silently dead.
                       onExpandChange={onExpandChange}
                       onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
+                      onVisibilityChange={changeVisibility}
                     />
                   ))}
                 </>
@@ -1122,13 +1165,15 @@ export function DevTestBubble() {
                   {sections.verify.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
+                    onVisibilityChange={changeVisibility} />
                   ))}
                   <Section label={`Open (${sections.open.length})`} tone={t.amber} />
                   {sections.open.map((i) => (
                     <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
+                    onVisibilityChange={changeVisibility} />
                   ))}
                   {/* DR-116: while a search or filter is narrowing the list, this section is
                       never collapsed. Collapsed, it hides rows the caption above has already
@@ -1156,7 +1201,8 @@ export function DevTestBubble() {
                     ? sections.rest.map((i) => (
                         <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} dispatchModel={modelDraft.value}
                       onExpandChange={onExpandChange}
-                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems} />
+                    onFailRecorded={queueFailPrompt} onRecorded={refreshItems}
+                    onVisibilityChange={changeVisibility} />
                       ))
                     : null}
                 </>
@@ -1800,7 +1846,7 @@ interface ItemCardDraft {
 // card would mean mocking the network fetch just to get here.
 export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange,
                           dispatchModel, activity, onExpandChange, onFailRecorded,
-                          onRecorded }: {
+                          onRecorded, onVisibilityChange }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
   /** Told when this card opens or closes, so the list can restore the reading position it
    *  had before all that content appeared. */
@@ -1812,6 +1858,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   /** DR-134: a verdict or comment just changed what the SERVER thinks is unanswered, and that
    *  is not derivable here — the sheet has to re-ask. Fires after a successful record only. */
   onRecorded?: () => void;
+  /** Shared server-side queue parking. Resolves only after the append succeeds, so the card
+   *  stays reachable and can report an error if the dev backend is unavailable. */
+  onVisibilityChange?: (id: string, hidden: boolean) => Promise<void>;
   /** DR-118: "You opened it · 2h ago" and friends — what the "Last activity" sort ordered this
    *  card by. Undefined under every other sort, where it would be noise. */
   activity?: string;
@@ -1839,6 +1888,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   );
   const { expanded, comment, attach, verdict: lastVerdict, verdictAt } = draft.value;
   const [busy, setBusy] = useState(false);
+  const [visibilityBusy, setVisibilityBusy] = useState(false);
   const [history, setHistory] = useState<DevTestFeedbackEntry[] | null>(null);
   // Not persisted: "collapsed" is the right state to come back to every time, and remembering
   // per item would recreate the wall of text on exactly the cards he reads most.
@@ -1954,6 +2004,20 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   };
 
   const verdictColor = lastVerdict === 'pass' ? t.mint : lastVerdict === 'fail' ? t.danger : null;
+
+  const changeItemVisibility = async () => {
+    if (!onVisibilityChange) return;
+    setVisibilityBusy(true);
+    try {
+      const nextHidden = !item.hidden;
+      await onVisibilityChange(item.id, nextHidden);
+      showToast(`${item.id}: ${nextHidden ? 'hidden for now' : 'restored'}.`);
+    } catch (e) {
+      showToast((e as Error).message ?? 'Could not change item visibility.');
+    } finally {
+      setVisibilityBusy(false);
+    }
+  };
 
   return (
     <View style={[styles.card, verdictColor ? { borderColor: verdictColor } : null]}>
@@ -2140,6 +2204,18 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
             <SmallButton title="Comment" icon="message-circle" disabled={busy}
               onPress={() => void send('remark')} />
           </View>
+          {onVisibilityChange ? (
+            <View style={styles.row}>
+              <SmallButton
+                title={item.hidden ? 'Restore' : 'Hide for now'}
+                icon={item.hidden ? 'eye' : 'eye-off'}
+                loading={visibilityBusy}
+                disabled={visibilityBusy}
+                onPress={() => void changeItemVisibility()}
+                testID="devtest-item-visibility"
+              />
+            </View>
+          ) : null}
           {/* DR-092: hand THIS issue to a Claude session, on the model the bubble picker holds.
               Fire-on-tap; the toast and its eventual bubble reply confirm. */}
           {/* Two buttons, not a toggle: continuing is the default and the common case, so it

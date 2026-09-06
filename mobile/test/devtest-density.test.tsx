@@ -135,8 +135,10 @@ test('the ⋮ says nothing while every option is at its default', async () => {
   expect(screen.getByLabelText('Options — filter, sort and dispatch')).toBeTruthy();
 });
 
-test('optionsNote covers a narrowing, a sort, both, and neither', () => {
+test('optionsNote covers narrowing, hidden items, sorting, and defaults', () => {
   expect(optionsNote([], 'default')).toBe('');
+  expect(optionsNote([], 'default', 1)).toBe('1 item is parked in Hidden.');
+  expect(optionsNote([], 'default', 2)).toBe('2 items are parked in Hidden.');
   expect(optionsNote([], 'az')).toBe('Sorted by A–Z.');
   expect(optionsNote(['filter “Failed”'], 'default'))
     .toBe('A filter or search is narrowing the list.');
