@@ -30,6 +30,10 @@ const ITEMS: DevTestItem[] = [
     id: 'DR-HIDDEN', state: 'implemented — verify', raised: '2026-09-06',
     title: 'Parked item', how_to_test: '', feedback_count: 0, hidden: true,
   },
+  {
+    id: 'DR-CLOSED', state: 'closed', raised: '2026-09-06',
+    title: 'Settled item', how_to_test: '', feedback_count: 0, hidden: false,
+  },
 ];
 
 async function openBubble() {
@@ -46,9 +50,14 @@ afterEach(async () => AsyncStorage.clear());
 test('the default queue says what it omitted and offers a direct route to Hidden', async () => {
   const screen = await openBubble();
 
-  expect(screen.getByText('1 of 2 shown · 1 hidden')).toBeTruthy();
+  expect(screen.getByText('2 visible · 1 hidden · 3 total')).toBeTruthy();
   expect(screen.getByLabelText('Options — filter, sort and dispatch. 1 item is parked in Hidden.'))
     .toBeTruthy();
+  // Merely having a parked row must not force open the settled/noise section or remove its
+  // collapse control. This is a different concern from an active filter/search narrowing.
+  expect(screen.queryByText('Settled item')).toBeNull();
+  fireEvent.press(screen.getByText('Everything else (1)'));
+  expect(screen.getByText('Settled item')).toBeTruthy();
 
   fireEvent.press(screen.getByText('Show hidden 1'));
   await waitFor(() => expect(screen.getByText('Parked item')).toBeTruthy());

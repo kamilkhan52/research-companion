@@ -646,7 +646,8 @@ export function DevTestBubble() {
   // internal key remains `all` for backwards compatibility; otherwise DR-116 returns with a
   // default-looking sheet whose section totals silently omit rows.
   const hiddenDefaultNotice = hiddenCount > 0 && filter === 'all' && !query.trim();
-  const narrowed = narrowedBy.length > 0 || hiddenDefaultNotice;
+  const narrowed = narrowedBy.length > 0;
+  const showMatchNotice = narrowed || hiddenDefaultNotice;
   // DR-123: what the ⋮ has to announce, which is NOT the same set as what narrows the list.
   // Sort hides nothing, so it is deliberately absent from `narrowingReasons` and from the count
   // caption — but it is persisted, and with the chips behind a menu it became the one toolbar
@@ -969,11 +970,11 @@ export function DevTestBubble() {
               DR-116 itself: unnarrowed it renders NOTHING (so it costs him no top space, which is
               the actual complaint), and narrowed it is the only thing on screen that says why the
               list is short. Hiding that behind a menu is the state DR-116 was filed about. */}
-          {narrowed ? (
+          {showMatchNotice ? (
             <View style={styles.matchRow} testID="devtest-match-row">
               <Text variant="caption" color={t.muted} style={styles.matchCount}>
                 {hiddenDefaultNotice
-                  ? `${visibleCount} of ${items.length} shown · ${hiddenCount} hidden`
+                  ? `${visibleCount} visible · ${hiddenCount} hidden · ${items.length} total`
                   : `${filteredItems.length} of ${filter === 'hidden' ? hiddenCount : visibleCount} shown · narrowed by ${narrowedBy.join(' and ')}${filter !== 'hidden' && hiddenCount ? ` · ${hiddenCount} hidden` : ''}`}
               </Text>
               <SmallButton
