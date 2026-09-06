@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { useAddPaper, useGraph, useRelatedWorks } from '@/api/queries';
-import type { GraphRetrievalCandidate, GraphStatus, Paper, RelatedWork } from '@/api/types';
+import type { GraphRetrievalCandidate, Paper, RelatedWork } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
 import {
@@ -50,8 +50,18 @@ export function RelatedWorksSheet({
   const status = graph.data?.status ?? null;
   const works = related.data ?? [];
   const resumeBuild = build.resume;
+  const refetchGraph = graph.refetch;
   const graphRevision = graph.data?.graph?.revision ?? graph.data?.status.graph_revision ?? null;
   const observedRevision = useRef<string | null | undefined>(undefined);
+
+  // Project queries remain fresh for 30 seconds. Without an explicit read on this edge, a quick
+  // close/reopen can reuse the pre-start `{build: null}` snapshot and falsely offer another build
+  // while the durable server job is already running. Force this cheap status read on every open;
+  // TanStack deduplicates it with an ordinary stale refetch when both are due.
+  useEffect(() => {
+    if (!visible || !pid) return;
+    void refetchGraph();
+  }, [visible, pid, refetchGraph]);
 
   useEffect(() => {
     if (!visible) return;
@@ -79,16 +89,15 @@ export function RelatedWorksSheet({
 
   const initialLoading =
     (!related.data && related.isLoading) || (!graph.data && graph.isLoading);
-  const initialError =
-    (!related.data && related.isError) || (!graph.data && graph.isError);
+  const initialError = !related.data && related.isError;
+  const graphUnavailable = !graph.data && graph.isError;
   const needsUpdate = Boolean(
     status?.has_graph && (status.graph_needs_enrichment || status.stale_papers.length > 0),
   );
   const canBuild = canStartGraphBuild(status);
-  const candidateSources = {
-    ...(status?.retrieval_candidates ?? {}),
-    ...(build.progress?.retrievalCandidates ?? {}),
-  };
+  const candidateSources = build.progress?.retrievalCandidates
+    ?? status?.retrieval_candidates
+    ?? {};
 
   return (
     <BottomSheet visible={visible} onClose={onClose} scrollable>
@@ -118,6 +127,21 @@ export function RelatedWorksSheet({
         </Card>
       ) : (
         <View style={styles.content}>
+          {graphUnavailable ? (
+            <Card style={styles.errorCard}>
+              <Text variant="body" color={t.danger}>
+                Could not check the map or its current build. Related works already loaded are
+                still available below.
+              </Text>
+              <Button
+                title="Retry status"
+                variant="ghost"
+                onPress={() => void graph.refetch()}
+                style={{ marginTop: space.sm }}
+              />
+            </Card>
+          ) : null}
+
           {build.progress ? (
             <RelatedBuildProgress progress={build.progress} papers={papers} />
           ) : null}
@@ -145,13 +169,15 @@ export function RelatedWorksSheet({
             <Text variant="body" color={t.muted} style={styles.emptyCopy}>
               {build.building
                 ? 'Related works will appear here as the map gains evidence.'
-                : status?.has_graph
+                : !status
+                  ? 'Map status is unavailable right now.'
+                  : status.has_graph
                   ? 'No significant related works surfaced for this paper yet.'
                   : 'No related works yet. Build the project reference map here; it keeps running if you close this sheet.'}
             </Text>
           ) : null}
 
-          {!build.building && !build.error && (!status?.has_graph || needsUpdate) ? (
+          {!build.building && !build.error && status && (!status.has_graph || needsUpdate) ? (
             <View style={styles.buildOffer}>
               <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>
                 {status?.has_graph
@@ -214,7 +240,9 @@ function RelatedBuildProgress({
           <Text variant="heading">{complete ? 'Related works updated' : 'Building related works…'}</Text>
         </View>
         <Text variant="caption" color={t.muted}>
-          {events.length} of {progress.total}
+          {progress.ready > 0
+            ? `${progress.done} of ${progress.ready} analyzed`
+            : `${progress.done} analyzed`}
         </Text>
       </View>
       <Text variant="caption" color={t.muted} style={{ marginTop: 4 }}>
@@ -276,7 +304,8 @@ function SourceConfirmations({
     <Card style={styles.confirmationCard}>
       <Text variant="heading">Confirm paper sources</Text>
       <Text variant="caption" color={t.muted} style={{ marginTop: 4 }}>
-        These matches were not confident enough to retrieve automatically.
+        These matches were not confident enough to retrieve automatically. Choosing one starts
+        an incremental build and may use your model allowance.
       </Text>
       {entries.map(([paperSlug, options]) => (
         <View key={paperSlug} style={{ gap: space.xs, marginTop: space.sm }}>

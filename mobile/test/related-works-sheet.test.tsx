@@ -178,6 +178,7 @@ test('rejoins a retained build and keeps completed paper events while later work
   await waitFor(() => expect(resume).toHaveBeenCalledWith(RUNNING_JOB));
   expect(screen.getByText('Alpha Paper')).toBeTruthy();
   expect(screen.getByText('Analyzed')).toBeTruthy();
+  expect(screen.getByText('1 of 2 analyzed')).toBeTruthy();
   expect(screen.queryByText('Beta Paper')).toBeNull();
 
   buildState = {
@@ -224,4 +225,16 @@ test('a fresh built graph with no significant edge reports an honest empty resul
   expect(screen.queryByText('Build related works')).toBeNull();
   expect(screen.queryByText('Update related works')).toBeNull();
   expect(run).not.toHaveBeenCalled();
+});
+
+test('a map-status failure does not blank related cards that loaded successfully', async () => {
+  relatedResult = { ...relatedResult, data: [RELATED] };
+  graphResult = {
+    data: undefined, isLoading: false, isError: true, refetch: graphRefetch,
+  };
+  await renderAsync(sheet());
+
+  expect(screen.getByText('The Annotated Transformer')).toBeTruthy();
+  expect(screen.getByText(/Could not check the map or its current build/)).toBeTruthy();
+  expect(screen.queryByText('Build related works')).toBeNull();
 });
