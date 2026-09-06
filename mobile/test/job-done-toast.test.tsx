@@ -68,6 +68,26 @@ test('a build that settles as done fires the ready toast once', async () => {
   client.clear();
 });
 
+test('a secondary build observer can suppress the shared completion toast', async () => {
+  jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: baseJob });
+  jest.mocked(api.getGraphBuildStatus).mockResolvedValue({
+    build: { ...baseJob, status: 'done', finished_at: '2026-07-16T00:05:00Z' },
+  });
+  const { client, Wrapper } = harness();
+
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useGraphBuild('project-a', { completionToast: false }),
+    { wrapper: Wrapper },
+  );
+  await act(async () => { await result.current.run(); });
+
+  await waitFor(() => expect(result.current.building).toBe(false));
+  expect(showToast).not.toHaveBeenCalled();
+
+  await unmountAsync();
+  client.clear();
+});
+
 // DR-069 — the codex-designed control-rail toast ("Map updated · N papers") needs a real count
 // to be a signal rather than a chime; falls back to the old copy when a settled job carries no
 // graph (shouldn't happen on a real 'done' job, but the toast must not crash or say "· undefined").

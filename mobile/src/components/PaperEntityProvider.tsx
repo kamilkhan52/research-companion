@@ -152,6 +152,7 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
           <RelatedWorksSheet
             pid={activePid}
             slug={relatedSlug}
+            papers={papers ?? []}
             visible={relatedSlug !== null}
             onClose={() => setRelatedSlug(null)}
             onOpenPaper={(target) => {
