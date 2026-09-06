@@ -1,6 +1,8 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
+import { File as ExpoFile } from 'expo-file-system';
+
 import { noting, scopedJob } from './planInvalidation';
 import {
   apiDelete,
@@ -481,11 +483,11 @@ export interface NativeUploadFile {
 export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) => {
   const body = new FormData();
   body.append('slug', slug);
-  body.append('file', {
-    uri: file.uri,
-    name: file.name,
-    type: file.mimeType || 'application/pdf',
-  } as unknown as Blob);
+  // Expo 56's fetch implementation deliberately rejects React Native's legacy
+  // `{ uri, name, type }` FormData part with "Unsupported FormDataPart implementation".
+  // Its filesystem File implements the blob/bytes contract the multipart encoder accepts and
+  // reads the picker cache lazily, without copying a PDF into JavaScript memory first.
+  body.append('file', new ExpoFile(file.uri) as unknown as Blob, file.name);
   return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body).then(noting((r) => r.job));
 };
 
