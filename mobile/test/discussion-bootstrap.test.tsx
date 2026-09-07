@@ -1,4 +1,4 @@
-import { act, renderAsync, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { ReaderBriefing } from '@/hooks/useReaderBriefing';
@@ -50,13 +50,17 @@ jest.mock('@/hooks/useStreamingTurn', () => ({ useStreamingTurn: () => mockStrea
 
 const emptyReader = (): ReaderBriefing => ({
   offer: null,
+  offerOpen: false,
+  openOffer: jest.fn(),
+  closeOffer: jest.fn(),
   job: null,
   selected: new Set(),
   toggle: jest.fn(),
   start: jest.fn(async () => undefined),
-  dismissOffer: jest.fn(),
   dismissJob: jest.fn(),
   cancel: jest.fn(async () => undefined),
+  fetching: {},
+  fetchCandidate: jest.fn(async () => undefined),
   starting: false,
   error: null,
 });
@@ -263,6 +267,50 @@ test('a cold route keeps a short flash guard after the route deadline has elapse
   await waitFor(() => expect(view.getByText('Reading modes')).toBeTruthy());
   act(() => jest.advanceTimersByTime(70));
   expect(view.queryByTestId('paper-setup-loading-skeleton')).toBeNull();
+});
+
+// DR-145 — the offer is a window over the discussion, mounted beside the screen's other
+// sheets rather than inside the transcript, so it can never push the response being read.
+test('an earned offer renders as a window, not as a card in the transcript', async () => {
+  const closeOffer = jest.fn();
+  mockReader = {
+    ...emptyReader(),
+    offer: {
+      assistantIndex: 0,
+      candidates: [{ slug: 'cited', title: 'Cited paper', year: 2025, has_text: true }],
+    },
+    offerOpen: true,
+    closeOffer,
+    selected: new Set(['cited']),
+  };
+  const sessionRequest = deferred<Session>();
+  const { request, view } = await renderPendingSession({
+    state: projectState('in_discussion'),
+    sessionRequest,
+  });
+  await act(async () => {
+    request.resolve({
+      ...emptySession,
+      state: 'in_discussion',
+      transcript: [{
+        role: 'assistant',
+        assistant_index: 0,
+        canonical: 'An answer.',
+        narration: '',
+        state_signal: 'in_discussion',
+        proposed_commit: null,
+        delivery_mode: 'reading',
+        chat_job_id: 'chat-1',
+        audio_job_id: null,
+        audio_error: null,
+      }],
+    });
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(view.getByTestId('reader-offer')).toBeTruthy());
+  fireEvent.press(view.getByLabelText('Dismiss test bottom sheet'));
+  expect(closeOffer).toHaveBeenCalled();
 });
 
 test('an active reading pass is only a top-bar icon until the reader opens it', async () => {

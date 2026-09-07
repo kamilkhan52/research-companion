@@ -97,7 +97,12 @@ import { showToast } from '@/ui/Toast';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, NotesUpdateLink, ToolLine, startedNotesUpdate } from '@/components/AgentTrail';
-import { ReaderBriefsTrail, ReaderOfferCard, ReaderProgressIndicator } from '@/components/ReaderBriefs';
+import {
+  ReaderBriefsTrail,
+  ReaderOfferLink,
+  ReaderOfferSheet,
+  ReaderProgressIndicator,
+} from '@/components/ReaderBriefs';
 import { useReaderBriefing, type ReaderBriefing } from '@/hooks/useReaderBriefing';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
@@ -2465,6 +2470,11 @@ function DiscussionThread({
           narrationFollow={
             narrationTarget?.rowIndex === messages.indexOf(msg) ? narrationFollow : undefined
           }
+          readerOffer={
+            reader.offer && reader.offer.assistantIndex === msg.entry.assistant_index
+              ? { count: reader.offer.candidates.length, onOpen: reader.openOffer }
+              : undefined
+          }
         />
       );
     }
@@ -2479,7 +2489,7 @@ function DiscussionThread({
         <Markdown text={msg?.text ?? ''} textScale={discussionTextScale} />
       </View>
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale, narrationFollow, narrationTarget, messages]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, foldToProjectNotes, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale, narrationFollow, narrationTarget, messages, reader.offer, reader.openOffer]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2718,24 +2728,12 @@ function DiscussionThread({
         </Card>
       );
     }
-    // DR-140/146 — the offer stays under the response that earned it. Once accepted, the pass
-    // moves to the header's compact indicator and never occupies transcript space.
-    if (reader.offer) return (
-      <View style={{ marginBottom: composerHeight + space.md }}>
-        <ReaderOfferCard
-          candidates={reader.offer.candidates}
-          selected={reader.selected}
-          onToggle={reader.toggle}
-          onStart={() => void reader.start()}
-          onDismiss={reader.dismissOffer}
-          starting={reader.starting}
-          error={reader.error}
-        />
-      </View>
-    );
+    // DR-140/145/146 — neither the offer nor the pass occupies transcript space any more: the
+    // offer is a window reached from the indicator under the response that earned it, and an
+    // accepted pass reports from the header icon.
     return null;
   }, [pendingTurn, retryInterrupted, stream.clearError, stream.connectionNotice, stream.error,
-      stream.streaming, styles, theme, composerHeight, reader]);
+      stream.streaming, styles, theme, composerHeight]);
 
   const placeholder = editing
     ? 'Edit your message…'
@@ -2909,6 +2907,23 @@ function DiscussionThread({
       favorites={favorites}
       onRetry={handleFirstRetry}
     />
+    {/* DR-145 — the offer is a window over the discussion, not a card inside it. */}
+    {reader.offer ? (
+      <ReaderOfferSheet
+        visible={reader.offerOpen}
+        onClose={reader.closeOffer}
+        candidates={reader.offer.candidates}
+        selected={reader.selected}
+        onToggle={reader.toggle}
+        onStart={() => void reader.start()}
+        onDismiss={reader.closeOffer}
+        onFetch={(target) => void reader.fetchCandidate(target)}
+        fetching={reader.fetching}
+        starting={reader.starting}
+        error={reader.error}
+        textScale={discussionTextScale}
+      />
+    ) : null}
     <NotesReviewSheet
       visible={reviewOpen}
       pid={pid}
@@ -3674,6 +3689,7 @@ function AssistantBody({
   figureContext,
   sentenceAnnotations,
   narrationFollow,
+  readerOffer,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   /** The opening account of the paper, styled as an artifact rather than a reply. */
@@ -3696,6 +3712,8 @@ function AssistantBody({
   figureContext?: FigureContext;
   sentenceAnnotations?: SentenceAnnotations;
   narrationFollow?: NarrationSentenceFollow;
+  /** DR-145: the way back into this response's reading-assistant offer, if it earned one. */
+  readerOffer?: { count: number; onOpen: () => void };
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3776,6 +3794,15 @@ function AssistantBody({
           finishes the answer, not above it with the trail. */}
       {slug && entry.agent_trail && startedNotesUpdate(entry.agent_trail) ? (
         <NotesUpdateLink slug={slug} />
+      ) : null}
+      {/* DR-145 — same place, same reason: the offer to read the papers this response cites is
+          answerable where the reader finishes reading it, and never covers the answer. */}
+      {readerOffer ? (
+        <ReaderOfferLink
+          count={readerOffer.count}
+          onOpen={readerOffer.onOpen}
+          textScale={discussionTextScale}
+        />
       ) : null}
       {modelLabel ? (
         <Text
