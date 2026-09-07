@@ -9,15 +9,20 @@ import { createTestQueryClient } from './queryClient';
 
 const mockPush = jest.fn();
 const mockReuse = jest.fn();
+const mockSummaryOffer = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush }) }));
 jest.mock('@/ui/Toast', () => ({ showToast: jest.fn() }));
 jest.mock('@/components/ExistingPaperOffer', () => ({
   requestExistingPaperReuse: (offer: unknown) => mockReuse(offer),
 }));
+jest.mock('@/components/PaperSummaryOffer', () => ({
+  offerPaperSummary: (offer: unknown) => mockSummaryOffer(offer),
+}));
 
 beforeEach(() => {
   mockPush.mockReset();
   mockReuse.mockReset();
+  mockSummaryOffer.mockReset();
 });
 
 test('derives a provisional title from the selected PDF filename', () => {
@@ -109,6 +114,7 @@ test('a local PDF creates one paper, starts its upload, and opens that paper', a
   });
   expect(onClose).toHaveBeenCalledTimes(1);
   expect(mockPush).toHaveBeenCalledWith('/paper/my-great-paper');
+  expect(mockSummaryOffer).not.toHaveBeenCalled();
 });
 
 test('reusing a saved duplicate never overwrites its full text with the selected PDF', async () => {
@@ -168,6 +174,9 @@ test('reusing a saved duplicate never overwrites its full text with the selected
   await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/paper/saved-duplicate'));
   expect(api.addPaper).not.toHaveBeenCalled();
   expect(api.uploadPaper).not.toHaveBeenCalled();
+  expect(showToast).toHaveBeenCalledWith(
+    'Reused the saved paper and kept its existing full text.',
+  );
 });
 
 test('an immediate upload failure opens the one created paper for an obvious retry', async () => {

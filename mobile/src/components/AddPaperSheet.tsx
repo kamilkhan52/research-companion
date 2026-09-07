@@ -82,7 +82,7 @@ export function AddPaperSheet({
     setUploading(true);
     try {
       // A local PDF has no bibliographic identifier yet. Its filename is only the provisional
-      // reading-list title; extraction can offer the PDF's canonical title on the paper screen.
+      // reading-list title; the reader can replace it with Rename paper on the paper screen.
       const outcome = await addPaper.mutateAsync({
         title: titleFromPdfName(file.name),
         autoAnalyze: true,
@@ -92,6 +92,9 @@ export function AddPaperSheet({
       // Copy/Move reuse is a deliberate human choice in the duplicate sheet. Never overwrite
       // that saved paper's full text automatically; open it and leave its own Upload action.
       if (outcome.action !== 'added') {
+        showToast(outcome.paper.retrieved
+          ? 'Reused the saved paper and kept its existing full text.'
+          : 'Reused the saved paper. Upload the PDF again from its paper screen.');
         openPaper(outcome.paper.slug);
         return;
       }
