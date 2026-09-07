@@ -104,3 +104,12 @@ test('a result whose run recorded no focus shows no line', async () => {
   await waitFor(() => expect(screen.getByText(/60 papers across/)).toBeTruthy());
   expect(screen.queryByTestId('discover-run-focus')).toBeNull();
 });
+
+test('Discover results no longer bury the known-paper entry below the result list', async () => {
+  await renderDiscover({ focus: '' });
+  // Guard on the persisted result itself before the absence assertion: otherwise a screen that
+  // never loaded would also "prove" the field moved.
+  await waitFor(() => expect(screen.getByText(/60 papers across/)).toBeTruthy());
+  expect(screen.queryByLabelText('Paper title, DOI, or arXiv link')).toBeNull();
+  expect(screen.queryByText('OR ADD DIRECTLY')).toBeNull();
+});

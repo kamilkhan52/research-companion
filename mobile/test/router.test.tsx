@@ -69,6 +69,54 @@ test('a persisted hidden-title preference removes the whole Library header', asy
   )).toBeNull();
 });
 
+test('the active project pill opens Add paper and links onward to Discover', async () => {
+  client.clear();
+  await setBaseUrl('api.test');
+  jest.mocked(api.listProjects).mockResolvedValueOnce({
+    projects: [
+      { id: 'add-entry', name: 'Systems', created_at: null, favorite: false, paper_count: 1, read_count: 0 },
+    ],
+  });
+  jest.mocked(api.getProjectState).mockResolvedValueOnce({
+    project: { id: 'add-entry', name: 'Systems' },
+    has_key: true,
+    model: null,
+    narration_model: null,
+    preview_model: null,
+    speech_provider: null,
+    has_openai_key: false,
+    papers: [{
+      slug: 'existing',
+      title: 'Existing Paper',
+      group: 'Unsorted',
+      list_status: 'unread',
+      cites: [],
+      retrieved: false,
+      has_notes: false,
+      session_state: null,
+      arxiv_id: '',
+    }],
+  });
+  jest.mocked(api.getRecentSessions).mockResolvedValueOnce({ sessions: [] });
+  const rendered = renderRouter(
+    {
+      _layout: TestLayout,
+      index: LibraryScreen,
+      discover: () => <Text>Discover route</Text>,
+    },
+    { initialUrl: '/' },
+  );
+
+  const add = await screen.findByLabelText('Add paper to Systems');
+  await fireEventAsync.press(add);
+  await waitFor(() => expect(screen.getByText('Add a paper')).toBeTruthy());
+  expect(screen.getByLabelText('Upload a PDF from this device')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByLabelText('Explore papers with Discover'));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/discover'));
+  expect(screen.getByText('Discover route')).toBeTruthy();
+});
+
 test('continues the latest unfinished session across projects', async () => {
   await setBaseUrl('api.test');
   jest.mocked(api.listProjects).mockResolvedValueOnce({

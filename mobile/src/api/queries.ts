@@ -530,8 +530,8 @@ export function useAddPaper(pid: string) {
       /** Direct PDF link when the caller has one (URL adds) — not sent to the add itself,
        *  but carried into the initial-analysis offer so retrieval fetches that exact source. */
       pdfUrl?: string;
-      /** The known-paper entry point navigates straight to the running discussion and starts
-       *  there, so it must not also open the optional analysis-offer sheet. */
+      /** The caller owns the next step (for example, direct discussion start or local upload),
+       *  so it must not also open the optional analysis-offer sheet. */
       autoAnalyze?: boolean;
     }): Promise<AddPaperOutcome> => {
       const preflight = async () => {

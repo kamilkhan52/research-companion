@@ -70,6 +70,41 @@ test('the shared compact field adds, requests auto-analysis, and routes to its r
   expect(screen.queryByText('Start the paper summary?')).toBeNull();
 });
 
+test('an owning sheet closes before the new paper route is pushed', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({
+    paper: {
+      slug: 'close-first',
+      title: 'Close First',
+      group: 'Unsorted',
+      list_status: 'unread',
+      cites: [],
+      retrieved: false,
+      has_notes: false,
+      session_state: null,
+      arxiv_id: '',
+    },
+  });
+  const events: string[] = [];
+  const onNavigate = jest.fn(() => events.push('close'));
+  mockPush.mockImplementation(() => events.push('push'));
+  const client = createTestQueryClient();
+  await renderAsync(
+    <QueryClientProvider client={client}>
+      <AddPaperInline pid="project" showDivider={false} onNavigate={onNavigate} />
+      <PaperSummaryOfferHost />
+    </QueryClientProvider>,
+  );
+
+  await fireEventAsync.changeText(
+    screen.getByLabelText('Paper title, DOI, or arXiv link'),
+    'Close First',
+  );
+  await fireEventAsync.press(screen.getByLabelText('Add and start analysis'));
+
+  await waitFor(() => expect(mockPush).toHaveBeenCalledTimes(1));
+  expect(events).toEqual(['close', 'push']);
+});
+
 test('the specific-paper route focuses the same compact field', async () => {
   const client = createTestQueryClient();
   await renderAsync(
