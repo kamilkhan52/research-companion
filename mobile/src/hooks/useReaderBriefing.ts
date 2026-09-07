@@ -44,6 +44,7 @@ export function useReaderBriefing({
   pid,
   slug,
   threadId,
+  enabled = true,
   state,
   transcript,
   streaming,
@@ -53,6 +54,8 @@ export function useReaderBriefing({
   pid: string;
   slug: string;
   threadId: string;
+  /** False while the route has no established discussion. No reader-job request is made. */
+  enabled?: boolean;
   /** The session state: the offer exists only while the discussion is open (`in_discussion`)
    *  — after Finish the trailing records are a proposal, and the server refuses a pass then. */
   state: string | null;
@@ -93,7 +96,7 @@ export function useReaderBriefing({
     };
   }, []);
 
-  const candidatesEnabled = latestIndex != null && !streaming && job == null;
+  const candidatesEnabled = enabled && latestIndex != null && !streaming && job == null;
   const candidatesQuery = useReaderCandidates(pid, slug, threadId, candidatesEnabled);
   const candidates = candidatesQuery.data?.candidates ?? [];
   const candidatesIndex = candidatesQuery.data?.assistant_index ?? null;
@@ -143,6 +146,7 @@ export function useReaderBriefing({
     setStarting(false);
     setError(null);
     setDismissedFor(null);
+    if (!enabled) return;
     void (async () => {
       try {
         const active = (await getActiveReaderJob(pid, slug, threadId)).job;
@@ -155,7 +159,7 @@ export function useReaderBriefing({
         // No reattach; the offer flow below still works.
       }
     })();
-  }, [pid, slug, threadId, watch]);
+  }, [pid, slug, threadId, enabled, watch]);
 
   // A new response arrived (the follow-up landed, or the reader just replied): a terminal pass
   // card from the previous response is stale, and the "Not now" memory is per response.
@@ -194,7 +198,7 @@ export function useReaderBriefing({
   }, []);
 
   const start = useCallback(async () => {
-    if (starting || latestIndex == null) return;
+    if (!enabled || starting || latestIndex == null) return;
     const targets = candidates.filter((c) => c.has_text && selected.has(c.slug)).map((c) => c.slug);
     if (!targets.length) return;
     setStarting(true);
@@ -212,7 +216,7 @@ export function useReaderBriefing({
       if (presentSpendRefusal(e, { operation: 'other', retry: () => start() })) return;
       setError(e instanceof ApiError ? e.message : (e as Error)?.message ?? 'Could not start reading.');
     }
-  }, [starting, latestIndex, candidates, selected, pid, slug, threadId, candidatesIndex, deliveryMode, watch]);
+  }, [enabled, starting, latestIndex, candidates, selected, pid, slug, threadId, candidatesIndex, deliveryMode, watch]);
 
   const dismissOffer = useCallback(() => {
     if (latestKey == null) return;
@@ -235,17 +239,17 @@ export function useReaderBriefing({
   }, [job, pid]);
 
   const offer = useMemo(() => {
-    if (job || streaming || latestIndex == null || latestKey == null) return null;
+    if (!enabled || job || streaming || latestIndex == null || latestKey == null) return null;
     if (state !== 'in_discussion') return null; // the server refuses a pass behind a proposal
     if (!dismissedFor || dismissedFor.key !== latestKey || dismissedFor.dismissed) return null;
     if (candidatesIndex !== latestIndex) return null; // stale data from the previous response
     if (!candidates.some((c) => c.has_text)) return null;
     return { assistantIndex: latestIndex, candidates };
-  }, [job, streaming, state, latestIndex, latestKey, dismissedFor, candidatesIndex, candidates]);
+  }, [enabled, job, streaming, state, latestIndex, latestKey, dismissedFor, candidatesIndex, candidates]);
 
   return {
     offer,
-    job: job && (job.status === 'running' || job.assistant_index === latestIndex) ? job : null,
+    job: enabled && job && (job.status === 'running' || job.assistant_index === latestIndex) ? job : null,
     selected,
     toggle,
     start,

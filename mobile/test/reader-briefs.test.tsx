@@ -3,15 +3,18 @@
 // a simple status per assistant while they read, and the briefs viewable but collapsed.
 
 import { fireEvent, render } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import type { ReaderBrief, ReaderCandidate, ReaderJob } from '@/api/types';
 import {
   ReaderBriefsTrail,
   ReaderOfferCard,
   ReaderProgressCard,
+  ReaderProgressIndicator,
   readerHandoffLine,
   readerProgressTitle,
 } from '@/components/ReaderBriefs';
+import { fonts } from '@/theme/tokens';
 
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: jest.fn() }) }));
 
@@ -143,6 +146,50 @@ describe('the offer', () => {
 });
 
 describe('the pass', () => {
+  test('stays a header icon until opened, and the sheet can be hidden without losing it', () => {
+    const screen = render(
+      <ReaderProgressIndicator
+        job={job()}
+        onCancel={jest.fn()}
+        onDismiss={jest.fn()}
+        textScale={1.2}
+      />,
+    );
+    expect(screen.getByTestId('reader-progress-indicator')).toBeTruthy();
+    expect(screen.queryByTestId('reader-progress')).toBeNull();
+
+    fireEvent.press(screen.getByTestId('reader-progress-trigger'));
+    expect(screen.getByTestId('reader-progress')).toBeTruthy();
+    const title = screen.getByText('Reading 2 papers… 1 of 2 read');
+    const titleStyle = StyleSheet.flatten(title.props.style);
+    expect(titleStyle.fontFamily).toBe(fonts.serifMedium);
+    expect(titleStyle.fontSize).toBeCloseTo(15);
+
+    fireEvent.press(screen.getByLabelText('Dismiss test bottom sheet'));
+    expect(screen.queryByTestId('reader-progress')).toBeNull();
+    expect(screen.getByTestId('reader-progress-indicator')).toBeTruthy();
+  });
+
+  test('the sheet forwards Stop and a terminal Dismiss clears the pass', () => {
+    const onCancel = jest.fn();
+    const running = render(
+      <ReaderProgressIndicator job={job()} onCancel={onCancel} onDismiss={jest.fn()} />,
+    );
+    fireEvent.press(running.getByTestId('reader-progress-trigger'));
+    fireEvent.press(running.getByText('Stop after this paper'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+
+    const onDismiss = jest.fn();
+    const failed = job({ status: 'error', error: 'down', finished_at: 'x' });
+    const terminal = render(
+      <ReaderProgressIndicator job={failed} onCancel={jest.fn()} onDismiss={onDismiss} />,
+    );
+    fireEvent.press(terminal.getByTestId('reader-progress-trigger'));
+    fireEvent.press(terminal.getByText('Dismiss'));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(terminal.queryByTestId('reader-progress')).toBeNull();
+  });
+
   test('shows one status per paper while the assistants read', () => {
     const onCancel = jest.fn();
     const screen = render(<ReaderProgressCard job={job()} onCancel={onCancel} />);

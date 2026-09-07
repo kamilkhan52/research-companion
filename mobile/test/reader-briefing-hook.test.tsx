@@ -89,3 +89,27 @@ test('a remount reattaches to a cancelled pass whose paid worker is still unwind
   view.unmount();
   jest.useRealTimers();
 });
+
+test('a setup-only route does not look up a reader job with placeholder ids', async () => {
+  const client = createTestQueryClient();
+  const wrapper = ({ children }: PropsWithChildren) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+
+  const view = renderHook(() => useReaderBriefing({
+    pid: '',
+    slug: '',
+    threadId: 'main',
+    enabled: false,
+    state: null,
+    transcript: [],
+    streaming: false,
+    deliveryMode: 'reading',
+    resumeTurn: jest.fn(async () => undefined),
+  }), { wrapper });
+
+  await act(async () => undefined);
+  expect(getActiveReaderJob).not.toHaveBeenCalled();
+  expect(view.result.current.job).toBeNull();
+  expect(view.result.current.offer).toBeNull();
+});
