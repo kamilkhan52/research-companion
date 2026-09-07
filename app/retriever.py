@@ -420,13 +420,19 @@ def _open_access_record(doi: str) -> dict | None:
         return None
 
 
-def _download_open_access(pdf_urls: list[str]) -> tuple[bytes, str] | None:
-    """The first listed copy we can actually fetch, as (pdf bytes, url).
+def _download_open_access(pdf_urls: list[str]) -> tuple[bytes, str, str] | None:
+    """The first listed copy we can actually READ, as (pdf bytes, url, extracted text).
 
     Every failure is skipped rather than raised: OpenAlex records where a copy is SUPPOSED to be,
     and a link that 403s, 404s or answers with a challenge page is the normal case on at least one
     of them. `looks_like_pdf` is what makes that safe — a Cloudflare interstitial is a 200-with-
     HTML on some hosts, and extracting it would file an error page as the paper's text.
+
+    Extraction happens HERE rather than in the caller, because "we could not fetch it" and "we
+    fetched something pypdf cannot read" are the same fact to a reader and must skip the same way.
+    Doing it outside made the first copy decisive: a scanned repository copy — which is exactly
+    what an older paper's OA copy often is — raises out of `_extract_pdf`, and the remaining
+    copies, the arXiv fallthrough and the upload guidance were all never reached.
     """
     for url in pdf_urls[:_MAX_OA_COPIES]:
         arxiv_id = _arxiv_id_from_url(url)
@@ -434,8 +440,12 @@ def _download_open_access(pdf_urls: list[str]) -> tuple[bytes, str] | None:
             data = _fetch(f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else url)
         except RetrievalError:
             continue
-        if looks_like_pdf(data):
-            return data, url
+        if not looks_like_pdf(data):
+            continue
+        try:
+            return data, url, _extract_pdf(data)
+        except RetrievalError:
+            continue    # unparseable or image-only: the next copy may still be readable
     return None
 
 
@@ -454,10 +464,10 @@ def _doi_lane(doi: str, title: str) -> tuple[dict | None, str, bool]:
     got = _download_open_access(pdf_urls)
     if not got:
         return None, resolved_title, bool(pdf_urls)
-    data, url = got
+    data, url, full_text = got
     arxiv_id = _arxiv_id_from_url(url)
     return {
-        "full_text": _extract_pdf(data),
+        "full_text": full_text,
         "arxiv_id": arxiv_id,
         "source": f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else url,
         "matched_title": resolved_title or title,
@@ -474,7 +484,10 @@ def _doi_failure(doi: str, had_copies: bool) -> RetrievalError:
         detail = ("Every open-access copy of it refused an automated download — publishers such "
                   "as ACM answer this server with a bot challenge.")
     else:
-        detail = "No open-access copy of it is known, and no arXiv version matched its title."
+        # Deliberately makes no claim about the arXiv search: this message is built BEFORE that
+        # search runs and is also raised on the branches where it never runs at all (no title to
+        # search on, or the query API throttled).
+        detail = "No open-access copy of it is known."
     return RetrievalError(
         f"Could not retrieve DOI {doi}. {detail} "
         "Open it in a browser and upload the PDF, or paste a direct PDF link.")
@@ -502,7 +515,12 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     # DR-139 — a DOI given as an identifier is resolved, never downloaded. Both fields can carry
     # one: the client sends a pasted https://doi.org/… link as `pdf_url`, and anything without a
     # scheme (a bare DOI typed into "add a paper") as `arxiv_id`.
-    doi = doi_identifier(pdf_url or "") or doi_identifier(arxiv_id or "")
+    # `title` is in the chain because the Library's "Add" field sends a bare DOI as the paper's
+    # TITLE (`parseKnownPaper` recognises only arXiv shapes and `http(s)://`), and its own
+    # placeholder says "Title, DOI, or arXiv link". Without this the DOI is title-searched on
+    # arXiv as the literal string `ti:"10.1145/…"` and comes back "No arXiv match".
+    doi = (doi_identifier(pdf_url or "") or doi_identifier(arxiv_id or "")
+           or doi_identifier(title or ""))
     if doi:
         found, resolved_title, had_copies = _doi_lane(doi, title)
         if found:
@@ -511,7 +529,9 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         # the title search — under the DOI's own title when OpenAlex knew it, and a threshold high
         # enough that a near-miss reaches the human as a confirmation instead of being retrieved
         # as though it were the work the DOI named.
-        title = resolved_title or title
+        # When the DOI arrived AS the title there is nothing to search on unless OpenAlex knew
+        # one — searching arXiv for the literal string `10.1145/…` finds nothing by construction.
+        title = resolved_title or ("" if doi_identifier(title or "") else title)
         min_score = max(min_score, _DOI_TITLE_MIN_SCORE)
         doi_failure = _doi_failure(doi, had_copies)
         arxiv_id, pdf_url, id_from_url = None, None, False
@@ -521,6 +541,11 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     if pdf_url:
         try:
             data = _fetch(pdf_url)
+            # Extraction is INSIDE the try on purpose. The fallback has to fire on a CONTENT
+            # failure as well as a transport one: a challenged host answers 200-with-HTML on some
+            # configurations (this module's own `_download_open_access` says so), and that arrives
+            # here not as a refused download but as "that link returned a web page, not a PDF".
+            full_text = _extract_pdf(data)
         except RetrievalError:
             # A publisher's own `/doi/pdf/<doi>` link is a DOI we can still resolve elsewhere.
             # Only after the direct download has been tried: a URL carrying a DOI in its path is
@@ -530,7 +555,7 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
             if not found:
                 raise
             return found
-        return {"full_text": _extract_pdf(data), "arxiv_id": None,
+        return {"full_text": full_text, "arxiv_id": None,
                 "source": pdf_url, "matched_title": title, "score": 1.0, "pdf_bytes": data}
 
     if arxiv_id:

@@ -255,3 +255,87 @@ def test_the_web_search_fallback_still_serves_an_ordinary_title_search(monkeypat
 
     out = retriever.retrieve("A Paper Not On The DOI Lane")
     assert out["arxiv_id"] == "2401.00009"
+
+
+def test_a_copy_that_downloads_but_cannot_be_read_is_skipped_like_a_failed_one(monkeypatch):
+    """"Could not fetch it" and "fetched something pypdf cannot read" are the same fact to a
+    reader. An institutional-repository scan is exactly the shape that raises out of the
+    extractor, and making the first copy decisive skipped every remaining copy, the arXiv
+    fallthrough AND the upload guidance."""
+    tried: list[str] = []
+
+    def fake_fetch(url):
+        tried.append(url)
+        return b"%PDF-scan" if "scan" in url else b"%PDF-good"
+
+    def fake_extract(data, **kw):
+        if data == b"%PDF-scan":
+            raise RetrievalError("PDF produced almost no extractable text (scanned/figure-only?)")
+        return "Full text. " * 60
+
+    _fake_openalex(monkeypatch, {
+        "title": "A Paper", "is_oa": True,
+        "pdf_urls": ["https://repo.example/scan.pdf", "https://repo.example/good.pdf"],
+        "landing_pages": [],
+    })
+    monkeypatch.setattr(retriever, "_fetch", fake_fetch)
+    monkeypatch.setattr(retriever, "_extract_pdf", fake_extract)
+    monkeypatch.setattr(retriever, "search_arxiv", _must_not_search)
+
+    out = retriever.retrieve("A Paper", pdf_url=f"https://doi.org/{DOI}")
+    assert tried == ["https://repo.example/scan.pdf", "https://repo.example/good.pdf"]
+    assert out["source"] == "https://repo.example/good.pdf"
+    assert out["pdf_bytes"] == b"%PDF-good"
+
+
+def test_a_200_with_html_challenge_on_a_publisher_link_still_reaches_the_doi_fallback(monkeypatch):
+    """The fallback has to fire on a CONTENT failure, not only a transport one — a challenged host
+    answers 200-with-HTML on some configurations, which arrives as a failed extraction."""
+    def fake_fetch(url):
+        if "dl.acm.org" in url:
+            return b"<!DOCTYPE html><title>Just a moment"
+        return b"%PDF-elsewhere"
+
+    def fake_extract(data, **kw):
+        if data.startswith(b"<!DOCTYPE"):
+            raise RetrievalError("That link returned a web page, not a PDF")
+        return "Full text. " * 60
+
+    _fake_openalex(monkeypatch, {
+        "title": "A Paper", "is_oa": True,
+        "pdf_urls": ["https://repo.example/a.pdf"], "landing_pages": [],
+    })
+    monkeypatch.setattr(retriever, "_fetch", fake_fetch)
+    monkeypatch.setattr(retriever, "_extract_pdf", fake_extract)
+
+    out = retriever.retrieve("A Paper", pdf_url="https://dl.acm.org/doi/pdf/10.1145/3637867")
+    assert out["source"] == "https://repo.example/a.pdf"
+
+
+def test_a_bare_doi_typed_into_the_library_add_field_takes_the_lane(monkeypatch):
+    """`parseKnownPaper` recognises only arXiv shapes and `http(s)://`, so the Library's Add field
+    sends a bare DOI as the paper's TITLE — and its placeholder says "Title, DOI, or arXiv link"."""
+    _fake_openalex(monkeypatch, {
+        "title": "A Paper", "is_oa": True,
+        "pdf_urls": ["https://repo.example/a.pdf"], "landing_pages": [],
+    })
+    monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF-ok")
+    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Full text. " * 60)
+    monkeypatch.setattr(retriever, "search_arxiv", _must_not_search)
+
+    out = retriever.retrieve(DOI)
+    assert out["source"] == "https://repo.example/a.pdf"
+
+
+def test_an_unresolvable_doi_as_the_title_is_not_searched_for_as_a_title(monkeypatch):
+    """Searching arXiv for the literal string `10.1145/…` finds nothing by construction, and the
+    reader would get "No arXiv match" instead of the DOI's own actionable failure."""
+    _fake_openalex(monkeypatch, None)
+    monkeypatch.setattr(retriever, "search_arxiv", _must_not_search)
+    monkeypatch.setattr(retriever, "_fetch",
+                        lambda url: pytest.fail("nothing may be downloaded on this path"))
+
+    with pytest.raises(RetrievalError) as excinfo:
+        retriever.retrieve(DOI)
+    assert DOI in str(excinfo.value)
+    assert "upload" in str(excinfo.value).lower()
