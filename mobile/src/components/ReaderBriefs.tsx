@@ -4,20 +4,21 @@
 //   ReaderOfferCard    — "the agent described these from their abstracts alone; read them in
 //                        full?" with a check mark per paper (Kamil's design), in the chat footer
 //                        under the response that earned it.
-//   ReaderProgressCard — the same card while the pass runs: one status row per paper, then the
-//                        hand-off to the agent's follow-up turn, which streams as a normal turn.
+//   ReaderProgressCard — the detailed pass state: one status row per paper, then the hand-off
+//                        to the agent's follow-up turn. DR-146 opens it from a header icon.
 //   ReaderBriefsTrail  — on the follow-up response, the briefs it was written from: collapsed
 //                        by default (one quiet row, like the agent trail), each brief expanding
 //                        to its markdown. Context, not content — the answer stays the bubble.
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 
 import type { ReaderBrief, ReaderCandidate, ReaderJob, ReaderTargetStatus } from '@/api/types';
+import { BottomSheet } from '@/components/BottomSheet';
 import { Markdown } from '@/components/Markdown';
-import { Button, Icon, Text, ToneSurface, type IconName } from '@/ui';
-import { useTheme } from '@/theme/ThemeProvider';
-import { space } from '@/theme/tokens';
+import { Button, Icon, IconButton, makeTextStyles, Text, ToneSurface, type IconName } from '@/ui';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space } from '@/theme/tokens';
 
 function yearSuffix(year: number | null | undefined): string {
   return year ? ` (${year})` : '';
@@ -144,26 +145,46 @@ export function ReaderProgressCard({
   job,
   onCancel,
   onDismiss,
+  textScale = 1,
+  embedded = false,
 }: {
   job: ReaderJob;
   /** Stop after the paper being read now (running only). */
   onCancel?: () => void;
   /** Clear a finished card the reader has seen (terminal only). */
   onDismiss?: () => void;
+  /** Match the discussion's reader-controlled prose size. */
+  textScale?: number;
+  /** The shared sheet already supplies its own outer spacing. */
+  embedded?: boolean;
 }) {
   const t = useTheme();
+  const textStyles = useThemedStyles(makeTextStyles);
   const running = job.status === 'running';
   const handoff = readerHandoffLine(job);
   const tone = job.status === 'error' ? 'danger' : 'mint';
+  // The pass is supporting status, not another answer. Use the discussion's Newsreader face
+  // and its reader-controlled multiplier at the caption scale so it stays quieter than prose.
+  const caption = StyleSheet.flatten(textStyles.caption);
+  const chatTextStyle = {
+    fontFamily: fonts.serif,
+    fontSize: caption.fontSize * textScale,
+    lineHeight: caption.lineHeight * textScale,
+  };
   return (
-    <ToneSurface tone={tone} style={styles.card} testID="reader-progress">
+    <ToneSurface tone={tone} style={[styles.card, embedded && styles.embeddedCard]} testID="reader-progress">
       <View style={styles.headerRow}>
         {running ? (
           <ActivityIndicator size="small" color={t.mint} />
         ) : (
           <Icon name={job.status === 'error' ? 'alert-circle' : 'users'} size={15} color={job.status === 'error' ? t.danger : t.mint} />
         )}
-        <Text variant="heading" style={styles.headerText}>{readerProgressTitle(job)}</Text>
+        <Text
+          variant="caption"
+          style={[styles.headerText, chatTextStyle, { fontFamily: fonts.serifMedium }]}
+        >
+          {readerProgressTitle(job)}
+        </Text>
       </View>
       <View style={styles.list}>
         {job.targets.map((row) => {
@@ -177,7 +198,7 @@ export function ReaderProgressCard({
                 <Icon name={meta.icon} size={16} color={color} />
               )}
               <View style={styles.rowText}>
-                <Text variant="body" numberOfLines={2}>{row.title}</Text>
+                <Text variant="caption" style={chatTextStyle} numberOfLines={2}>{row.title}</Text>
                 <Text variant="caption" color={color}>
                   {meta.label}{row.error ? ` — ${row.error}` : ''}
                 </Text>
@@ -205,6 +226,65 @@ export function ReaderProgressCard({
         </View>
       ) : null}
     </ToneSurface>
+  );
+}
+
+/**
+ * The persistent progress surface is deliberately only a header icon. The detailed state is
+ * opt-in in a sheet, so a minutes-long pass never covers the response somebody is reading.
+ */
+export function ReaderProgressIndicator({
+  job,
+  onCancel,
+  onDismiss,
+  textScale = 1,
+}: {
+  job: ReaderJob;
+  onCancel: () => void;
+  onDismiss: () => void;
+  textScale?: number;
+}) {
+  const t = useTheme();
+  const [open, setOpen] = useState(false);
+  const running = job.status === 'running';
+  const failed = job.status === 'error';
+  const title = readerProgressTitle(job);
+  const dismissJob = useCallback(() => {
+    setOpen(false);
+    onDismiss();
+  }, [onDismiss]);
+
+  return (
+    <>
+      <View style={styles.indicator} testID="reader-progress-indicator">
+        <IconButton
+          name="users"
+          size={18}
+          color={failed ? t.danger : t.mint}
+          onPress={() => setOpen(true)}
+          accessibilityLabel={`${title}. Open reading assistants.`}
+          accessibilityHint="Shows the papers being read without leaving the discussion."
+          accessibilityRole="button"
+          testID="reader-progress-trigger"
+        />
+        <View
+          pointerEvents="none"
+          style={[
+            styles.indicatorDot,
+            { backgroundColor: failed ? t.danger : running ? t.mint : t.muted },
+          ]}
+        />
+      </View>
+      <BottomSheet visible={open} onClose={() => setOpen(false)} maxHeightPct={75} scrollable>
+        <ReaderProgressCard
+          job={job}
+          onCancel={running ? onCancel : undefined}
+          onDismiss={!running ? dismissJob : undefined}
+          textScale={textScale}
+          embedded
+        />
+      </BottomSheet>
+    </>
   );
 }
 
@@ -267,6 +347,16 @@ const styles = StyleSheet.create({
     margin: space.md,
     padding: space.md,
     gap: space.sm,
+  },
+  embeddedCard: { margin: 0 },
+  indicator: { position: 'relative' },
+  indicatorDot: {
+    position: 'absolute',
+    top: 6,
+    right: 5,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   headerText: { flex: 1 },

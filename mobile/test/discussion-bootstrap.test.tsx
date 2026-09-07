@@ -1,12 +1,14 @@
 import { act, renderAsync, waitFor } from '@testing-library/react-native';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import type { ReaderBriefing } from '@/hooks/useReaderBriefing';
 
 const mockBack = jest.fn();
 const mockPush = jest.fn();
 let mockParams: { slug: string; thread?: string } = { slug: 'rough' };
 
 jest.mock('expo-router', () => ({
+  useIsFocused: () => true,
   useLocalSearchParams: () => mockParams,
   useRouter: () => ({ back: mockBack, push: mockPush }),
 }));
@@ -46,11 +48,28 @@ const mockStream = {
 };
 jest.mock('@/hooks/useStreamingTurn', () => ({ useStreamingTurn: () => mockStream }));
 
+const emptyReader = (): ReaderBriefing => ({
+  offer: null,
+  job: null,
+  selected: new Set(),
+  toggle: jest.fn(),
+  start: jest.fn(async () => undefined),
+  dismissOffer: jest.fn(),
+  dismissJob: jest.fn(),
+  cancel: jest.fn(async () => undefined),
+  starting: false,
+  error: null,
+});
+let mockReader = emptyReader();
+jest.mock('@/hooks/useReaderBriefing', () => ({
+  useReaderBriefing: () => mockReader,
+}));
+
 jest.mock('@/components/TopBar', () => {
   const { View: MockView } = require('react-native');
   return {
-    TopBar: ({ floating }: { floating?: boolean }) => (
-      <MockView testID={floating ? 'floating-top-bar' : 'in-flow-top-bar'} />
+    TopBar: ({ floating, right }: { floating?: boolean; right?: React.ReactNode }) => (
+      <MockView testID={floating ? 'floating-top-bar' : 'in-flow-top-bar'}>{right}</MockView>
     ),
   };
 });
@@ -154,6 +173,7 @@ async function renderPendingSession(options?: {
 beforeEach(async () => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  mockReader = emptyReader();
   mockParams = { slug: 'rough' };
   await setBaseUrl('https://api.test');
   jest.mocked(api.getSettings).mockResolvedValue({ model: null } as never);
@@ -243,4 +263,56 @@ test('a cold route keeps a short flash guard after the route deadline has elapse
   await waitFor(() => expect(view.getByText('Reading modes')).toBeTruthy());
   act(() => jest.advanceTimersByTime(70));
   expect(view.queryByTestId('paper-setup-loading-skeleton')).toBeNull();
+});
+
+test('an active reading pass is only a top-bar icon until the reader opens it', async () => {
+  mockReader = {
+    ...emptyReader(),
+    job: {
+      id: 'reader-1',
+      status: 'running',
+      error: null,
+      slug: 'rough',
+      thread_id: 'main',
+      assistant_index: 0,
+      targets: [{ slug: 'cited', title: 'Cited paper', status: 'reading', error: null }],
+      current: 'cited',
+      delivery_mode: 'reading',
+      briefs: [],
+      waiting: false,
+      stopped_reason: null,
+      analysis_job_id: null,
+      analysis_error: null,
+      started_at: '2026-09-07T00:00:00+00:00',
+      finished_at: null,
+    },
+  };
+  const sessionRequest = deferred<Session>();
+  const { request, view } = await renderPendingSession({
+    state: projectState('in_discussion'),
+    sessionRequest,
+  });
+  await act(async () => {
+    request.resolve({
+      ...emptySession,
+      state: 'in_discussion',
+      transcript: [{
+        role: 'assistant',
+        assistant_index: 0,
+        canonical: 'An answer.',
+        narration: '',
+        state_signal: 'in_discussion',
+        proposed_commit: null,
+        delivery_mode: 'reading',
+        chat_job_id: 'chat-1',
+        audio_job_id: null,
+        audio_error: null,
+      }],
+    });
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(view.getByTestId('reader-progress-indicator')).toBeTruthy());
+  expect(view.getByTestId('floating-top-bar')).toBeTruthy();
+  expect(view.queryByTestId('reader-progress')).toBeNull();
 });

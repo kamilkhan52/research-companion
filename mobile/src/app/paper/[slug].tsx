@@ -97,8 +97,8 @@ import { showToast } from '@/ui/Toast';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, NotesUpdateLink, ToolLine, startedNotesUpdate } from '@/components/AgentTrail';
-import { ReaderBriefsTrail, ReaderOfferCard, ReaderProgressCard } from '@/components/ReaderBriefs';
-import { useReaderBriefing } from '@/hooks/useReaderBriefing';
+import { ReaderBriefsTrail, ReaderOfferCard, ReaderProgressIndicator } from '@/components/ReaderBriefs';
+import { useReaderBriefing, type ReaderBriefing } from '@/hooks/useReaderBriefing';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
@@ -293,6 +293,7 @@ export default function DiscussionScreen() {
   const qc = useQueryClient();
   const insets = useSafeAreaInsets();
   const styles = useThemedStyles(makeStyles);
+  const { discussionTextScale } = useThemeMode();
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
   const { slug, source, project, thread, autoStart } = useLocalSearchParams<{
@@ -477,6 +478,20 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
+  // DR-146 — own the reader pass above the transcript so its persistent surface can be the
+  // compact header icon. The hook stays unconditional, but `enabled` prevents empty route ids
+  // or setup-only papers from issuing an active-job request.
+  const reader = useReaderBriefing({
+    pid: pid ?? '',
+    slug: slug ?? '',
+    threadId: activeThread,
+    enabled: hasSession && !!pid && !!slug,
+    state,
+    transcript,
+    streaming: stream.streaming,
+    deliveryMode: listeningMode ? 'listening' : 'reading',
+    resumeTurn: stream.resume,
+  });
   const anticipatedState = anticipatedPaperState(
     session.data?.state,
     activeThread,
@@ -746,46 +761,54 @@ export default function DiscussionScreen() {
         }
         onBack={() => router.back()}
         right={
-          <OverflowMenu
-            listeningMode={listeningMode}
-            onToggleListening={() => {
-              if (listeningMode) audio.cancelPrep();
-              setListeningMode(!listeningMode);
-            }}
-            hasNotes={!!session.data?.paper.has_notes}
-            onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
-            onRelatedWorks={() => setShowRelated(true)}
-            onGraph={() => slug && router.push(`/paper-graph/${encodeURIComponent(slug)}`)}
-            paperUrl={paperUrl}
-            showFinishReading={
-              hasSession
-              && transcript.length > 0
-              && state !== 'notes_drafted'
-              && state !== 'committed'
-            }
-            finishReadingDisabled={stream.streaming}
-            onFinishReading={() => void finishReadingFromMenu()}
-            showUpdateNotes={hasSession && transcript.length > 0}
-            updateNotesDisabled={stream.streaming}
-            onUpdateNotes={() => void updateNotesFromDiscussion()}
-            showContinue={state === 'committed'}
-            onContinue={() => void continueFromCommitted()}
-            modelLabel={
-              selectedModelLabel
-            }
-            onPickModel={() => setModelPickerOpen(true)}
-            showReadingMode={hasSession}
-            readingModeLabel={READING_MODE_LABELS[readingMode]}
-            onPickReadingMode={() => setModePickerOpen(true)}
-            onRename={() => setRenameOpen(true)}
-            onDelete={confirmDeletePaper}
-            showClearChats={hasSession}
-            clearChatsDisabled={stream.streaming}
-            onClearChats={confirmClearChats}
-            showThreads={hasSession}
-            threadCount={session.data?.threads?.length ?? 0}
-            onThreads={() => setThreadPickerOpen(true)}
-          />
+          <View style={styles.discussionHeaderActions}>
+            {reader.job ? (
+              <ReaderProgressIndicator
+                job={reader.job}
+                onCancel={() => void reader.cancel()}
+                onDismiss={reader.dismissJob}
+                textScale={discussionTextScale}
+              />
+            ) : null}
+            <OverflowMenu
+              listeningMode={listeningMode}
+              onToggleListening={() => {
+                if (listeningMode) audio.cancelPrep();
+                setListeningMode(!listeningMode);
+              }}
+              hasNotes={!!session.data?.paper.has_notes}
+              onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
+              onRelatedWorks={() => setShowRelated(true)}
+              onGraph={() => slug && router.push(`/paper-graph/${encodeURIComponent(slug)}`)}
+              paperUrl={paperUrl}
+              showFinishReading={
+                hasSession
+                && transcript.length > 0
+                && state !== 'notes_drafted'
+                && state !== 'committed'
+              }
+              finishReadingDisabled={stream.streaming}
+              onFinishReading={() => void finishReadingFromMenu()}
+              showUpdateNotes={hasSession && transcript.length > 0}
+              updateNotesDisabled={stream.streaming}
+              onUpdateNotes={() => void updateNotesFromDiscussion()}
+              showContinue={state === 'committed'}
+              onContinue={() => void continueFromCommitted()}
+              modelLabel={selectedModelLabel}
+              onPickModel={() => setModelPickerOpen(true)}
+              showReadingMode={hasSession}
+              readingModeLabel={READING_MODE_LABELS[readingMode]}
+              onPickReadingMode={() => setModePickerOpen(true)}
+              onRename={() => setRenameOpen(true)}
+              onDelete={confirmDeletePaper}
+              showClearChats={hasSession}
+              clearChatsDisabled={stream.streaming}
+              onClearChats={confirmClearChats}
+              showThreads={hasSession}
+              threadCount={session.data?.threads?.length ?? 0}
+              onThreads={() => setThreadPickerOpen(true)}
+            />
+          </View>
         }
       />
       </View>
@@ -899,6 +922,7 @@ export default function DiscussionScreen() {
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           reviewReadyNonce={reviewReadyNonce}
+          reader={reader}
           onMutated={() => {
             // The whole project's sessions, not just this one: approving notes flips this paper
             // to `read`, which changes the "N you've read" count shown on every paper it cites.
@@ -1552,6 +1576,7 @@ function DiscussionThread({
   headerOverlays,
   onMutated,
   reviewReadyNonce,
+  reader,
 }: {
   pid: string;
   slug: string;
@@ -1575,6 +1600,7 @@ function DiscussionThread({
   onMutated: () => void;
   /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
   reviewReadyNonce: number;
+  reader: ReaderBriefing;
 }) {
   const theme = useTheme();
   const { themeName, discussionTextScale } = useThemeMode();
@@ -1623,20 +1649,6 @@ function DiscussionThread({
   );
   const editing = editDraft.value;
   const setEditing = editDraft.setValue;
-  // DR-140 — reading assistants for the project papers the latest response cited unread. The
-  // offer and the running pass render in the chat footer under that response; the follow-up
-  // turn the pass chains streams through `stream` like any other turn.
-  const { listeningMode: readerListening } = useListeningMode();
-  const reader = useReaderBriefing({
-    pid,
-    slug,
-    threadId,
-    state,
-    transcript,
-    streaming: stream.streaming,
-    deliveryMode: readerListening ? 'listening' : 'reading',
-    resumeTurn: stream.resume,
-  });
   const sentenceCommentsDraft = usePersistedDraft<PendingSentenceComment[]>(
     sentenceCommentsDraftKey(pid, slug, threadId),
     [],
@@ -2706,13 +2718,8 @@ function DiscussionThread({
         </Card>
       );
     }
-    // DR-140 — under the response that earned it: the offer to read its unread cited papers,
-    // or the pass reading them. Hidden while a turn streams (the follow-up it chains included).
-    if (reader.job && !stream.streaming) return (
-      <View style={{ marginBottom: composerHeight + space.md }}>
-        <ReaderProgressCard job={reader.job} onCancel={() => void reader.cancel()} onDismiss={reader.dismissJob} />
-      </View>
-    );
+    // DR-140/146 — the offer stays under the response that earned it. Once accepted, the pass
+    // moves to the header's compact indicator and never occupies transcript space.
     if (reader.offer) return (
       <View style={{ marginBottom: composerHeight + space.md }}>
         <ReaderOfferCard
@@ -4069,6 +4076,7 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     right: 0,
     zIndex: 30,
   },
+  discussionHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
   discussionTopFade: { zIndex: 20 },
   assistantCard: { backgroundColor: t.surface },
   branchRow: {
