@@ -1,11 +1,19 @@
-// DR-140 — drives the reading-assistant flow for one conversation: offer → pass → hand-off.
+// DR-140/145 — drives the reading-assistant flow for one conversation: offer → pass → hand-off.
 //
 // The offer is earned by the LATEST response (its own `rc-paper:` links to unread project
-// papers, decided server-side) and answered once per response: "Not now" is remembered per
-// assistant index, so re-entering the paper does not nag, while a later response that cites
-// other unread papers asks afresh. The pass is a server-side job (invariant 1): this hook only
-// polls it and, when the job chains the agent's follow-up turn, hands the screen's ordinary
-// turn watcher the job through `resumeTurn` — the follow-up then streams like any other turn.
+// papers, decided server-side). DR-145 makes it a WINDOW that presents itself once and is then
+// reachable from a small indicator under that response, rather than a card the reader has to
+// answer: the per-response memory records that it has presented itself, so re-entering the paper
+// never raises it again, while a later response citing other unread papers asks afresh.
+//
+// A candidate whose text has never been fetched used to be an unexplained dead row. Kamil:
+// "if fetch is needed, the agent should just automatically try. It doesn't cost anything in most
+// cases." So the hook starts the ordinary background retrieval job for each unfetched candidate,
+// in sequence and bounded by what a pass can read, and re-reads the candidates when one lands.
+//
+// The pass is a server-side job (invariant 1): this hook only polls it and, when the job chains
+// the agent's follow-up turn, hands the screen's ordinary turn watcher the job through
+// `resumeTurn` — the follow-up then streams like any other turn.
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -15,27 +23,54 @@ import {
   cancelReaderJob,
   getActiveReaderJob,
   getReaderJob,
+  getRetrievalJob,
   startReaderJob,
+  startRetrievalJob,
 } from '@/api/endpoints';
 import { keys, useReaderCandidates } from '@/api/queries';
 import type { ReaderCandidate, ReaderJob, TranscriptEntry } from '@/api/types';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
-import { dismissReaderOffer, isReaderOfferDismissed, readerOfferKeyFor } from '@/lib/readerOffer';
+import {
+  deferReaderOffer,
+  isReaderOfferDeferred,
+  markReaderAutoFetchAttempted,
+  readerAutoFetchAttempted,
+  readerOfferKeyFor,
+} from '@/lib/readerOffer';
 
 const POLL_MS = 1500;
+const FETCH_POLL_MS = 2000;
+/** Never auto-fetch more papers than one pass could read (`reader_jobs.MAX_TARGETS`), so a
+ *  response citing a long unread bibliography cannot fan one arrival out into retrievals for
+ *  papers the reader could not have had read anyway. */
+const MAX_AUTO_FETCH = 8;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Where a candidate's on-demand text fetch has got to. Absent = never attempted here. */
+export interface ReaderFetchState {
+  status: 'running' | 'error' | 'needs_choice';
+  error?: string | null;
+}
+
 export interface ReaderBriefing {
-  /** The offer to render, or null (no candidates, dismissed, a pass in flight, streaming…). */
+  /** The offer that exists for the latest response, or null (none earned, a pass in flight,
+   *  streaming…). It survives the window being closed — the indicator reopens it. */
   offer: { assistantIndex: number; candidates: ReaderCandidate[] } | null;
+  /** Is the offer window itself on screen? */
+  offerOpen: boolean;
+  openOffer: () => void;
+  /** Close the window without answering; the indicator under the response keeps it reachable. */
+  closeOffer: () => void;
   /** The pass to render (running, or terminal and not yet dismissed), or null. */
   job: ReaderJob | null;
   selected: ReadonlySet<string>;
   toggle: (slug: string) => void;
   start: () => Promise<void>;
-  dismissOffer: () => void;
   dismissJob: () => void;
   cancel: () => Promise<void>;
+  /** Per-slug state of text fetches this hook started (auto or asked for). */
+  fetching: Record<string, ReaderFetchState>;
+  fetchCandidate: (slug: string) => Promise<void>;
   starting: boolean;
   error: string | null;
 }
@@ -49,6 +84,7 @@ export function useReaderBriefing({
   transcript,
   streaming,
   deliveryMode,
+  focused = true,
   resumeTurn,
 }: {
   pid: string;
@@ -63,6 +99,11 @@ export function useReaderBriefing({
   /** A turn is generating — no offer while the response it would be about is still forming. */
   streaming: boolean;
   deliveryMode: 'reading' | 'listening';
+  /** Whether this paper's screen is the one on top. The window may only PRESENT itself while it
+   *  is: a response can land after the reader has navigated to the Library or Discover, and the
+   *  sheet is mounted by a screen that is still alive underneath, so it would otherwise open
+   *  over whatever they moved to. Closing/reopening from the indicator is unaffected. */
+  focused?: boolean;
   /** The screen's turn watcher's reattach (useStreamingTurn.resume). */
   resumeTurn: () => Promise<void>;
 }): ReaderBriefing {
@@ -77,9 +118,22 @@ export function useReaderBriefing({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // null = not yet checked for this response; the offer stays hidden until it is, so a
-  // declined offer never flashes before AsyncStorage answers.
-  const [dismissedFor, setDismissedFor] = useState<{ key: string; dismissed: boolean } | null>(null);
+  // null = not yet checked for this response; the offer stays hidden until it is, so a window
+  // that has already presented itself never flashes before AsyncStorage answers.
+  const [deferredFor, setDeferredFor] = useState<{ key: string; deferred: boolean } | null>(null);
+  const [offerOpen, setOfferOpen] = useState(false);
+  const [fetching, setFetching] = useState<Record<string, ReaderFetchState>>({});
+  //: The response whose window has already been raised on this mount.
+  const presentedRef = useRef<string | null>(null);
+  //: Slugs a fetch has been started for, so the auto-pass never re-attempts one it has tried.
+  const attemptedRef = useRef<Set<string>>(new Set());
+  //: Slugs whose fetch is polling right now (a manual press must not duplicate the auto one).
+  const fetchingRef = useRef<Set<string>>(new Set());
+  //: Auto-fetches run one after another rather than as a burst of paid hunts.
+  const autoQueueRef = useRef<Promise<void>>(Promise.resolve());
+  //: How many automatic fetches this conversation may still spend. A TOTAL, not a concurrency
+  //: limit — see the auto-fetch effect.
+  const autoFetchBudgetRef = useRef(MAX_AUTO_FETCH);
   const watchRef = useRef<string | null>(null);
   const aliveRef = useRef(true);
   // Bumped when the conversation changes, so an in-flight lookup for the previous one can never
@@ -145,7 +199,14 @@ export function useReaderBriefing({
     setSelected(new Set());
     setStarting(false);
     setError(null);
-    setDismissedFor(null);
+    setDeferredFor(null);
+    setOfferOpen(false);
+    setFetching({});
+    presentedRef.current = null;
+    attemptedRef.current = new Set();
+    autoFetchBudgetRef.current = MAX_AUTO_FETCH;
+    fetchingRef.current = new Set();
+    autoQueueRef.current = Promise.resolve();
     if (!enabled) return;
     void (async () => {
       try {
@@ -166,12 +227,12 @@ export function useReaderBriefing({
   useEffect(() => {
     if (job && job.status !== 'running' && job.assistant_index !== latestIndex) setJob(null);
     if (latestKey == null) {
-      setDismissedFor(null);
+      setDeferredFor(null);
       return;
     }
     let cancelled = false;
-    void isReaderOfferDismissed(pid, slug, threadId, latestKey).then((dismissed) => {
-      if (!cancelled) setDismissedFor({ key: latestKey, dismissed });
+    void isReaderOfferDeferred(pid, slug, threadId, latestKey).then((deferred) => {
+      if (!cancelled) setDeferredFor({ key: latestKey, deferred });
     });
     return () => {
       cancelled = true;
@@ -181,12 +242,31 @@ export function useReaderBriefing({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, slug, threadId, latestIndex, latestKey]);
 
-  // Default selection: every readable candidate, re-derived when the candidate set changes.
-  const candidateKey = candidates.map((c) => `${c.slug}:${c.has_text ? 1 : 0}`).join('|');
+  // Default selection: every readable candidate. A fetch landing mid-offer flips one row's
+  // `has_text` without the paper set changing — that ADDS the new row rather than re-deriving
+  // the whole selection, or a fetch finishing would silently re-check papers the reader had
+  // just unchecked (DR-145 made this reachable: before it, `has_text` never changed here).
+  const slugKey = candidates.map((c) => c.slug).join('|');
+  const readableKey = candidates.filter((c) => c.has_text).map((c) => c.slug).join('|');
+  const prevSelectionBasis = useRef<{ slugKey: string; index: number | null; readable: Set<string> } | null>(null);
   useEffect(() => {
-    setSelected(new Set(candidates.filter((c) => c.has_text).map((c) => c.slug)));
+    const readable = candidates.filter((c) => c.has_text).map((c) => c.slug);
+    const prev = prevSelectionBasis.current;
+    if (prev && prev.slugKey === slugKey && prev.index === candidatesIndex) {
+      const added = readable.filter((s) => !prev.readable.has(s));
+      if (added.length) {
+        setSelected((current) => {
+          const next = new Set(current);
+          added.forEach((s) => next.add(s));
+          return next;
+        });
+      }
+    } else {
+      setSelected(new Set(readable));
+    }
+    prevSelectionBasis.current = { slugKey, index: candidatesIndex, readable: new Set(readable) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [candidateKey, candidatesIndex]);
+  }, [slugKey, readableKey, candidatesIndex]);
 
   const toggle = useCallback((target: string) => {
     setSelected((prev) => {
@@ -196,6 +276,58 @@ export function useReaderBriefing({
       return next;
     });
   }, []);
+
+  /** Fetch one candidate's text with the ordinary background retrieval job (invariant 1: this
+   *  polls a server-side job, it does not hold a request open). Best effort — a failure leaves a
+   *  row the reader can retry, never an error over the discussion. */
+  const fetchCandidate = useCallback(async (target: string) => {
+    if (!enabled || !target || fetchingRef.current.has(target)) return;
+    const epoch = epochRef.current;
+    fetchingRef.current.add(target);
+    attemptedRef.current.add(target);
+    setFetching((prev) => ({ ...prev, [target]: { status: 'running' } }));
+    const settle = (state: ReaderFetchState | null) => {
+      fetchingRef.current.delete(target);
+      if (!aliveRef.current || epochRef.current !== epoch) return;
+      setFetching((prev) => {
+        const next = { ...prev };
+        if (state) next[target] = state;
+        else delete next[target];
+        return next;
+      });
+    };
+    try {
+      // No `auto_analyze`: the reader asked for the paper's TEXT so an assistant can read it,
+      // not for a summary turn on it — that would be a paid turn nobody requested.
+      let snap = (await startRetrievalJob(pid, target, {})).job;
+      while (aliveRef.current && epochRef.current === epoch && snap.status === 'running') {
+        await sleep(FETCH_POLL_MS);
+        if (!aliveRef.current || epochRef.current !== epoch) return settle(null);
+        try {
+          snap = (await getRetrievalJob(pid, snap.id)).job;
+        } catch {
+          // The retrieval keeps running server-side; a dead poll only delays the next snapshot.
+        }
+      }
+      if (!aliveRef.current || epochRef.current !== epoch) return settle(null);
+      if (snap.retrieved) {
+        settle(null);
+        // `has_text` is server-derived, so the offer only learns the paper became readable by
+        // re-reading the candidates.
+        await qc.invalidateQueries({
+          queryKey: [...keys.session(pid, slug, threadId), 'reader-candidates'],
+        });
+        return;
+      }
+      if (snap.phase === 'confirmation') return settle({ status: 'needs_choice' });
+      settle({ status: 'error', error: snap.error ?? null });
+    } catch (e) {
+      settle({
+        status: 'error',
+        error: e instanceof ApiError ? e.message : (e as Error)?.message ?? null,
+      });
+    }
+  }, [enabled, pid, slug, threadId, qc]);
 
   const start = useCallback(async () => {
     if (!enabled || starting || latestIndex == null) return;
@@ -210,6 +342,8 @@ export function useReaderBriefing({
         deliveryMode,
       })).job;
       setStarting(false);
+      // The pass has its own surface — the header indicator (DR-146). Nothing is left to answer.
+      setOfferOpen(false);
       await watch(started);
     } catch (e) {
       setStarting(false);
@@ -218,11 +352,12 @@ export function useReaderBriefing({
     }
   }, [enabled, starting, latestIndex, candidates, selected, pid, slug, threadId, candidatesIndex, deliveryMode, watch]);
 
-  const dismissOffer = useCallback(() => {
-    if (latestKey == null) return;
-    dismissReaderOffer(pid, slug, threadId, latestKey);
-    setDismissedFor({ key: latestKey, dismissed: true });
-  }, [pid, slug, threadId, latestKey]);
+  const openOffer = useCallback(() => setOfferOpen(true), []);
+
+  /** Closing is a deferral, never an answer (DR-145): the record that this response's window has
+   *  been seen is written when it OPENS, so the app cannot re-raise it even if it is killed with
+   *  the window up, and the indicator under the response keeps the offer one tap away. */
+  const closeOffer = useCallback(() => setOfferOpen(false), []);
 
   const dismissJob = useCallback(() => {
     watchRef.current = null;
@@ -241,21 +376,85 @@ export function useReaderBriefing({
   const offer = useMemo(() => {
     if (!enabled || job || streaming || latestIndex == null || latestKey == null) return null;
     if (state !== 'in_discussion') return null; // the server refuses a pass behind a proposal
-    if (!dismissedFor || dismissedFor.key !== latestKey || dismissedFor.dismissed) return null;
+    // Wait for the memory to answer before anything shows, so a window that has already
+    // presented itself cannot flash open while AsyncStorage is still being read.
+    if (!deferredFor || deferredFor.key !== latestKey) return null;
     if (candidatesIndex !== latestIndex) return null; // stale data from the previous response
-    if (!candidates.some((c) => c.has_text)) return null;
+    // Unfetched papers still count: the offer is what OFFERS to fetch them (DR-145).
+    if (!candidates.length) return null;
     return { assistantIndex: latestIndex, candidates };
-  }, [enabled, job, streaming, state, latestIndex, latestKey, dismissedFor, candidatesIndex, candidates]);
+  }, [enabled, job, streaming, state, latestIndex, latestKey, deferredFor, candidatesIndex, candidates]);
+
+  // The window presents itself once per response, and records that it has — so re-entering the
+  // paper leaves only the indicator, and the reader is never made to answer (DR-145).
+  useEffect(() => {
+    if (!offer || latestKey == null || deferredFor?.key !== latestKey) return;
+    // Not while another screen is on top. Deliberately does NOT mark the offer as presented, so
+    // it still gets its one chance when the reader comes back to the paper — a window they never
+    // saw must not be spent.
+    if (!focused) return;
+    if (presentedRef.current === latestKey) return;
+    presentedRef.current = latestKey;
+    if (deferredFor.deferred) return;
+    deferReaderOffer(pid, slug, threadId, latestKey);
+    setOfferOpen(true);
+  }, [offer, latestKey, deferredFor, pid, slug, threadId, focused]);
+
+  // "if fetch is needed, the agent should just automatically try. It doesn't cost anything in
+  // most cases" (Kamil, DR-145). In sequence, never as a burst, and bounded three ways — each
+  // bound closes a way the same paid hunt could be bought more than once (Opus review of #503):
+  //
+  //  * `readerAutoFetchAttempted` is DURABLE. A paper whose PDF cannot be resolved escalates to
+  //    the ~$0.10 agentic hunt, and an in-memory set only lives as long as the screen, so
+  //    re-entering the paper re-bought that hunt every single time.
+  //  * `autoFetchBudgetRef` counts TOTAL attempts, not how many are outstanding. The old slice
+  //    was taken from the currently-unfetched list on every change, so as fetches landed and the
+  //    list shrank, fresh candidates kept entering the first eight and the real total was
+  //    unbounded.
+  //  * the queued closure re-checks the EPOCH, not just liveness. Switching threads resets the
+  //    queue ref, which detaches the new queue but leaves the old chain running: its remaining
+  //    entries would go on buying retrievals for a conversation the reader had left.
+  useEffect(() => {
+    if (!offer) return;
+    const epoch = epochRef.current;
+    let cancelled = false;
+    const missing = offer.candidates.filter((c) => !c.has_text).map((c) => c.slug);
+    if (!missing.length) return undefined;
+    void readerAutoFetchAttempted(pid, missing).then((already) => {
+      if (cancelled || epochRef.current !== epoch || !aliveRef.current) return;
+      for (const target of missing) {
+        if (autoFetchBudgetRef.current <= 0) break;
+        if (already.has(target) || attemptedRef.current.has(target)) continue;
+        attemptedRef.current.add(target);
+        markReaderAutoFetchAttempted(pid, target);
+        autoFetchBudgetRef.current -= 1;
+        autoQueueRef.current = autoQueueRef.current
+          .then(() => {
+            // Guard again at run time: the reader may have pressed Fetch on this row while it
+            // waited its turn, and the conversation may have moved on entirely.
+            if (!aliveRef.current || epochRef.current !== epoch) return undefined;
+            if (fetchingRef.current.has(target)) return undefined;
+            return fetchCandidate(target);
+          })
+          .catch(() => undefined);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [offer, fetchCandidate, pid]);
 
   return {
     offer,
+    offerOpen,
+    openOffer,
+    closeOffer,
     job: enabled && job && (job.status === 'running' || job.assistant_index === latestIndex) ? job : null,
     selected,
     toggle,
     start,
-    dismissOffer,
     dismissJob,
     cancel,
+    fetching,
+    fetchCandidate,
     starting,
     error,
   };

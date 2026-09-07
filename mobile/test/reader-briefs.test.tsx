@@ -9,6 +9,8 @@ import type { ReaderBrief, ReaderCandidate, ReaderJob } from '@/api/types';
 import {
   ReaderBriefsTrail,
   ReaderOfferCard,
+  ReaderOfferLink,
+  ReaderOfferSheet,
   ReaderProgressCard,
   ReaderProgressIndicator,
   readerHandoffLine,
@@ -86,7 +88,6 @@ describe('the offer', () => {
     );
     expect(screen.getByText(/Read the papers this response cites/)).toBeTruthy();
     expect(screen.getByText('H3: HBM-side staging (2025)')).toBeTruthy();
-    expect(screen.getByText(/Not fetched yet/)).toBeTruthy();
     expect(screen.getByTestId('reader-candidate-h3').props.accessibilityState.checked).toBe(true);
     expect(screen.getByTestId('reader-candidate-ghost').props.accessibilityState.disabled).toBe(true);
 
@@ -94,6 +95,83 @@ describe('the offer', () => {
     expect(onToggle).toHaveBeenCalledWith('h3');
     fireEvent.press(screen.getByTestId('reader-candidate-ghost'));
     expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  // DR-145 (Kamil): "I also don't see an option to fetch at the moment… On first thought I
+  // assumed I just couldn't select the unselected papers due to a bug."
+  test('an unfetched paper says what is happening to it and can be asked for again', () => {
+    const onFetch = jest.fn();
+    const idle = render(
+      <ReaderOfferCard
+        candidates={CANDIDATES}
+        selected={new Set()}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        onFetch={onFetch}
+        starting={false}
+      />,
+    );
+    fireEvent.press(idle.getByTestId('reader-fetch-ghost'));
+    expect(onFetch).toHaveBeenCalledWith('ghost');
+    // Only the paper that has no text offers one.
+    expect(idle.queryByTestId('reader-fetch-h3')).toBeNull();
+
+    const running = render(
+      <ReaderOfferCard
+        candidates={CANDIDATES}
+        selected={new Set()}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        onFetch={onFetch}
+        fetching={{ ghost: { status: 'running' } }}
+        starting={false}
+      />,
+    );
+    expect(running.getByText('Fetching its text…')).toBeTruthy();
+    // Nothing to press while it is already being fetched.
+    expect(running.queryByTestId('reader-fetch-ghost')).toBeNull();
+
+    const failed = render(
+      <ReaderOfferCard
+        candidates={CANDIDATES}
+        selected={new Set()}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        onFetch={onFetch}
+        fetching={{ ghost: { status: 'error', error: 'No PDF found for it.' } }}
+        starting={false}
+      />,
+    );
+    expect(failed.getByText('No PDF found for it.')).toBeTruthy();
+    expect(failed.getByText('Try again')).toBeTruthy();
+    expect(failed.getByLabelText(/Ghost paper\. No PDF found for it\./)).toBeTruthy();
+  });
+
+  // DR-145 (Kamil): "All fonts should be smaller in the prompt. Maybe similar sizes mostly to
+  // the chat font size which is a setting."
+  test('its type follows the discussion face and the reader\'s text-size setting', () => {
+    const screen = render(
+      <ReaderOfferCard
+        candidates={CANDIDATES}
+        selected={new Set(['h3'])}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        starting={false}
+        textScale={1.2}
+      />,
+    );
+    const heading = screen.getByText(/Read the papers this response cites/);
+    const headingStyle = StyleSheet.flatten(heading.props.style);
+    expect(headingStyle.fontFamily).toBe(fonts.serifMedium);
+    const title = screen.getByText('H3: HBM-side staging (2025)');
+    const titleStyle = StyleSheet.flatten(title.props.style);
+    expect(titleStyle.fontFamily).toBe(fonts.serif);
+    // The unscaled caption is 12.5; the setting multiplies it rather than being ignored.
+    expect(titleStyle.fontSize).toBeCloseTo(15);
   });
 
   test('the button counts only the picked, readable papers and disables at zero', () => {
@@ -126,7 +204,7 @@ describe('the offer', () => {
     expect(none.getByTestId('reader-start').props.accessibilityState.disabled).toBe(true);
   });
 
-  test('"Not now" is the reader\'s answer, and a start error stays on the card', () => {
+  test('"Not now" closes the window, and a start error stays on the card', () => {
     const onDismiss = jest.fn();
     const screen = render(
       <ReaderOfferCard
@@ -142,6 +220,43 @@ describe('the offer', () => {
     fireEvent.press(screen.getByText('Not now'));
     expect(onDismiss).toHaveBeenCalled();
     expect(screen.getByText(/already being generated/)).toBeTruthy();
+  });
+});
+
+// DR-145 (Kamil): "I think the prompt should be a window on top instead of inside the chat. I
+// should be able to just dismiss it and come back to it later, using a little indicator at the
+// bottom of the message… They can read the summary and reopen the prompt or just forget about it."
+describe('the offer window and its indicator', () => {
+  const cardProps = {
+    candidates: CANDIDATES,
+    selected: new Set(['h3']),
+    onToggle: jest.fn(),
+    onStart: jest.fn(),
+    onDismiss: jest.fn(),
+    starting: false,
+  };
+
+  test('the offer renders in a sheet, not in the transcript, and closing it reports back', () => {
+    const onClose = jest.fn();
+    const hidden = render(<ReaderOfferSheet visible={false} onClose={onClose} {...cardProps} />);
+    expect(hidden.queryByTestId('reader-offer')).toBeNull();
+
+    const shown = render(<ReaderOfferSheet visible onClose={onClose} {...cardProps} />);
+    expect(shown.getByTestId('reader-offer')).toBeTruthy();
+    fireEvent.press(shown.getByLabelText('Dismiss test bottom sheet'));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test('the indicator names the papers and reopens the window', () => {
+    const onOpen = jest.fn();
+    const one = render(<ReaderOfferLink count={1} onOpen={onOpen} />);
+    expect(one.getByText('This response cites 1 paper nobody has read — read it?')).toBeTruthy();
+
+    const many = render(<ReaderOfferLink count={3} onOpen={onOpen} textScale={1.2} />);
+    const label = many.getByText('This response cites 3 papers nobody has read — read them?');
+    expect(StyleSheet.flatten(label.props.style).fontSize).toBeCloseTo(15);
+    fireEvent.press(many.getByTestId('reader-offer-link'));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -282,4 +397,31 @@ describe('the briefs on the response', () => {
     fireEvent.press(screen.getByText('Read 2 papers for this response'));
     expect(screen.queryByText('H3: HBM-side staging')).toBeNull();
   });
+});
+
+// Opus review of #503: the Fetch button was laid out past the row's right edge on every
+// candidate, which defeats the "option to fetch" DR-145 exists to add. A flex child in Yoga
+// defaults to `flexShrink: 0` (unlike on the web), so the checkbox half sized itself to the
+// longest title's intrinsic width and pushed its sibling off screen.
+//
+// RNTL runs no Yoga layout, so this pins the STYLE CONTRACT that makes the layout come out
+// right, not the pixels. It is a weaker assertion than a screenshot and is written knowing that:
+// what it defends against is the flex being dropped again, which is exactly how this arose.
+test('the checkbox half can shrink, so the Fetch button stays on the row', () => {
+  const screen = render(
+    <ReaderOfferCard
+      candidates={[{ slug: 'ghost', title: 'A very long paper title '.repeat(6), year: null, has_text: false }]}
+      selected={new Set()}
+      onToggle={() => undefined}
+      onStart={() => undefined}
+      onDismiss={() => undefined}
+      onFetch={() => undefined}
+      fetching={{}}
+      starting={false}
+    />,
+  );
+  const main = StyleSheet.flatten(screen.getByTestId('reader-candidate-ghost').props.style);
+  expect(main.flex).toBe(1);
+  const fetch = StyleSheet.flatten(screen.getByTestId('reader-fetch-ghost').props.style);
+  expect(fetch.flexShrink).toBe(0);
 });
