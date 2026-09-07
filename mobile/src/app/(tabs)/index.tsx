@@ -35,6 +35,7 @@ import {
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { AddPaperInline } from '@/components/AddPaperInline';
+import { AddPaperSheet } from '@/components/AddPaperSheet';
 import { EdgeFade } from '@/components/EdgeFade';
 import { LibraryLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
@@ -105,6 +106,7 @@ export default function LibraryScreen() {
   const projects = projectsQuery.data;
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [addPaperOpen, setAddPaperOpen] = useState(false);
   // The project pill floats over the list (like the composer): measured so the scroll content
   // gets a matching top inset and papers scroll clear behind it (R12.6).
   const [pillHeight, setPillHeight] = useState(0);
@@ -140,6 +142,7 @@ export default function LibraryScreen() {
   // Leaving the project or the papers vanishing must not strand select mode.
   useEffect(() => {
     exitSelect();
+    setAddPaperOpen(false);
   }, [activePid]);
 
   // Auto-select the first project if none is active yet.
@@ -387,6 +390,7 @@ export default function LibraryScreen() {
             name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
             subtitle={activeProject ? undefined : 'Tap to choose or create'}
             onPress={() => setSwitcherOpen(true)}
+            onAdd={activePid && !selectMode ? () => setAddPaperOpen(true) : undefined}
           />
         </View>
       <FlashList
@@ -580,6 +584,12 @@ export default function LibraryScreen() {
         onClose={() => setSwitcherOpen(false)}
       />
 
+      <AddPaperSheet
+        visible={addPaperOpen && !!activePid}
+        pid={activePid ?? ''}
+        onClose={() => setAddPaperOpen(false)}
+      />
+
       <SplitProjectSheet
         visible={splitOpen}
         pid={activePid}
@@ -710,31 +720,48 @@ function ProjectPill({
   name,
   subtitle,
   onPress,
+  onAdd,
 }: {
   name: string;
   subtitle?: string;
   onPress: () => void;
+  onAdd?: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityLabel="Switch project"
-      style={({ pressed }) => [styles.projectPill, pressed && { opacity: 0.85 }]}>
-      <Icon name="folder" size={18} color={t.muted} />
-      <View style={{ flex: 1, minWidth: 0, alignItems: 'center' }}>
-        <Text variant="heading" numberOfLines={1}>
-          {name}
-        </Text>
-        {subtitle ? (
-          <Text variant="caption" numberOfLines={1}>
-            {subtitle}
+    <View style={styles.projectPill}>
+      <Pressable
+        onPress={onPress}
+        accessibilityLabel="Switch project"
+        style={({ pressed }) => [styles.projectPillMain, pressed && { opacity: 0.85 }]}
+      >
+        <Icon name="folder" size={18} color={t.muted} />
+        <View style={{ flex: 1, minWidth: 0, alignItems: 'center' }}>
+          <Text variant="heading" numberOfLines={1}>
+            {name}
           </Text>
-        ) : null}
-      </View>
-      <Icon name="chevron-down" size={18} color={t.muted} />
-    </Pressable>
+          {subtitle ? (
+            <Text variant="caption" numberOfLines={1}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        <Icon name="chevron-down" size={18} color={t.muted} />
+      </Pressable>
+      {onAdd ? (
+        <>
+          <View style={styles.projectPillDivider} />
+          <IconButton
+            name="plus"
+            size={20}
+            filled={false}
+            onPress={onAdd}
+            accessibilityLabel={`Add paper to ${name}`}
+          />
+        </>
+      ) : null}
+    </View>
   );
 }
 
@@ -1010,11 +1037,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: tight ? space.sm : space.md,
     marginHorizontal: tight ? space.md : space.lg,
     marginBottom: space.sm,
     paddingHorizontal: tight ? space.md : space.lg,
-    paddingVertical: tight ? space.sm : space.md,
     backgroundColor: t.surface,
     borderRadius: radius.xl,
     borderWidth: 1,
@@ -1022,6 +1047,21 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     // Clip the fill to the rounded border so it can't bleed past the corners on Android (R12.6).
     overflow: 'hidden',
     ...floatShadow,
+  },
+  projectPillMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tight ? space.sm : space.md,
+    paddingVertical: tight ? space.sm : space.md,
+  },
+  projectPillDivider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: 'stretch',
+    marginVertical: space.xs,
+    marginLeft: tight ? space.sm : space.md,
+    backgroundColor: t.line2,
   },
   list: {
     padding: tight ? space.md : space.lg,

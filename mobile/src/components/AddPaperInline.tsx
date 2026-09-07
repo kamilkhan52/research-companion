@@ -35,16 +35,21 @@ export function AddPaperInline({
   pid,
   autoFocus = false,
   showDivider = true,
+  onNavigate,
 }: {
   pid: string;
   autoFocus?: boolean;
   showDivider?: boolean;
+  /** Close an owning sheet before this component pushes the new paper route. */
+  onNavigate?: () => void;
 }) {
   const router = useRouter();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const inputRef = useRef<TextInput>(null);
   const addPaper = useAddPaper(pid);
+  // Keep the legacy key when relocating this entry from Discover to Library: an unfinished
+  // title/link draft follows the control instead of disappearing during the upgrade.
   const textDraft = usePersistedDraft(draftKey(pid, 'discover', 'specific-paper'), '');
   const [error, setError] = useState<string | null>(null);
 
@@ -71,6 +76,7 @@ export function AddPaperInline({
       const query = new URLSearchParams();
       query.set('autoStart', '1');
       if (parsed.source) query.set('source', parsed.source);
+      onNavigate?.();
       router.push(`/paper/${encodeURIComponent(result.paper.slug)}?${query.toString()}`);
     } catch (e) {
       setError((e as Error).message ?? 'Could not add the paper.');

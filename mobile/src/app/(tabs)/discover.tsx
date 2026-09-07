@@ -10,11 +10,11 @@
 // shows papers as they turn up — the first batch comes from the reader's own library and needs
 // no model to be worth showing, so something real appears seconds in rather than a spinner.
 //
-// Adding a paper you already know is the other entry path: an "or" field under the query takes a
-// title, DOI, or arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt)
-// takes over on the paper's Discussion screen. It is hidden while a search runs.
+// Adding a paper the reader already knows is deliberately not a footer on this potentially long
+// result screen. DR-149 moves that entry to the active project's Library Plus sheet, which links
+// back here when the reader actually wants exploration.
 
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -30,7 +30,6 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { keys, useAddPaper, useDiscovery, useNeighbourhood, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
-import { AddPaperInline } from '@/components/AddPaperInline';
 import { NeighbourhoodLine, relativeAge } from '@/components/NeighbourhoodLine';
 import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
@@ -89,7 +88,6 @@ export function describeRunFocus(
 
 export default function DiscoverScreen() {
   const router = useRouter();
-  const { specific } = useLocalSearchParams<{ specific?: string }>();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
@@ -142,10 +140,6 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
-  // The deep link keeps the ordinary Discover layout and focuses the ONE shared compact field.
-  // It remains visible during a run only for this explicit entry, so the route never lands on a
-  // hidden target while normal discovery keeps its focus on the search in progress.
-  const specificEntry = specific === '1';
 
   async function runDiscovery() {
     const text = goals.trim();
@@ -191,11 +185,6 @@ export default function DiscoverScreen() {
               />
               {editingGoals && !runState.running ? (
                 <Button title="Cancel" variant="ghost" onPress={() => setEditingGoals(false)} />
-              ) : null}
-              {/* Only when it matters: a reader watching a search run does not want a second
-                  way to add a paper competing for attention. */}
-              {pid && (specificEntry || !runState.running) ? (
-                <AddPaperInline pid={pid} autoFocus={specificEntry} />
               ) : null}
             </Card>
           ) : (
@@ -336,12 +325,6 @@ export default function DiscoverScreen() {
             </View>
           ) : null}
 
-          {/* Adding a known paper now lives inline under the query (see AddByReferenceInline),
-              so nothing is repeated down here. The compact summary state has no query box of its
-              own, so it keeps the affordance — still hidden while a search runs. */}
-          {pid && !showEditor && (specificEntry || !runState.running) ? (
-            <AddPaperInline pid={pid} autoFocus={specificEntry} />
-          ) : null}
         </ScrollView>
 
         {addedCount > 0 ? (
