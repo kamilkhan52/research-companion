@@ -170,7 +170,14 @@ def _display_title(feedback: str) -> str:
 #: The colon must sit INSIDE the bold for this to fire, which is what keeps it off ordinary
 #: emphasis mid-sentence; `[^*]+?` lets a lead-in carry a markdown link, as `**Built in [#N](…):**`
 #: does throughout.
-_EVIDENCE_LEAD_RE = re.compile(r"(?<!^)(?<!\n)\s*(\*\*[^*]+?:\*\*)")
+#: NO leading `\s*` here, and that is load-bearing. This module already has one quadratic-regex
+#: incident on record (`_ATTRIBUTION_RE`, where a row with a long whitespace run took over five
+#: seconds), and `\s*` before the literal `**` reproduces it exactly: measured on this pattern
+#: before the fix, a cell with an n-character whitespace run and no lead-in cost 2.8 ms at
+#: n=1000 and 690 ms at n=16000 — 4x the time for 2x the input, on a function `parse_ledger`
+#: calls for every row on every items and feedback request. The whitespace is trimmed by
+#: `_paragraphs` with `rstrip` instead, which is linear and does the same job.
+_EVIDENCE_LEAD_RE = re.compile(r"(\*\*[^*]+?:\*\*)")
 
 #: The section that says what to actually DO on the phone. Pulled out of the prose because a row
 #: sits at `implemented — verify` precisely so it can be tested, and the instruction was arriving
@@ -183,8 +190,21 @@ _VERIFY_LEAD_RE = re.compile(
 def _paragraphs(text: str) -> str:
     """`text` with a blank line before each bold lead-in, so a renderer can show the sections
     the author wrote. A cell with no lead-ins comes back unchanged — this adds breaks, it never
-    rewords, and a row that was already fine must not come out different."""
-    return _EVIDENCE_LEAD_RE.sub(r"\n\n\1", text.strip()).strip()
+    rewords, and a row that was already fine must not come out different.
+
+    Split-and-rejoin rather than `sub`, so the whitespace before a lead-in is removed by `rstrip`
+    rather than matched by a regex: see `_EVIDENCE_LEAD_RE` for the measurement.
+    """
+    # `re.split` with one capture group yields [prose, lead, prose, lead, prose, …] — always an
+    # odd count, so the two strides below are always the same length; `strict` pins that.
+    parts = _EVIDENCE_LEAD_RE.split(text.strip())
+    if len(parts) == 1:
+        return parts[0].strip()
+    chunks = [parts[0].rstrip()]
+    chunks += [(lead + body).rstrip() for lead, body in zip(parts[1::2], parts[2::2], strict=True)]
+    # An empty first chunk is a cell that OPENS with a lead-in; dropping it is what keeps a
+    # blank line off the front.
+    return "\n\n".join(c for c in chunks if c).strip()
 
 
 def split_evidence(evidence: str) -> tuple[str, str | None]:
@@ -206,10 +226,20 @@ def split_evidence(evidence: str) -> tuple[str, str | None]:
     # instruction ("**Verify on device (round 2):**" follows an earlier round's note), and the
     # instruction that still stands is the final one.
     last = matches[-1]
-    body = evidence[last.end():].strip()
+    # ...and it ends where the NEXT section begins, not at the end of the cell. The ledger's
+    # convention is to APPEND later notes after the verify section, so the tail is routinely not
+    # an instruction at all: DR-118 carries ~900 characters of Kamil's own quoted device remarks
+    # after `**Verify on device:**`, and DR-115/DR-120/DR-121 all carry a `**Device-confirmed …:**`
+    # or a `**… device remark …:**` tail. Taking the whole tail put that wall of prose on the card
+    # under a heading promising the opposite — the very verbosity DR-131 exists to remove.
+    following = _EVIDENCE_LEAD_RE.search(evidence, last.end())
+    end = following.start() if following else len(evidence)
+    body = evidence[last.end():end].strip()
     if not body:
         return _paragraphs(evidence), None
-    return _paragraphs(evidence[:last.start()]), _paragraphs(body)
+    # Whatever came before the instruction and whatever was appended after it are both background.
+    around = [part for part in (evidence[:last.start()].strip(), evidence[end:].strip()) if part]
+    return _paragraphs("\n\n".join(around)), _paragraphs(body)
 
 
 #: States the tester acts on, in the order the app should surface them.
@@ -247,8 +277,8 @@ def parse_ledger(text: str) -> list[dict]:
             "state": state,
             # The evidence column is where "what to test and how" lives — verify steps are
             # written there by convention (the ledger's own workflow section says so).
-            # Kept verbatim: it is the collapsed preview's source, and `numberOfLines` bounds
-            # that to three lines only while it stays one paragraph.
+            # Kept verbatim for compatibility with a client that predates the split. The card
+            # itself now previews `background`.
             "how_to_test": evidence,
             # DR-131 — the same cell split into the two roles Kamil named. `background` is the
             # issue and the diagnosis; `verify` is what to do on the phone, which the card can

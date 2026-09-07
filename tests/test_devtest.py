@@ -3299,6 +3299,69 @@ def test_the_split_partitions_the_real_ledger_and_drops_nothing():
     assert len(items) > 100, "the ledger stopped parsing; this test would then prove nothing"
     assert any(i["verify"] for i in items), "no row produced an instruction — vacuous otherwise"
     for item in items:
-        rejoined = re.sub(r"\s+", "", item["background"] + (item["verify"] or ""))
-        source = re.sub(r"\s+", "", devtest._VERIFY_LEAD_RE.sub("", item["how_to_test"]))
-        assert rejoined == source, f"{item['id']} lost or gained text in the split"
+        # Drop exactly the ONE lead-in the split consumes — the last one — rather than every
+        # match. Stripping them all agrees only while no cell has two, and would then redden
+        # against correct behaviour.
+        source = item["how_to_test"]
+        if item["verify"]:
+            last = list(devtest._VERIFY_LEAD_RE.finditer(source))[-1]
+            source = source[:last.start()] + source[last.end():]
+        # Compared as a MULTISET of characters, not as a string: a note appended after the
+        # instruction legitimately moves from the tail of the cell into `background`, so the
+        # order differs by design. The claim under test is only that nothing is lost or invented.
+        assert sorted(re.sub(r"\s+", "", item["background"] + (item["verify"] or ""))) == \
+            sorted(re.sub(r"\s+", "", source)), f"{item['id']} lost or gained text in the split"
+
+
+def test_splitting_an_evidence_cell_stays_linear_in_its_length():
+    """`parse_ledger` runs for every row on every items and feedback request, and this module
+    already has a quadratic-regex incident on record (`_ATTRIBUTION_RE`: a row with a long
+    whitespace run took over five seconds and hung the bubble).
+
+    The first draft of `_EVIDENCE_LEAD_RE` reproduced it exactly — a `\\s*` before the literal
+    `**` — costing 2.8 ms at n=1000 and 690 ms at n=16000, four times the time for twice the
+    input. The bound below is deliberately enormous next to the ~0.4 ms the linear version
+    actually takes at this size, so a slow CI runner cannot redden it, while the quadratic
+    version (~2.8 s here) fails it by a factor of thirty.
+    """
+    import time
+
+    n = 32_000
+    shapes = [
+        "Diagnosis." + " " * n + "and ** stars ** but no lead-in.",   # the documented shape
+        "**x" * n,                                                     # unmatched bold openers
+        "**" + "a:" * n,                                               # colons with no closer
+        "**Verify " + "a:" * n,                                        # the same, on the verify RE
+    ]
+    for text in shapes:
+        started = time.perf_counter()
+        devtest.split_evidence(text)
+        assert time.perf_counter() - started < 0.5, f"quadratic on {text[:20]!r}"
+
+
+def test_a_note_appended_after_the_instruction_is_not_part_of_it():
+    """The ledger's convention is to APPEND later notes after the verify section, so the tail of a
+    cell is routinely not an instruction. Taking the whole tail put Kamil's own quoted device
+    remarks on the card under a WHAT TO TEST heading — the verbosity DR-131 exists to remove."""
+    background, verify = devtest.split_evidence(
+        "Diagnosis. **Verify:** tap the thing. "
+        "**2026-09-02, his device notes (state unchanged):** a long remark that is not an "
+        "instruction. **Also:** more prose.")
+    assert verify == "tap the thing."
+    assert "his device notes" in background
+    assert "more prose." in background
+    assert "Diagnosis." in background
+
+
+def test_no_row_in_the_real_ledger_has_a_later_section_inside_its_instruction():
+    """The property, asserted where it actually has to hold. Anything matching a bold lead-in
+    inside `verify` means a section after the instruction was swallowed by it."""
+    from pathlib import Path
+
+    ledger = Path(__file__).resolve().parents[1] / "docs" / "device-review-ledger.md"
+    items = devtest.parse_ledger(ledger.read_text(encoding="utf-8"))
+    instructions = [i for i in items if i["verify"]]
+    assert len(instructions) > 10, "no instructions parsed; this test would prove nothing"
+    for item in instructions:
+        assert not devtest._EVIDENCE_LEAD_RE.search(item["verify"]), \
+            f"{item['id']}'s instruction swallowed a later section"

@@ -1306,6 +1306,12 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
 /** How much of a description shows before "Show details". Enough to tell items apart, short
  *  enough that the verdict row stays on screen. */
 const DETAIL_PREVIEW_LINES = 3;
+// DR-131: how much of a long instruction stands open, and the length past which it is worth
+// clamping at all. The instruction is usually two sentences; a few rows carry several hundred
+// characters (DR-123's runs to 1379), and an unclamped wall above the Pass/Fail row would be the
+// verbosity this item exists to remove, just under a friendlier heading.
+const VERIFY_PREVIEW_LINES = 4;
+const VERIFY_CLAMP_CHARS = 240;
 
 /** The prompt a fail raises: recording it and acting on it used to be two gestures a screen
  *  apart, and the gap is where a fail sits — DR-009's waited ten hours because nothing carried
@@ -1906,6 +1912,9 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // (an explicit label REPLACES what its children would announce). The instruction is not lost
   // to TalkBack: its block sits outside that Pressable and is announced on its own.
   const detailPreview = useMemo(() => markdownToPlain(background), [background]);
+  const verifyPlain = useMemo(() => markdownToPlain(verify ?? ''), [verify]);
+  // Not persisted, like `details`: clamped is the right state to come back to every time.
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
   // (undefined) value during the one render before `ready` flips would transiently clobber a
@@ -1930,7 +1939,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // list, which puts him back there when this card closes.
   const setExpanded = useCallback((next: boolean) => {
     onExpandChange?.(next, item.id);
-    if (!next) setDetails(false);   // reopening starts collapsed again
+    if (!next) { setDetails(false); setVerifyOpen(false); }   // reopening starts collapsed again
     draft.setValue((v) => (
       next ? { ...v, expanded: true, openedAt: Date.now() } : { ...v, expanded: false }
     ));
@@ -2103,11 +2112,37 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
                 WHAT TO TEST
               </Text>
               {/* Outside any Pressable, like the details body below and for the same reason: a
-                  Pressable ancestor swallows the taps on the links this renderer makes tappable. */}
-              <Markdown text={verify} textScale={BUBBLE_TEXT_SCALE} />
+                  Pressable ancestor swallows the taps on the links this renderer makes tappable.
+                  A short instruction — most of them — simply stands open with no toggle. */}
+              {verify.length <= VERIFY_CLAMP_CHARS || verifyOpen ? (
+                <Markdown text={verify} textScale={BUBBLE_TEXT_SCALE} />
+              ) : (
+                <Text
+                  variant="caption"
+                  color={t.muted}
+                  style={styles.how}
+                  testID="devtest-item-verify-preview"
+                  numberOfLines={VERIFY_PREVIEW_LINES}>
+                  <MarkdownRuns text={verify} />
+                </Text>
+              )}
+              {verify.length > VERIFY_CLAMP_CHARS ? (
+                <Pressable
+                  onPress={() => setVerifyOpen((v) => !v)}
+                  accessibilityRole="button"
+                  // An explicit label REPLACES what the children would announce, so a screen
+                  // reader would otherwise lose the clamped instruction entirely.
+                  accessibilityLabel={verifyOpen ? 'Show less of what to test'
+                    : `Show all of what to test. ${verifyPlain}`}
+                  testID="devtest-item-verify-toggle">
+                  <Text variant="caption" color={t.violet} style={styles.how}>
+                    {verifyOpen ? 'Show less' : 'Show all'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
-          {item.how_to_test ? (
+          {background ? (
             details ? (
               <>
                 <View style={styles.howBody} testID="devtest-item-details-body">

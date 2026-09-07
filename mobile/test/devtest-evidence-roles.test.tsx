@@ -94,3 +94,36 @@ test('an older dev backend without the split still renders the whole cell', asyn
   // The instruction is not lost — it is still in the cell being rendered.
   screen.getByText(/confirm Stop still works/);
 });
+
+const LONG_VERIFY =
+  'open the bubble, tap Sort then Last activity, and confirm the top of the list is whatever you '
+  + 'or Claude touched most recently. Then scroll the Sort row, check Recently reviewed still '
+  + 'behaves as it did, and confirm Priority is unchanged. Finally reopen the card and check the '
+  + 'clamp comes back closed rather than remembering that you opened it.';
+
+test('a long instruction is clamped, with a way to see all of it', async () => {
+  // 13 of the 33 rows carrying an instruction run past 400 characters (DR-123's is 1379). An
+  // unclamped wall above the Pass/Fail row is the verbosity DR-131 exists to remove.
+  expect(LONG_VERIFY.length).toBeGreaterThan(240);
+  const screen = await openCard(itemWith({ background: BACKGROUND, verify: LONG_VERIFY }));
+  expect(screen.getByTestId('devtest-item-verify-preview')).toBeTruthy();
+  fireEvent.press(screen.getByTestId('devtest-item-verify-toggle'));
+  expect(screen.queryByTestId('devtest-item-verify-preview')).toBeNull();
+  screen.getByText(/clamp comes back closed/);
+});
+
+test('a short instruction stands open with no toggle', async () => {
+  const screen = await openCard(itemWith({ background: BACKGROUND, verify: VERIFY }));
+  expect(VERIFY.length).toBeLessThanOrEqual(240);
+  expect(screen.queryByTestId('devtest-item-verify-toggle')).toBeNull();
+  expect(screen.queryByTestId('devtest-item-verify-preview')).toBeNull();
+  screen.getByText(/confirm Stop still works/);
+});
+
+test('the clamped instruction is still announced to a screen reader', async () => {
+  // An explicit accessibilityLabel REPLACES what the children would announce, so the label has
+  // to carry the prose or a screen reader loses the clamped instruction entirely.
+  const screen = await openCard(itemWith({ background: BACKGROUND, verify: LONG_VERIFY }));
+  const toggle = screen.getByTestId('devtest-item-verify-toggle');
+  expect(toggle.props.accessibilityLabel).toContain('clamp comes back closed');
+});
