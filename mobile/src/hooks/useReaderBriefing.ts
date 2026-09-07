@@ -30,7 +30,13 @@ import {
 import { keys, useReaderCandidates } from '@/api/queries';
 import type { ReaderCandidate, ReaderJob, TranscriptEntry } from '@/api/types';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
-import { deferReaderOffer, isReaderOfferDeferred, readerOfferKeyFor } from '@/lib/readerOffer';
+import {
+  deferReaderOffer,
+  isReaderOfferDeferred,
+  markReaderAutoFetchAttempted,
+  readerAutoFetchAttempted,
+  readerOfferKeyFor,
+} from '@/lib/readerOffer';
 
 const POLL_MS = 1500;
 const FETCH_POLL_MS = 2000;
@@ -78,6 +84,7 @@ export function useReaderBriefing({
   transcript,
   streaming,
   deliveryMode,
+  focused = true,
   resumeTurn,
 }: {
   pid: string;
@@ -92,6 +99,11 @@ export function useReaderBriefing({
   /** A turn is generating — no offer while the response it would be about is still forming. */
   streaming: boolean;
   deliveryMode: 'reading' | 'listening';
+  /** Whether this paper's screen is the one on top. The window may only PRESENT itself while it
+   *  is: a response can land after the reader has navigated to the Library or Discover, and the
+   *  sheet is mounted by a screen that is still alive underneath, so it would otherwise open
+   *  over whatever they moved to. Closing/reopening from the indicator is unaffected. */
+  focused?: boolean;
   /** The screen's turn watcher's reattach (useStreamingTurn.resume). */
   resumeTurn: () => Promise<void>;
 }): ReaderBriefing {
@@ -119,6 +131,9 @@ export function useReaderBriefing({
   const fetchingRef = useRef<Set<string>>(new Set());
   //: Auto-fetches run one after another rather than as a burst of paid hunts.
   const autoQueueRef = useRef<Promise<void>>(Promise.resolve());
+  //: How many automatic fetches this conversation may still spend. A TOTAL, not a concurrency
+  //: limit — see the auto-fetch effect.
+  const autoFetchBudgetRef = useRef(MAX_AUTO_FETCH);
   const watchRef = useRef<string | null>(null);
   const aliveRef = useRef(true);
   // Bumped when the conversation changes, so an in-flight lookup for the previous one can never
@@ -189,6 +204,7 @@ export function useReaderBriefing({
     setFetching({});
     presentedRef.current = null;
     attemptedRef.current = new Set();
+    autoFetchBudgetRef.current = MAX_AUTO_FETCH;
     fetchingRef.current = new Set();
     autoQueueRef.current = Promise.resolve();
     if (!enabled) return;
@@ -373,31 +389,58 @@ export function useReaderBriefing({
   // paper leaves only the indicator, and the reader is never made to answer (DR-145).
   useEffect(() => {
     if (!offer || latestKey == null || deferredFor?.key !== latestKey) return;
+    // Not while another screen is on top. Deliberately does NOT mark the offer as presented, so
+    // it still gets its one chance when the reader comes back to the paper — a window they never
+    // saw must not be spent.
+    if (!focused) return;
     if (presentedRef.current === latestKey) return;
     presentedRef.current = latestKey;
     if (deferredFor.deferred) return;
     deferReaderOffer(pid, slug, threadId, latestKey);
     setOfferOpen(true);
-  }, [offer, latestKey, deferredFor, pid, slug, threadId]);
+  }, [offer, latestKey, deferredFor, pid, slug, threadId, focused]);
 
-  // "if fetch is needed, the agent should just automatically try" (Kamil, DR-145). One attempt
-  // per paper per conversation, in sequence, bounded by what a pass could read.
+  // "if fetch is needed, the agent should just automatically try. It doesn't cost anything in
+  // most cases" (Kamil, DR-145). In sequence, never as a burst, and bounded three ways — each
+  // bound closes a way the same paid hunt could be bought more than once (Opus review of #503):
+  //
+  //  * `readerAutoFetchAttempted` is DURABLE. A paper whose PDF cannot be resolved escalates to
+  //    the ~$0.10 agentic hunt, and an in-memory set only lives as long as the screen, so
+  //    re-entering the paper re-bought that hunt every single time.
+  //  * `autoFetchBudgetRef` counts TOTAL attempts, not how many are outstanding. The old slice
+  //    was taken from the currently-unfetched list on every change, so as fetches landed and the
+  //    list shrank, fresh candidates kept entering the first eight and the real total was
+  //    unbounded.
+  //  * the queued closure re-checks the EPOCH, not just liveness. Switching threads resets the
+  //    queue ref, which detaches the new queue but leaves the old chain running: its remaining
+  //    entries would go on buying retrievals for a conversation the reader had left.
   useEffect(() => {
     if (!offer) return;
-    const missing = offer.candidates.filter((c) => !c.has_text).slice(0, MAX_AUTO_FETCH);
-    for (const candidate of missing) {
-      if (attemptedRef.current.has(candidate.slug)) continue;
-      attemptedRef.current.add(candidate.slug);
-      autoQueueRef.current = autoQueueRef.current
-        .then(() => {
-          // Guard again at run time: the reader may have pressed Fetch on this row while it
-          // waited its turn, and the conversation may have moved on entirely.
-          if (!aliveRef.current || fetchingRef.current.has(candidate.slug)) return undefined;
-          return fetchCandidate(candidate.slug);
-        })
-        .catch(() => undefined);
-    }
-  }, [offer, fetchCandidate]);
+    const epoch = epochRef.current;
+    let cancelled = false;
+    const missing = offer.candidates.filter((c) => !c.has_text).map((c) => c.slug);
+    if (!missing.length) return undefined;
+    void readerAutoFetchAttempted(pid, missing).then((already) => {
+      if (cancelled || epochRef.current !== epoch || !aliveRef.current) return;
+      for (const target of missing) {
+        if (autoFetchBudgetRef.current <= 0) break;
+        if (already.has(target) || attemptedRef.current.has(target)) continue;
+        attemptedRef.current.add(target);
+        markReaderAutoFetchAttempted(pid, target);
+        autoFetchBudgetRef.current -= 1;
+        autoQueueRef.current = autoQueueRef.current
+          .then(() => {
+            // Guard again at run time: the reader may have pressed Fetch on this row while it
+            // waited its turn, and the conversation may have moved on entirely.
+            if (!aliveRef.current || epochRef.current !== epoch) return undefined;
+            if (fetchingRef.current.has(target)) return undefined;
+            return fetchCandidate(target);
+          })
+          .catch(() => undefined);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [offer, fetchCandidate, pid]);
 
   return {
     offer,

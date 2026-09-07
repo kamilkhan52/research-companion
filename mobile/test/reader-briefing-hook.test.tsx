@@ -10,7 +10,12 @@ import {
   startRetrievalJob,
 } from '@/api/endpoints';
 import type { ReaderCandidate, ReaderJob, TranscriptEntry } from '@/api/types';
-import { deferReaderOffer, isReaderOfferDeferred } from '@/lib/readerOffer';
+import {
+  deferReaderOffer,
+  isReaderOfferDeferred,
+  markReaderAutoFetchAttempted,
+  readerAutoFetchAttempted,
+} from '@/lib/readerOffer';
 import { useReaderBriefing } from '@/hooks/useReaderBriefing';
 
 jest.mock('@/api/endpoints', () => ({
@@ -31,6 +36,10 @@ jest.mock('@/api/queries', () => ({
 jest.mock('@/lib/readerOffer', () => ({
   deferReaderOffer: jest.fn(),
   isReaderOfferDeferred: jest.fn(async () => false),
+  // The durable auto-fetch memory (Opus review of #503). Default: nothing tried yet, so the
+  // existing auto-fetch tests exercise the same path they always did.
+  readerAutoFetchAttempted: jest.fn(async () => new Set<string>()),
+  markReaderAutoFetchAttempted: jest.fn(),
   readerOfferKeyFor: () => 'job:summary',
 }));
 
@@ -132,7 +141,7 @@ const TRANSCRIPT = [{
   chat_job_id: 'summary',
 }] as TranscriptEntry[];
 
-function mountOffer(client = createTestQueryClient()) {
+function mountOffer(client = createTestQueryClient(), focused = true) {
   const wrapper = ({ children }: PropsWithChildren) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -144,6 +153,7 @@ function mountOffer(client = createTestQueryClient()) {
     transcript: TRANSCRIPT,
     streaming: false,
     deliveryMode: 'reading',
+    focused,
     resumeTurn: jest.fn(async () => undefined),
   }), { wrapper });
 }
@@ -274,5 +284,114 @@ describe('fetching a candidate\'s text (DR-145)', () => {
     expect(getRetrievalJob).not.toHaveBeenCalled();
     view.unmount();
     jest.useRealTimers();
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// The five findings of the independent Opus review of #503. Each of these buys a paid retrieval
+// (an unresolvable paper escalates to the ~$0.10 agentic hunt) or puts a window over a screen the
+// reader chose, so each is pinned.
+
+describe('the bounds on automatic fetching (review of #503)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (getActiveReaderJob as jest.Mock).mockResolvedValue({ job: null });
+    (isReaderOfferDeferred as jest.Mock).mockResolvedValue(false);
+    (readerAutoFetchAttempted as jest.Mock).mockResolvedValue(new Set<string>());
+    (startRetrievalJob as jest.Mock).mockResolvedValue({
+      job: { id: 'ret', status: 'running', retrieved: false, phase: 'hunting', error: null },
+    });
+    mockCandidates = [{ slug: 'ghost', title: 'Ghost', year: null, has_text: false }];
+  });
+
+  test('a paper already auto-fetched once is never auto-fetched again', async () => {
+    // The memory is DURABLE. An in-memory set lives only as long as the screen, so re-entering
+    // a paper whose PDF cannot be resolved re-bought the hunt every single time.
+    (readerAutoFetchAttempted as jest.Mock).mockResolvedValue(new Set(['ghost']));
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.offer?.candidates).toHaveLength(1));
+    await act(async () => undefined);
+    expect(startRetrievalJob).not.toHaveBeenCalled();
+    // ...and the reader can still ask explicitly. The bound is on the AUTOMATIC pass only.
+    await act(async () => { await view.result.current.fetchCandidate('ghost'); });
+    expect(startRetrievalJob).toHaveBeenCalledWith('p1', 'ghost', {});
+    view.unmount();
+  });
+
+  test('an auto-fetch records itself, so the next entry into the paper does not repeat it', async () => {
+    const view = mountOffer();
+    await waitFor(() => expect(startRetrievalJob).toHaveBeenCalled());
+    expect(markReaderAutoFetchAttempted).toHaveBeenCalledWith('p1', 'ghost');
+    view.unmount();
+  });
+
+  test('unreadable storage refuses the automatic fetch rather than repeating it', async () => {
+    // Treating a storage failure as "nothing attempted" would re-run the very hunts this
+    // prevents. The failure mode has to be a button press, not a bill.
+    (readerAutoFetchAttempted as jest.Mock).mockResolvedValue(new Set(['ghost']));
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.offer?.candidates).toHaveLength(1));
+    await act(async () => undefined);
+    expect(startRetrievalJob).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  test('the automatic pass has a total budget, not a concurrency limit', async () => {
+    // The old bound was a `slice(0, 8)` taken from the currently-unfetched list on EVERY change.
+    // As fetches landed, `has_text` flipped and the list shrank, so fresh candidates kept
+    // entering the first eight and the real total was unbounded. Reproducing that needs the list
+    // to actually shrink — a static candidate list makes the buggy code look bounded, which is
+    // how this test passed against the bug on its first draft.
+    mockCandidates = Array.from({ length: 30 }, (_, i) => (
+      { slug: `p${i}`, title: `Paper ${i}`, year: null, has_text: false }
+    ));
+    (startRetrievalJob as jest.Mock).mockImplementation(async (_pid, slug) => {
+      // The fetch lands immediately: the paper now has text, so it leaves the missing list.
+      mockCandidates = mockCandidates.map((c) => (c.slug === slug ? { ...c, has_text: true } : c));
+      return { job: { id: `ret-${slug}`, status: 'done', retrieved: true, phase: 'done', error: null } };
+    });
+
+    const view = mountOffer();
+    await waitFor(() => expect(startRetrievalJob).toHaveBeenCalled());
+    // Drive the effect repeatedly, as re-renders do on a live screen. The hazard is
+    // unboundedness, so what is asserted is that the count STOPS GROWING — not that it reached
+    // some floor, which the bug also satisfies.
+    let previous = -1;
+    for (let i = 0; i < 8 && previous !== (startRetrievalJob as jest.Mock).mock.calls.length; i += 1) {
+      previous = (startRetrievalJob as jest.Mock).mock.calls.length;
+      view.rerender(undefined as never);
+      await act(async () => undefined);
+    }
+    expect((startRetrievalJob as jest.Mock).mock.calls.length).toBe(previous);
+    expect(previous).toBeLessThanOrEqual(8);
+    view.unmount();
+  });
+});
+
+describe('the offer window does not open over another screen (review of #503)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (getActiveReaderJob as jest.Mock).mockResolvedValue({ job: null });
+    (isReaderOfferDeferred as jest.Mock).mockResolvedValue(false);
+    (readerAutoFetchAttempted as jest.Mock).mockResolvedValue(new Set<string>());
+    mockCandidates = [{ slug: 'h3', title: 'H3', year: 2025, has_text: true }];
+  });
+
+  test('a response landing while the reader is elsewhere does not raise the window', async () => {
+    const view = mountOffer(createTestQueryClient(), false);
+    await waitFor(() => expect(view.result.current.offer?.candidates).toHaveLength(1));
+    await act(async () => undefined);
+    expect(view.result.current.offerOpen).toBe(false);
+    // And the offer is not SPENT: a window the reader never saw must still get its one chance.
+    expect(deferReaderOffer).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  test('coming back to the paper gives the window its chance', async () => {
+    const view = mountOffer(createTestQueryClient(), true);
+    await waitFor(() => expect(view.result.current.offerOpen).toBe(true));
+    expect(deferReaderOffer).toHaveBeenCalled();
+    view.unmount();
   });
 });

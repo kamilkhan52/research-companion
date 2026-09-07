@@ -45,3 +45,44 @@ export function deferReaderOffer(
 ): void {
   void AsyncStorage.setItem(key(pid, slug, threadId, responseKey), '1').catch(() => undefined);
 }
+
+// ---------------------------------------------------------------- DR-145 auto-fetch attempts
+//
+// "if fetch is needed, the agent should just automatically try. It doesn't cost anything in most
+// cases" (Kamil). In MOST cases. A paper whose PDF cannot be resolved escalates to the agentic
+// hunt, which costs around $0.10 — and the in-memory attempt set only lives as long as the
+// screen does, so re-entering the paper bought that hunt again, every time, for a paper that
+// will never resolve. Opus review of #503.
+//
+// Keyed by (project, paper) rather than by the response that cited it: the same unfetchable
+// paper cited from three discussions is still one paper, and it should be hunted for once. This
+// records only what was tried AUTOMATICALLY — the explicit Fetch button is never gated by it,
+// because a reader pressing it is asking again on purpose.
+
+const AUTO_PREFIX = 'rc.readerAutoFetch.v1';
+
+function autoKey(pid: string, paperSlug: string): string {
+  return `${AUTO_PREFIX}:${encodeURIComponent(pid)}:${encodeURIComponent(paperSlug)}`;
+}
+
+/** Which of `slugs` an automatic fetch has already been spent on. */
+export async function readerAutoFetchAttempted(pid: string, slugs: string[]): Promise<Set<string>> {
+  if (!slugs.length) return new Set();
+  try {
+    const pairs = await AsyncStorage.multiGet(slugs.map((s) => autoKey(pid, s)));
+    const attempted = new Set<string>();
+    pairs.forEach(([, value], i) => {
+      if (value === '1') attempted.add(slugs[i]);
+    });
+    return attempted;
+  } catch {
+    // Storage is unreadable. Treating that as "nothing attempted" would re-run the hunts this
+    // exists to prevent, so it reads as "all attempted" instead: the reader keeps the explicit
+    // Fetch button either way, and the failure mode is a button press rather than a bill.
+    return new Set(slugs);
+  }
+}
+
+export function markReaderAutoFetchAttempted(pid: string, paperSlug: string): void {
+  void AsyncStorage.setItem(autoKey(pid, paperSlug), '1').catch(() => undefined);
+}

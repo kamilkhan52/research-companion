@@ -398,3 +398,30 @@ describe('the briefs on the response', () => {
     expect(screen.queryByText('H3: HBM-side staging')).toBeNull();
   });
 });
+
+// Opus review of #503: the Fetch button was laid out past the row's right edge on every
+// candidate, which defeats the "option to fetch" DR-145 exists to add. A flex child in Yoga
+// defaults to `flexShrink: 0` (unlike on the web), so the checkbox half sized itself to the
+// longest title's intrinsic width and pushed its sibling off screen.
+//
+// RNTL runs no Yoga layout, so this pins the STYLE CONTRACT that makes the layout come out
+// right, not the pixels. It is a weaker assertion than a screenshot and is written knowing that:
+// what it defends against is the flex being dropped again, which is exactly how this arose.
+test('the checkbox half can shrink, so the Fetch button stays on the row', () => {
+  const screen = render(
+    <ReaderOfferCard
+      candidates={[{ slug: 'ghost', title: 'A very long paper title '.repeat(6), year: null, has_text: false }]}
+      selected={new Set()}
+      onToggle={() => undefined}
+      onStart={() => undefined}
+      onDismiss={() => undefined}
+      onFetch={() => undefined}
+      fetching={{}}
+      starting={false}
+    />,
+  );
+  const main = StyleSheet.flatten(screen.getByTestId('reader-candidate-ghost').props.style);
+  expect(main.flex).toBe(1);
+  const fetch = StyleSheet.flatten(screen.getByTestId('reader-fetch-ghost').props.style);
+  expect(fetch.flexShrink).toBe(0);
+});

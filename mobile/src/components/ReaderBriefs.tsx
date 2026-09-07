@@ -122,7 +122,7 @@ export function ReaderOfferCard({
               <Pressable
                 onPress={() => onToggle(c.slug)}
                 disabled={!c.has_text || starting}
-                style={[styles.row, !c.has_text && styles.rowDisabled]}
+                style={[styles.row, styles.candidateMain, !c.has_text && styles.rowDisabled]}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked, disabled: !c.has_text }}
                 accessibilityLabel={a11y}
@@ -504,7 +504,20 @@ const styles = StyleSheet.create({
   },
   rowDisabled: { opacity: 0.55 },
   candidateRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  fetchButton: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6 },
+  // The checkbox half must SHRINK so its sibling Fetch button stays on screen. A flex child in
+  // Yoga defaults to `flexShrink: 0`, unlike on the web, so this row sized itself to the longest
+  // title's intrinsic width and pushed Fetch past the right edge — on every candidate, which
+  // defeats the "option to fetch" this change exists to add. `styles.row` is shared with the
+  // progress card, where it is a child of a COLUMN and `flex: 1` would stretch its height, so
+  // this goes on the candidate's own Pressable rather than into the shared style.
+  candidateMain: { flex: 1 },
+  fetchButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    flexShrink: 0,
+  },
   offerLink: {
     flexDirection: 'row',
     alignItems: 'center',

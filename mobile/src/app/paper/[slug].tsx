@@ -483,6 +483,8 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
+  // DR-145: whether this route is the one on top, for the reading-assistant window's focus gate.
+  const screenFocused = useIsFocused();
   // DR-146 — own the reader pass above the transcript so its persistent surface can be the
   // compact header icon. The hook stays unconditional, but `enabled` prevents empty route ids
   // or setup-only papers from issuing an active-job request.
@@ -495,6 +497,10 @@ export default function DiscussionScreen() {
     transcript,
     streaming: stream.streaming,
     deliveryMode: listeningMode ? 'listening' : 'reading',
+    // DR-145 — the window may only present itself while this screen is on top. A response can
+    // land after the reader has moved to the Library or Discover, and this screen is still
+    // mounted underneath.
+    focused: screenFocused,
     resumeTurn: stream.resume,
   });
   const anticipatedState = anticipatedPaperState(
