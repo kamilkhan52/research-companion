@@ -287,3 +287,62 @@ def test_the_environment_wins_over_the_settings_document(monkeypatch):
     assert openalex.api_key() == "from-settings"
     monkeypatch.setenv("OPENALEX_API_KEY", "from-env")
     assert openalex.api_key() == "from-env"
+
+
+# ---------------------------------------------------------------- DR-139: open-access locations
+
+_ACM_CLOSED = {
+    "title": "New Computer Evaluation Metrics for a Changing World",
+    "open_access": {"is_oa": False},
+    "best_oa_location": None,
+    "locations": [
+        {"is_oa": False, "landing_page_url": "https://doi.org/10.1145/3637867", "pdf_url": None},
+    ],
+}
+
+_TWO_COPIES = {
+    "title": "A Paper",
+    "open_access": {"is_oa": True},
+    "best_oa_location": {"pdf_url": "https://repo.example/best.pdf",
+                         "landing_page_url": "https://repo.example/best"},
+    "locations": [
+        # The same copy again (OpenAlex repeats best_oa_location inside locations), then another.
+        {"pdf_url": "https://repo.example/best.pdf", "landing_page_url": "https://repo.example/best"},
+        {"pdf_url": "https://arxiv.org/pdf/2401.00001", "landing_page_url": None},
+        {"pdf_url": "", "landing_page_url": "https://publisher.example/a"},
+        None,
+    ],
+}
+
+
+def test_open_access_orders_best_first_and_de_duplicates():
+    client = FakeClient({"10.1145/3637867": FakeResp(200, _TWO_COPIES)})
+    out = openalex.open_access(doi="10.1145/3637867", client=client)
+    assert out["pdf_urls"] == ["https://repo.example/best.pdf", "https://arxiv.org/pdf/2401.00001"]
+    assert out["landing_pages"] == ["https://repo.example/best", "https://publisher.example/a"]
+    assert out["is_oa"] is True
+    assert out["title"] == "A Paper"
+    # A DOI URL is normalized to the bare id by the shared lookup helper.
+    assert "doi:10.1145/3637867" in client.calls[0]
+
+
+def test_open_access_reports_a_closed_work_with_its_title_and_no_copies():
+    """The case Kamil hit: the record exists, and there is nothing fetchable in it. The title is
+    still worth having — it is what the arXiv fallback searches under."""
+    client = FakeClient({"10.1145/3637867": FakeResp(200, _ACM_CLOSED)})
+    out = openalex.open_access(doi="https://doi.org/10.1145/3637867", client=client)
+    assert out["pdf_urls"] == []
+    assert out["is_oa"] is False
+    assert out["title"] == "New Computer Evaluation Metrics for a Changing World"
+
+
+def test_open_access_without_an_identifier_makes_no_call():
+    client = FakeClient({})
+    assert openalex.open_access(doi="", client=client) is None
+    assert openalex.open_access(doi=None, arxiv_id=None, client=client) is None
+    assert client.calls == []
+
+
+def test_open_access_miss_returns_none():
+    client = FakeClient({})
+    assert openalex.open_access(doi="10.1145/9999999", client=client) is None

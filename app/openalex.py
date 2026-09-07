@@ -126,6 +126,54 @@ def work_authorships_for(
     return out
 
 
+def open_access(*, doi: str | None = None, arxiv_id: str | None = None,
+                client: httpx.Client) -> dict | None:
+    """One identified work's title and open-access copies, or None when OpenAlex has no record.
+
+    DR-139 — the reader gives us a DOI (Kamil pasted an ACM one) and the publisher's own site is
+    behind a bot challenge, so "download the DOI" cannot be the retrieval path. OpenAlex already
+    aggregates every known copy of a work, so it answers the question that actually matters:
+    *is there a PDF of this paper somewhere we are allowed to fetch?* The lookup is by
+    IDENTIFIER, which OpenAlex prices at zero — no search, no allowance, no key needed.
+
+    Returns {title, is_oa, pdf_urls, landing_pages}. `pdf_urls` is ordered best-first and
+    de-duplicated; a caller tries them in order and is expected to tolerate every one failing,
+    because OpenAlex records where a copy is SUPPOSED to be, not whether it is fetchable today.
+    """
+    lookup = _work_lookup_id(arxiv_id=arxiv_id, doi=doi)
+    if not lookup:
+        return None
+    r = client.get(
+        f"{BASE}/works/{quote(lookup, safe=':./')}",
+        params={"select": "title,open_access,best_oa_location,locations"},
+        headers=_headers(),
+    )
+    if r.status_code != 200:
+        return None
+    work = r.json()
+    best = work.get("best_oa_location") or {}
+    # best_oa_location first, then every other location: the "best" one is OpenAlex's pick of
+    # version and licence, but a repository copy it ranked second is just as readable, and on a
+    # publisher that blocks us it may be the only one we can actually get.
+    pdf_urls: list[str] = []
+    landing_pages: list[str] = []
+    for location in [best, *(work.get("locations") or [])]:
+        if not isinstance(location, dict):
+            continue
+        pdf = (location.get("pdf_url") or "").strip()
+        if pdf and pdf not in pdf_urls:
+            pdf_urls.append(pdf)
+        landing = (location.get("landing_page_url") or "").strip()
+        if landing and landing not in landing_pages:
+            landing_pages.append(landing)
+    return {
+        "title": (work.get("title") or "").strip(),
+        "is_oa": bool((work.get("open_access") or {}).get("is_oa")),
+        "pdf_urls": pdf_urls,
+        "landing_pages": landing_pages,
+    }
+
+
 def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | None:
     """[{name, affiliation}] for one arXiv work, or None when the lookup fails/misses.
     `affiliation` is the first institution's display name ("" when OpenAlex has none —
