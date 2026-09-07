@@ -92,9 +92,6 @@ export function AddPaperSheet({
       // Copy/Move reuse is a deliberate human choice in the duplicate sheet. Never overwrite
       // that saved paper's full text automatically; open it and leave its own Upload action.
       if (outcome.action !== 'added') {
-        showToast(outcome.paper.retrieved
-          ? 'Reused the saved paper and kept its existing full text.'
-          : 'Reused the saved paper. Upload the PDF again from its paper screen.');
         openPaper(outcome.paper.slug);
         return;
       }

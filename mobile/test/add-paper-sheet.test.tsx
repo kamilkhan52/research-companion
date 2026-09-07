@@ -174,9 +174,6 @@ test('reusing a saved duplicate never overwrites its full text with the selected
   await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/paper/saved-duplicate'));
   expect(api.addPaper).not.toHaveBeenCalled();
   expect(api.uploadPaper).not.toHaveBeenCalled();
-  expect(showToast).toHaveBeenCalledWith(
-    'Reused the saved paper and kept its existing full text.',
-  );
 });
 
 test('an immediate upload failure opens the one created paper for an obvious retry', async () => {
