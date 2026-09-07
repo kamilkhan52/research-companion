@@ -1306,6 +1306,12 @@ function useDispatchHeartbeat(visible: boolean): DispatchStatus | null {
 /** How much of a description shows before "Show details". Enough to tell items apart, short
  *  enough that the verdict row stays on screen. */
 const DETAIL_PREVIEW_LINES = 3;
+// DR-131: how much of a long instruction stands open, and the length past which it is worth
+// clamping at all. The instruction is usually two sentences; a few rows carry several hundred
+// characters (DR-123's runs to 1379), and an unclamped wall above the Pass/Fail row would be the
+// verbosity this item exists to remove, just under a friendlier heading.
+const VERIFY_PREVIEW_LINES = 4;
+const VERIFY_CLAMP_CHARS = 240;
 
 /** The prompt a fail raises: recording it and acting on it used to be two gestures a screen
  *  apart, and the gap is where a fail sits — DR-009's waited ten hours because nothing carried
@@ -1896,7 +1902,19 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // The description as one plain string. DR-128 gave the visible preview its formatting back
   // (`MarkdownRuns` below), so this is now only for the toggle's `accessibilityLabel`, which
   // must be a string. Memoized per description because the whole list re-renders on a verdict.
-  const detailPreview = useMemo(() => markdownToPlain(item.how_to_test), [item.how_to_test]);
+  // DR-131. `background` is absent when the server predates the split, so the card falls back to
+  // the whole cell and behaves exactly as it did before rather than rendering nothing.
+  const background = item.background ?? item.how_to_test;
+  const verify = item.verify ?? null;
+  // The preview teases the DIAGNOSIS. It used to be the whole cell, which now puts the verify
+  // instruction on screen twice — once in its own block and once in the three-line teaser — and
+  // reads it twice to a screen reader, since this string is also the toggle's accessibilityLabel
+  // (an explicit label REPLACES what its children would announce). The instruction is not lost
+  // to TalkBack: its block sits outside that Pressable and is announced on its own.
+  const detailPreview = useMemo(() => markdownToPlain(background), [background]);
+  const verifyPlain = useMemo(() => markdownToPlain(verify ?? ''), [verify]);
+  // Not persisted, like `details`: clamped is the right state to come back to every time.
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   // DR-077: only report once the persisted load has actually resolved — reporting the fallback
   // (undefined) value during the one render before `ready` flips would transiently clobber a
@@ -1921,7 +1939,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
   // list, which puts him back there when this card closes.
   const setExpanded = useCallback((next: boolean) => {
     onExpandChange?.(next, item.id);
-    if (!next) setDetails(false);   // reopening starts collapsed again
+    if (!next) { setDetails(false); setVerifyOpen(false); }   // reopening starts collapsed again
     draft.setValue((v) => (
       next ? { ...v, expanded: true, openedAt: Date.now() } : { ...v, expanded: false }
     ));
@@ -2080,7 +2098,51 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
               three lines and only one Text honours it. Rendering the raw source there would
               leave the FIRST thing he sees still a jumble, so it gets the prose with the syntax
               taken out. */}
-          {item.how_to_test ? (
+          {/* DR-131 — Kamil: "keep them concise so I can actually read very briefly the issue,
+              the fix, and how to verify", and his rule that the description carries the ISSUE
+              while what was DONE belongs in the replies. The evidence cell carries all three at
+              once and runs to a thousand characters at the median, so the instruction he opens a
+              card FOR was arriving last. It now stands on its own, above the diagnosis and
+              outside the details toggle, on the rows that exist to be tested.
+              Only when the server actually found one: inventing a verify line for the older
+              rows that predate the convention would be worse than admitting there is not one. */}
+          {verify ? (
+            <View style={styles.verifyBlock} testID="devtest-item-verify">
+              <Text variant="caption" color={t.violet} style={styles.verifyLabel}>
+                WHAT TO TEST
+              </Text>
+              {/* Outside any Pressable, like the details body below and for the same reason: a
+                  Pressable ancestor swallows the taps on the links this renderer makes tappable.
+                  A short instruction — most of them — simply stands open with no toggle. */}
+              {verify.length <= VERIFY_CLAMP_CHARS || verifyOpen ? (
+                <Markdown text={verify} textScale={BUBBLE_TEXT_SCALE} />
+              ) : (
+                <Text
+                  variant="caption"
+                  color={t.muted}
+                  style={styles.how}
+                  testID="devtest-item-verify-preview"
+                  numberOfLines={VERIFY_PREVIEW_LINES}>
+                  <MarkdownRuns text={verify} />
+                </Text>
+              )}
+              {verify.length > VERIFY_CLAMP_CHARS ? (
+                <Pressable
+                  onPress={() => setVerifyOpen((v) => !v)}
+                  accessibilityRole="button"
+                  // An explicit label REPLACES what the children would announce, so a screen
+                  // reader would otherwise lose the clamped instruction entirely.
+                  accessibilityLabel={verifyOpen ? 'Show less of what to test'
+                    : `Show all of what to test. ${verifyPlain}`}
+                  testID="devtest-item-verify-toggle">
+                  <Text variant="caption" color={t.violet} style={styles.how}>
+                    {verifyOpen ? 'Show less' : 'Show all'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+          {background ? (
             details ? (
               <>
                 <View style={styles.howBody} testID="devtest-item-details-body">
@@ -2088,7 +2150,11 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
                       formatting but put it back to the smaller size"): "Reduce issues font. All.
                       Descriptions comments etc." He said the word. The formatting stays; the
                       reading scale drops to roughly the card's own type size. */}
-                  <Markdown text={item.how_to_test} textScale={BUBBLE_TEXT_SCALE} />
+                  {/* `background`, not the raw cell: the verify half already has its own block
+                      above, and repeating it here is the redundancy DR-131 names. It also
+                      carries the paragraph breaks the server recovered — a markdown table cell
+                      is one line by construction, which is why the structure never rendered. */}
+                  <Markdown text={background} textScale={BUBBLE_TEXT_SCALE} />
                 </View>
                 <Pressable
                   onPress={() => setDetails(false)}
@@ -2116,7 +2182,7 @@ export function ItemCard({ item, shot, route, startExpanded = false, onVerdictCh
                   style={styles.how}
                   testID="devtest-item-preview"
                   numberOfLines={DETAIL_PREVIEW_LINES}>
-                  <MarkdownRuns text={item.how_to_test} />
+                  <MarkdownRuns text={background} />
                 </Text>
                 <Text variant="caption" color={t.violet} style={styles.how}>Show details</Text>
               </Pressable>
@@ -2315,6 +2381,15 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // The same spacing without the `lineHeight`, which is a TextStyle: on the View wrapping the
   // rendered description it is silently ignored at runtime and only misleads the next reader.
   howBody: { marginTop: space.xs },
+  // DR-131: set apart from the prose around it, so "what to test" reads as an instruction rather
+  // than as the next sentence of the diagnosis.
+  verifyBlock: {
+    marginTop: space.sm,
+    paddingLeft: space.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: t.violet,
+  },
+  verifyLabel: { letterSpacing: 0.8, marginBottom: 2 },
   history: { marginTop: 4 },
   historyToggle: { marginTop: space.sm, alignSelf: 'flex-start' },
   historyEntry: {
