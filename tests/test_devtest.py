@@ -3224,3 +3224,81 @@ def test_raising_an_item_stops_counting_once_it_has_been_triaged(client, monkeyp
         "Provisional id `NEW-999`. |"))
     items = {i["id"]: i for i in client.get("/api/devtest/items").json()["items"]}
     assert items["DR-058"]["awaiting_reply"] is False
+
+
+# ------------------------------------------------------ DR-131: the evidence cell's two roles
+
+_LEAD = "**Built in [#502](https://github.com/kamilkhan52/research-companion/pull/502):**"
+
+
+def test_split_evidence_separates_what_to_test_from_the_diagnosis():
+    """Kamil: "keep them concise so I can actually read very briefly the issue, the fix, and how
+    to verify". The instruction is the part he acts on, so it comes out on its own."""
+    background, verify = devtest.split_evidence(
+        f"Route `/paper/flint`. {_LEAD} the pass leaves an icon. **Verify:** start a pass.")
+    assert verify == "start a pass."
+    assert "start a pass." not in background
+    assert "the pass leaves an icon." in background
+
+
+def test_split_evidence_recovers_the_paragraph_breaks_a_table_cell_cannot_hold():
+    """He suspected newlines were not rendering. They were not THERE — a markdown table cell is
+    one line by construction — so the structure is recovered from the bold lead-ins."""
+    background, _ = devtest.split_evidence(f"Route `/paper/flint`. {_LEAD} the pass leaves an icon.")
+    assert background.startswith("Route `/paper/flint`.")
+    assert f"\n\n{_LEAD}" in background
+    # The first lead-in of a cell that OPENS with one gets no leading blank line.
+    opened, _ = devtest.split_evidence(f"{_LEAD} the pass leaves an icon.")
+    assert opened.startswith(_LEAD)
+    assert not opened.startswith("\n")
+
+
+@pytest.mark.parametrize("spelling", [
+    "**Verify:**", "**Verify on device:**", "**Verify when built:**",
+    "**What to check:**", "**VERIFY:**",
+])
+def test_every_spelling_of_the_instruction_in_use_is_recognised(spelling):
+    _, verify = devtest.split_evidence(f"Diagnosis here. {spelling} do the thing.")
+    assert verify == "do the thing."
+
+
+def test_the_last_instruction_is_the_one_that_stands():
+    """A cell that verified once and was reopened carries two. The later one supersedes."""
+    _, verify = devtest.split_evidence(
+        "**Verify:** the old way. It failed. **Verify on device (round 2):** the new way.")
+    assert verify == "the new way."
+
+
+def test_a_cell_without_an_instruction_reports_none_rather_than_inventing_one():
+    """Most rows predate the convention. A made-up instruction is worse than an absent one."""
+    background, verify = devtest.split_evidence("They are distinct records, not a duplicate.")
+    assert verify is None
+    assert background == "They are distinct records, not a duplicate."
+    assert devtest.split_evidence("") == ("", None)
+    # A trailing lead-in with nothing after it is not an instruction either.
+    assert devtest.split_evidence("Diagnosis. **Verify:**")[1] is None
+
+
+def test_bold_that_is_not_a_lead_in_does_not_split_the_prose():
+    """The colon must be INSIDE the bold. Ordinary mid-sentence emphasis is not a section."""
+    background, verify = devtest.split_evidence(
+        "The **map** was **never** built, so nothing rendered: that is the bug.")
+    assert verify is None
+    assert "\n" not in background
+
+
+def test_the_split_partitions_the_real_ledger_and_drops_nothing():
+    """The property that matters across 149 rows: every character of every evidence cell still
+    reaches the phone through one of the two fields. Asserted against the FILE, not a fixture,
+    because the hazard is a cell shape nobody thought to write a fixture for."""
+    import re
+    from pathlib import Path
+
+    ledger = Path(__file__).resolve().parents[1] / "docs" / "device-review-ledger.md"
+    items = devtest.parse_ledger(ledger.read_text(encoding="utf-8"))
+    assert len(items) > 100, "the ledger stopped parsing; this test would then prove nothing"
+    assert any(i["verify"] for i in items), "no row produced an instruction — vacuous otherwise"
+    for item in items:
+        rejoined = re.sub(r"\s+", "", item["background"] + (item["verify"] or ""))
+        source = re.sub(r"\s+", "", devtest._VERIFY_LEAD_RE.sub("", item["how_to_test"]))
+        assert rejoined == source, f"{item['id']} lost or gained text in the split"

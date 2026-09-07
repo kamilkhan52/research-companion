@@ -159,6 +159,59 @@ def _display_title(feedback: str) -> str:
     return cleaned.strip() or feedback.strip()
 
 
+#: A bold lead-in inside an evidence cell: bold text that ends in a colon, which is how every
+#: section in this file announces itself (`**Verify:**`, `**Built in [#503](…):**`, `**Why it
+#: was left alone:**`). DR-131 — Kamil: "keep them concise so I can actually read very briefly
+#: the issue, the fix, and how to verify", and he suspected newlines were not rendering. They
+#: were not THERE: a markdown table cell is one line by construction, so an evidence cell has
+#: no paragraph breaks to render however good the renderer is. The structure the author wrote
+#: is real, it is just punctuation-deep, so it is recovered here rather than by reflowing 149
+#: rows into a format the ledger cannot hold.
+#: The colon must sit INSIDE the bold for this to fire, which is what keeps it off ordinary
+#: emphasis mid-sentence; `[^*]+?` lets a lead-in carry a markdown link, as `**Built in [#N](…):**`
+#: does throughout.
+_EVIDENCE_LEAD_RE = re.compile(r"(?<!^)(?<!\n)\s*(\*\*[^*]+?:\*\*)")
+
+#: The section that says what to actually DO on the phone. Pulled out of the prose because a row
+#: sits at `implemented — verify` precisely so it can be tested, and the instruction was arriving
+#: last, after a diagnosis that routinely runs past a thousand characters (median 1008, longest
+#: 6581). Every spelling in use today is accepted; the shape, not a fixed string, is the rule.
+_VERIFY_LEAD_RE = re.compile(
+    r"\*\*(?:Verify|To verify|What to check|What to verify)\b[^*]*:\*\*", re.IGNORECASE)
+
+
+def _paragraphs(text: str) -> str:
+    """`text` with a blank line before each bold lead-in, so a renderer can show the sections
+    the author wrote. A cell with no lead-ins comes back unchanged — this adds breaks, it never
+    rewords, and a row that was already fine must not come out different."""
+    return _EVIDENCE_LEAD_RE.sub(r"\n\n\1", text.strip()).strip()
+
+
+def split_evidence(evidence: str) -> tuple[str, str | None]:
+    """(background, verify) for one evidence cell.
+
+    `verify` is the trailing what-to-do-on-the-phone section when the cell has one, and None
+    otherwise — most of the older rows predate the convention, and inventing an instruction for
+    them would be worse than admitting there is not one. `background` is everything else, always
+    the whole cell when there is no verify section, so nothing is ever dropped: the two strings
+    partition the source.
+    """
+    evidence = (evidence or "").strip()
+    if not evidence:
+        return "", None
+    matches = list(_VERIFY_LEAD_RE.finditer(evidence))
+    if not matches:
+        return _paragraphs(evidence), None
+    # The LAST one: a cell occasionally mentions verification in passing before its real closing
+    # instruction ("**Verify on device (round 2):**" follows an earlier round's note), and the
+    # instruction that still stands is the final one.
+    last = matches[-1]
+    body = evidence[last.end():].strip()
+    if not body:
+        return _paragraphs(evidence), None
+    return _paragraphs(evidence[:last.start()]), _paragraphs(body)
+
+
 #: States the tester acts on, in the order the app should surface them.
 OPEN_STATES = ("open", "partial", "planned")
 VERIFY_STATE = "implemented — verify"
@@ -186,6 +239,7 @@ def parse_ledger(text: str) -> list[dict]:
         if not m:
             continue
         item_id, raised, feedback, state, evidence = m.groups()
+        background, verify = split_evidence(evidence)
         items.append({
             "id": item_id,
             "raised": raised,
@@ -193,7 +247,14 @@ def parse_ledger(text: str) -> list[dict]:
             "state": state,
             # The evidence column is where "what to test and how" lives — verify steps are
             # written there by convention (the ledger's own workflow section says so).
+            # Kept verbatim: it is the collapsed preview's source, and `numberOfLines` bounds
+            # that to three lines only while it stays one paragraph.
             "how_to_test": evidence,
+            # DR-131 — the same cell split into the two roles Kamil named. `background` is the
+            # issue and the diagnosis; `verify` is what to do on the phone, which the card can
+            # then put in front of him instead of at the end of a screen of prose.
+            "background": background,
+            "verify": verify,
             # Provisional NEW-… ids this row was triaged from (usually one; a row that absorbs
             # two phone items lists both). Sorted for a stable response shape.
             "aliases": sorted(set(_PROVISIONAL_RE.findall(feedback + " " + evidence))),

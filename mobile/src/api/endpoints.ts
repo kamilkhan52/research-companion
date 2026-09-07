@@ -110,6 +110,11 @@ export interface DevTestItem {
   title: string;
   state: string;
   how_to_test: string;
+  /** DR-131: the evidence cell split into the two roles Kamil named — `background` is the issue
+   *  and the diagnosis, `verify` is what to do on the phone. Optional so an older dev backend
+   *  that predates the split still renders (the card falls back to `how_to_test`). */
+  background?: string;
+  verify?: string | null;
   feedback_count: number;
   /** DR-132: shared queue visibility. Missing means visible for compatibility with an older
    *  dev backend and with a newly-created item returned before this field existed. */
