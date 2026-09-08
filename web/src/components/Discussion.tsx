@@ -159,7 +159,10 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   if (routeRef.current.pid !== activePid || routeRef.current.slug !== slug) sourceRef.current = source;
   routeRef.current = { pid: activePid, slug };
   // The title decision needs the paper as the server last described it, read from a retrieval
-  // callback that must not re-run every time the title changes.
+  // callback that must not re-run every time the title changes. It can lag `titleState` between
+  // a ruling and the canonical session that follows it; its only consumer is the retrieval-job
+  // effect, which cannot fire in that window (the watcher stops at a terminal snapshot and
+  // nothing restarts retrieval from compose or chat). Check that still holds before adding one.
   const paperRef = useRef<{ title: string; title_confirmed?: boolean } | null>(null);
 
   const chatWatch = useJobWatcher<ChatJob>(activePid, getChatJob);

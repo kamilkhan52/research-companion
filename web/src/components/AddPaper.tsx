@@ -29,8 +29,11 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
   // owns and can be slow, and a modal with no exit is worse than a late answer. Closing cannot
   // cancel the request, so it is the LANDING that is suppressed — a dismissed add neither jumps
   // the reader into a paper they walked away from nor reports its failure to a screen they left.
+  // EVERY exit routes through here. "Explore with Discover" is a leave too: an add that lands
+  // after it would otherwise navigate the reader off the screen they just chose.
   const closed = useRef(false);
-  const dismiss = useCallback(() => { closed.current = true; onClose(); }, [onClose]);
+  const exit = useCallback((leave: () => void) => { closed.current = true; leave(); }, []);
+  const dismiss = useCallback(() => exit(onClose), [exit, onClose]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
@@ -114,7 +117,7 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
         )}
         <div className="add-paper-explore">
           <span className="muted">Not sure what to read next?</span>
-          <button className="btn ghost" onClick={onExplore}>Explore with Discover</button>
+          <button className="btn ghost" onClick={() => exit(onExplore)}>Explore with Discover</button>
         </div>
       </section>
     </div>

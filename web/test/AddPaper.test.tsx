@@ -157,6 +157,24 @@ describe('AddPaperSheet', () => {
     expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled();
   });
 
+  it('does not override the screen a reader chose on the way out', async () => {
+    // "Explore with Discover" is a leave, not a cancel: an add still in flight must not land
+    // on top of Discover once the reader has gone there.
+    const user = userEvent.setup();
+    let land!: (value: { paper: { slug: string } }) => void;
+    api.addPaper.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+    const { props } = renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention{Enter}');
+    await screen.findByRole('button', { name: 'Adding…' });
+    await user.click(screen.getByRole('button', { name: /explore with discover/i }));
+    expect(props.onExplore).toHaveBeenCalled();
+
+    land({ paper: { slug: 'attention' } });
+    await waitFor(() => expect(localStorage.getItem(addPaperDraftKey('project-1'))).toBeNull());
+    expect(props.onAdded).not.toHaveBeenCalled();
+  });
+
   it('offers Discover as the other way in', async () => {
     const user = userEvent.setup();
     const { props } = renderSheet();
