@@ -40,10 +40,12 @@ import {
 
 const POLL_MS = 1500;
 const FETCH_POLL_MS = 2000;
-/** Never auto-fetch more papers than one pass could read (`reader_jobs.MAX_TARGETS`), so a
- *  response citing a long unread bibliography cannot fan one arrival out into retrievals for
- *  papers the reader could not have had read anyway. */
-const MAX_AUTO_FETCH = 8;
+/** What a pass reads, and so also what may be auto-fetched, when the server has not said —
+ *  an older backend, or a candidates payload from cache that predates `max_targets`. Mirrors
+ *  `reader_jobs.MAX_TARGETS`. The live value travels with the candidates and is what the offer
+ *  obeys; this constant is the fallback when it has not arrived, and the standing bound on
+ *  automatic fetches. */
+const DEFAULT_MAX_TARGETS = 8;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Where a candidate's on-demand text fetch has got to. Absent = never attempted here. */
@@ -64,6 +66,9 @@ export interface ReaderBriefing {
   /** The pass to render (running, or terminal and not yet dismissed), or null. */
   job: ReaderJob | null;
   selected: ReadonlySet<string>;
+  /** How many papers one pass may read — the server's `reader_jobs.MAX_TARGETS`. The offer
+   *  shows it, and neither the default selection nor `toggle` may exceed it (DR-155). */
+  maxTargets: number;
   toggle: (slug: string) => void;
   start: () => Promise<void>;
   dismissJob: () => void;
@@ -132,8 +137,10 @@ export function useReaderBriefing({
   //: Auto-fetches run one after another rather than as a burst of paid hunts.
   const autoQueueRef = useRef<Promise<void>>(Promise.resolve());
   //: How many automatic fetches this conversation may still spend. A TOTAL, not a concurrency
-  //: limit — see the auto-fetch effect.
-  const autoFetchBudgetRef = useRef(MAX_AUTO_FETCH);
+  //: limit — see the auto-fetch effect. Deliberately NOT `maxTargets`: this is a spend bound on
+  //: paid retrievals, it is armed on a conversation change before the new candidates (and their
+  //: cap) have been read, and it must not rise because a server raised what a pass may read.
+  const autoFetchBudgetRef = useRef(DEFAULT_MAX_TARGETS);
   const watchRef = useRef<string | null>(null);
   const aliveRef = useRef(true);
   // Bumped when the conversation changes, so an in-flight lookup for the previous one can never
@@ -154,6 +161,7 @@ export function useReaderBriefing({
   const candidatesQuery = useReaderCandidates(pid, slug, threadId, candidatesEnabled);
   const candidates = candidatesQuery.data?.candidates ?? [];
   const candidatesIndex = candidatesQuery.data?.assistant_index ?? null;
+  const maxTargets = candidatesQuery.data?.max_targets ?? DEFAULT_MAX_TARGETS;
 
   const watch = useCallback(async (start: ReaderJob) => {
     const epoch = epochRef.current;
@@ -204,7 +212,7 @@ export function useReaderBriefing({
     setFetching({});
     presentedRef.current = null;
     attemptedRef.current = new Set();
-    autoFetchBudgetRef.current = MAX_AUTO_FETCH;
+    autoFetchBudgetRef.current = DEFAULT_MAX_TARGETS;
     fetchingRef.current = new Set();
     autoQueueRef.current = Promise.resolve();
     if (!enabled) return;
@@ -242,10 +250,15 @@ export function useReaderBriefing({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, slug, threadId, latestIndex, latestKey]);
 
-  // Default selection: every readable candidate. A fetch landing mid-offer flips one row's
-  // `has_text` without the paper set changing — that ADDS the new row rather than re-deriving
-  // the whole selection, or a fetch finishing would silently re-check papers the reader had
-  // just unchecked (DR-145 made this reachable: before it, `has_text` never changed here).
+  // Default selection: every readable candidate, up to what one pass may read. The cap is why
+  // it is a slice — Kamil's response cited seventeen, all seventeen were ticked, and the button
+  // offered to "Read 17 papers" that the server would refuse (DR-155).
+  //
+  // A fetch landing mid-offer flips one row's `has_text` without the paper set changing — that
+  // ADDS the new row rather than re-deriving the whole selection, or a fetch finishing would
+  // silently re-check papers the reader had just unchecked (DR-145 made this reachable: before
+  // it, `has_text` never changed here). An arrival can only fill room the reader left; it never
+  // displaces a paper they chose.
   const slugKey = candidates.map((c) => c.slug).join('|');
   const readableKey = candidates.filter((c) => c.has_text).map((c) => c.slug).join('|');
   const prevSelectionBasis = useRef<{ slugKey: string; index: number | null; readable: Set<string> } | null>(null);
@@ -254,28 +267,42 @@ export function useReaderBriefing({
     const prev = prevSelectionBasis.current;
     if (prev && prev.slugKey === slugKey && prev.index === candidatesIndex) {
       const added = readable.filter((s) => !prev.readable.has(s));
-      if (added.length) {
-        setSelected((current) => {
-          const next = new Set(current);
-          added.forEach((s) => next.add(s));
-          return next;
-        });
-      }
+      setSelected((current) => {
+        // A cap that has SHRUNK (a server constant lowered between two candidate reads) must
+        // take the selection with it: the ADD branch alone would leave the card showing eight
+        // ticked while `start` sent three of them (Opus review of #507). Order is the offer's,
+        // so what survives is the top of the list the reader is looking at.
+        const kept = current.size > maxTargets
+          ? readable.filter((s) => current.has(s)).slice(0, maxTargets)
+          : [...current];
+        const next = new Set(kept);
+        for (const s of added) {
+          if (next.size >= maxTargets) break;
+          next.add(s);
+        }
+        return next.size === current.size && [...next].every((s) => current.has(s))
+          ? current
+          : next;
+      });
     } else {
-      setSelected(new Set(readable));
+      setSelected(new Set(readable.slice(0, maxTargets)));
     }
     prevSelectionBasis.current = { slugKey, index: candidatesIndex, readable: new Set(readable) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slugKey, readableKey, candidatesIndex]);
+  }, [slugKey, readableKey, candidatesIndex, maxTargets]);
 
   const toggle = useCallback((target: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
+      // Unticking is always allowed; ticking stops at the pass limit. Refusing here rather than
+      // at the server is the whole of DR-155: a ninth tick used to arm a button reading "Read 9
+      // papers" and then fail on submit. The offer says the cap, so the row going inert has an
+      // explanation on screen beside it.
       if (next.has(target)) next.delete(target);
-      else next.add(target);
+      else if (next.size < maxTargets) next.add(target);
       return next;
     });
-  }, []);
+  }, [maxTargets]);
 
   /** Fetch one candidate's text with the ordinary background retrieval job (invariant 1: this
    *  polls a server-side job, it does not hold a request open). Best effort — a failure leaves a
@@ -331,7 +358,13 @@ export function useReaderBriefing({
 
   const start = useCallback(async () => {
     if (!enabled || starting || latestIndex == null) return;
-    const targets = candidates.filter((c) => c.has_text && selected.has(c.slug)).map((c) => c.slug);
+    const targets = candidates
+      .filter((c) => c.has_text && selected.has(c.slug))
+      .map((c) => c.slug)
+      // Unreachable while the selection itself is capped, and kept anyway: a server that lowers
+      // the cap between the candidates arriving and the reader pressing Read would otherwise
+      // send a list it will refuse.
+      .slice(0, maxTargets);
     if (!targets.length) return;
     setStarting(true);
     setError(null);
@@ -350,7 +383,8 @@ export function useReaderBriefing({
       if (presentSpendRefusal(e, { operation: 'other', retry: () => start() })) return;
       setError(e instanceof ApiError ? e.message : (e as Error)?.message ?? 'Could not start reading.');
     }
-  }, [enabled, starting, latestIndex, candidates, selected, pid, slug, threadId, candidatesIndex, deliveryMode, watch]);
+  }, [enabled, starting, latestIndex, candidates, selected, maxTargets, pid, slug, threadId,
+      candidatesIndex, deliveryMode, watch]);
 
   const openOffer = useCallback(() => setOfferOpen(true), []);
 
@@ -449,6 +483,7 @@ export function useReaderBriefing({
     closeOffer,
     job: enabled && job && (job.status === 'running' || job.assistant_index === latestIndex) ? job : null,
     selected,
+    maxTargets,
     toggle,
     start,
     dismissJob,

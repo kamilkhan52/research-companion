@@ -15,9 +15,17 @@ from . import make_project_router
 project_router = make_project_router()
 
 
+#: A parse bound, NOT the pass limit. The limit is `reader_jobs.MAX_TARGETS`, enforced in the
+#: domain layer so its refusal is a sentence a reader can act on. Declared here it was a
+#: pydantic 422, whose body the client rendered verbatim — Kamil ticked seventeen papers and
+#: got `[{"type":"too_long","loc":["body","targets"],…}]` (DR-155). This only keeps an absurd
+#: body from being parsed at all; anything between it and the pass limit is refused in words.
+MAX_REQUEST_TARGETS = 200
+
+
 class ReaderStartReq(BaseModel):
     slug: str
-    targets: list[str] = Field(min_length=1, max_length=reader_jobs.MAX_TARGETS)
+    targets: list[str] = Field(min_length=1, max_length=MAX_REQUEST_TARGETS)
     thread_id: str = sessions.MAIN_THREAD
     assistant_index: int | None = None
     delivery_mode: Literal["reading", "listening"] = "reading"

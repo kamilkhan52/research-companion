@@ -116,7 +116,8 @@ def test_candidates_default_to_the_latest_response_and_bound_the_index(temp_proj
 def test_a_session_with_no_response_yet_has_no_candidates(temp_project):
     add_paper(temp_project, "flint", "FLINT")
     sessions.start_session("flint", "FLINT")
-    assert reader_jobs.candidates("flint") == {"assistant_index": None, "candidates": []}
+    assert reader_jobs.candidates("flint") == {"assistant_index": None, "candidates": [],
+                                              "max_targets": reader_jobs.MAX_TARGETS}
 
 
 # ---------------------------------------------------------------- the pass
@@ -255,6 +256,36 @@ def test_start_refuses_bad_requests_up_front(temp_project):
         reader_jobs.start_reading(slug, ["  "], reader_fn=lambda *a: "x")
     with pytest.raises(reader_jobs.ReaderError, match="No active session"):
         reader_jobs.start_reading("h3", ["flint"], reader_fn=lambda *a: "x")
+    assert reader_jobs._jobs == {}
+
+
+def test_more_targets_than_a_pass_reads_is_refused_in_words(temp_project):
+    """DR-155. The cap used to be declared as pydantic `max_length` on the request field, so
+    over-picking answered 422 with a list of validation objects that the client rendered
+    verbatim. The refusal has to be a sentence, and the route has to say it with the domain's
+    own status, not the validator's."""
+    slug = _project(temp_project)
+    too_many = [f"paper-{i}" for i in range(reader_jobs.MAX_TARGETS + 1)]
+    with pytest.raises(reader_jobs.ReaderError, match="At most 8 papers"):
+        reader_jobs.start_reading(slug, too_many, reader_fn=lambda *a: "x")
+
+    from app.main import app
+    client = TestClient(app)
+    refused = client.post(f"/api/projects/{temp_project}/reader/jobs",
+                          json={"slug": slug, "targets": too_many})
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail == f"At most {reader_jobs.MAX_TARGETS} papers can be read in one pass."
+    # The pydantic shape is what leaked; assert its absence rather than only the message.
+    assert isinstance(detail, str)
+
+    # The parse bound is still there, far above the pass limit, so an absurd body is refused
+    # before it is read into memory.
+    from app.routers import reader as reader_router
+    absurd = client.post(f"/api/projects/{temp_project}/reader/jobs",
+                         json={"slug": slug,
+                               "targets": [f"p{i}" for i in range(reader_router.MAX_REQUEST_TARGETS + 1)]})
+    assert absurd.status_code == 422
     assert reader_jobs._jobs == {}
 
 
@@ -472,6 +503,8 @@ def test_the_routes_expose_candidates_and_the_job(temp_project):
     got = client.get(f"{base}/reader/candidates/{slug}")
     assert got.status_code == 200, got.text
     assert [c["slug"] for c in got.json()["candidates"]] == ["h3", "memexplorer"]
+    # DR-155 — the cap travels with the list, so the offer can show it before it binds.
+    assert got.json()["max_targets"] == reader_jobs.MAX_TARGETS
 
     refused = client.post(f"{base}/reader/jobs", json={"slug": slug, "targets": ["memexplorer"]})
     assert refused.status_code == 409 and "no cached text" in refused.json()["detail"]

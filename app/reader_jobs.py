@@ -164,11 +164,15 @@ def candidates(slug: str, thread_id: str | None = None,
     """The project papers one response cited without their having been read: every distinct
     `rc-paper:` link in that response's canonical text whose paper has no Paper Notes, minus the
     current paper and anything already briefed in this thread. `assistant_index` defaults to
-    the latest response. `has_text` says whether the assistant could read it right now."""
+    the latest response. `has_text` says whether the assistant could read it right now.
+
+    `max_targets` travels with the list because the client has to show the cap BEFORE the
+    reader hits it (DR-155): Kamil ticked seventeen papers, and the only thing that knew a
+    pass reads eight was the request validator."""
     thread_id = _thread(thread_id)
     responses = [r for r in sessions.read_records(slug, thread_id) if r.get("role") == "assistant"]
     if not responses:
-        return {"assistant_index": None, "candidates": []}
+        return {"assistant_index": None, "candidates": [], "max_targets": MAX_TARGETS}
     if assistant_index is None:
         assistant_index = len(responses) - 1
     if not 0 <= assistant_index < len(responses):
@@ -187,7 +191,8 @@ def candidates(slug: str, thread_id: str | None = None,
             continue
         out.append({"slug": target, "title": paper.title, "year": paper.year,
                     "has_text": paper.retrieved})
-    return {"assistant_index": assistant_index, "candidates": out}
+    return {"assistant_index": assistant_index, "candidates": out,
+            "max_targets": MAX_TARGETS}
 
 
 # ---------------------------------------------------------------------------- the reading

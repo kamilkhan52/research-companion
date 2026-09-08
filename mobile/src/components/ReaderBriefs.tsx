@@ -57,6 +57,7 @@ function fetchNote(state: ReaderFetchState | undefined): string | null {
 export function ReaderOfferCard({
   candidates,
   selected,
+  maxTargets,
   onToggle,
   onStart,
   onDismiss,
@@ -70,6 +71,9 @@ export function ReaderOfferCard({
   candidates: ReaderCandidate[];
   /** Slugs currently checked. Papers without cached text are never selectable. */
   selected: ReadonlySet<string>;
+  /** How many papers one pass may read. Shown whenever more are on offer than fit, so the
+   *  limit is a fact on the card rather than a refusal after the tap (DR-155). */
+  maxTargets: number;
   onToggle: (slug: string) => void;
   onStart: () => void;
   onDismiss: () => void;
@@ -89,6 +93,10 @@ export function ReaderOfferCard({
   const chatTextStyle = useChatTextStyle(textScale);
   const readable = candidates.filter((c) => c.has_text);
   const count = readable.filter((c) => selected.has(c.slug)).length;
+  // Only worth saying when it binds: with three candidates and a cap of eight, a line about
+  // eight is noise. Kamil hit it with seventeen and had nothing to read until it failed.
+  const capBinds = readable.length > maxTargets;
+  const atCap = count >= maxTargets;
   return (
     <ToneSurface tone="mint" style={[styles.card, embedded && styles.embeddedCard]} testID="reader-offer">
       <View style={styles.headerRow}>
@@ -105,9 +113,25 @@ export function ReaderOfferCard({
         {candidates.length === 1 ? ' its abstract' : ' their abstracts'} alone. A reading assistant can read
         each one in full against this response, and the agent will then revise what it said about them.
       </Text>
+      {capBinds ? (
+        <Text
+          variant="caption"
+          color={atCap ? t.text : t.muted}
+          style={chatTextStyle}
+          testID="reader-cap-note"
+        >
+          One pass reads up to {maxTargets} — {count} of {readable.length} chosen
+          {atCap ? '. Untick one to choose another.' : '.'}
+        </Text>
+      ) : null}
       <View style={styles.list}>
         {candidates.map((c) => {
           const checked = c.has_text && selected.has(c.slug);
+          // At the cap the unchosen rows go inert rather than accepting a tap that does
+          // nothing. The cap line above says why, on screen at the same moment — the missing
+          // half of DR-145's "I assumed I just couldn't select the unselected papers due to a
+          // bug", where a row went dead with nothing next to it saying so.
+          const capped = c.has_text && !checked && atCap;
           const label = `${c.title}${yearSuffix(c.year)}`;
           const state = fetching[c.slug];
           const note = c.has_text ? null : fetchNote(state);
@@ -115,16 +139,16 @@ export function ReaderOfferCard({
           // so rather than reading as the bug Kamil took it for ("I assumed I just couldn't
           // select the unselected papers due to a bug").
           const a11y = c.has_text
-            ? label
+            ? (capped ? `${label}. One pass reads up to ${maxTargets} papers — untick another to choose this one.` : label)
             : `${label}. ${note ?? 'Its text has not been fetched yet.'}`;
           return (
             <View key={c.slug} style={styles.candidateRow}>
               <Pressable
                 onPress={() => onToggle(c.slug)}
-                disabled={!c.has_text || starting}
-                style={[styles.row, styles.candidateMain, !c.has_text && styles.rowDisabled]}
+                disabled={!c.has_text || capped || starting}
+                style={[styles.row, styles.candidateMain, (!c.has_text || capped) && styles.rowDisabled]}
                 accessibilityRole="checkbox"
-                accessibilityState={{ checked, disabled: !c.has_text }}
+                accessibilityState={{ checked, disabled: !c.has_text || capped }}
                 accessibilityLabel={a11y}
                 testID={`reader-candidate-${c.slug}`}
               >

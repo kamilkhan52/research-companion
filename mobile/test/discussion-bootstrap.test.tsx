@@ -55,6 +55,7 @@ const emptyReader = (): ReaderBriefing => ({
   closeOffer: jest.fn(),
   job: null,
   selected: new Set(),
+  maxTargets: 8,
   toggle: jest.fn(),
   start: jest.fn(async () => undefined),
   dismissJob: jest.fn(),
