@@ -2,6 +2,7 @@
 
 import {
   createSeekDetector,
+  DRAG_IDLE_MS,
   FLING_GRACE_MS,
   GESTURE_IDLE_MS,
   SEEK_FALLBACK_PX,
@@ -134,9 +135,28 @@ test('momentum that keeps arriving is one continuous gesture', () => {
   clock += 16;
   seek.momentumBegin();
   let woke = false;
-  for (let y = 0; y <= SEEK; y += 20) {
+  // Deliberately longer than GESTURE_IDLE_MS of clock: a real Android fling coasts well past
+  // it, so the expiry must be refreshed by the frames rather than killing the fling mid-flight.
+  // Without the refresh this loop stops counting after 400 ms and never reaches the threshold.
+  const frames = Math.ceil((GESTURE_IDLE_MS / 16) * 3);
+  for (let i = 1; i <= frames; i += 1) {
     clock += 16;
-    woke = seek.scroll(y, VIEWPORT) || woke;
+    woke = seek.scroll((SEEK / frames) * i, VIEWPORT) || woke;
   }
+  expect(clock - 1000).toBeGreaterThan(GESTURE_IDLE_MS);
   expect(woke).toBe(true);
+});
+
+test('a drag whose end event is lost still ends', () => {
+  // `onScrollEndDrag` can go missing if the list is re-keyed under a held finger. Without a
+  // ceiling of its own that latches `dragging` and disarms the expiry for good (Opus review).
+  let clock = 1000;
+  const seek = createSeekDetector(() => clock);
+  seek.beginDrag(0);
+  expect(seek.scroll(100, VIEWPORT)).toBe(false);
+  clock += DRAG_IDLE_MS + 1;
+  expect(seek.scroll(SEEK * 4, VIEWPORT)).toBe(false);
+  // …and it is properly shut, not merely skipped once.
+  clock += 16;
+  expect(seek.scroll(SEEK * 8, VIEWPORT)).toBe(false);
 });

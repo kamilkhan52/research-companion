@@ -34,6 +34,11 @@ export const FLING_GRACE_MS = 250;
  *  while anything is really moving, so this only ever closes a gesture that has stopped. It is
  *  not applied while a finger is down, where a pause is just a pause. */
 export const GESTURE_IDLE_MS = 400;
+/** The same ceiling for a gesture whose finger never lifted. `onScrollEndDrag` can be lost —
+ *  the list re-keyed or unmounted under a held finger — and without a bound of its own that
+ *  would latch `dragging` and disarm the expiry above for good, which is the same hole by
+ *  another road. Long enough that a reader who stops to think mid-drag keeps their gesture. */
+export const DRAG_IDLE_MS = 4000;
 
 export interface SeekDetector {
   /** A finger touched the transcript at this offset. */
@@ -70,7 +75,14 @@ export function createSeekDetector(now: () => number = Date.now): SeekDetector {
       movedAt = now();
     },
     scroll(offset: number, viewportHeight?: number): boolean {
-      if (open && !dragging && now() - movedAt > GESTURE_IDLE_MS) open = false;
+      // Frames arrive every ~16 ms while anything really moves, so this refresh is what keeps a
+      // long fling alive; the ceiling is what shuts a gesture that stopped without saying so.
+      // It cannot tell the fling's frames from the app's, so the window really closes on a lull
+      // in ALL scrolling — narrow, because a drag also suppresses narration follow for 4 s.
+      if (open && now() - movedAt > (dragging ? DRAG_IDLE_MS : GESTURE_IDLE_MS)) {
+        open = false;
+        dragging = false;
+      }
       if (!open) return false;
       movedAt = now();
       if (signalled) return false;
