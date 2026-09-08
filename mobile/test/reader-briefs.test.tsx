@@ -80,6 +80,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set(['h3', 'memexplorer'])}
+        maxTargets={8}
         onToggle={onToggle}
         onStart={jest.fn()}
         onDismiss={jest.fn()}
@@ -105,6 +106,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set()}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={jest.fn()}
         onDismiss={jest.fn()}
@@ -121,6 +123,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set()}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={jest.fn()}
         onDismiss={jest.fn()}
@@ -137,6 +140,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set()}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={jest.fn()}
         onDismiss={jest.fn()}
@@ -157,6 +161,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set(['h3'])}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={jest.fn()}
         onDismiss={jest.fn()}
@@ -180,6 +185,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set(['h3', 'ghost'])}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={onStart}
         onDismiss={jest.fn()}
@@ -194,6 +200,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set()}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={onStart}
         onDismiss={jest.fn()}
@@ -210,6 +217,7 @@ describe('the offer', () => {
       <ReaderOfferCard
         candidates={CANDIDATES}
         selected={new Set(['h3'])}
+        maxTargets={8}
         onToggle={jest.fn()}
         onStart={jest.fn()}
         onDismiss={onDismiss}
@@ -230,6 +238,7 @@ describe('the offer window and its indicator', () => {
   const cardProps = {
     candidates: CANDIDATES,
     selected: new Set(['h3']),
+    maxTargets: 8,
     onToggle: jest.fn(),
     onStart: jest.fn(),
     onDismiss: jest.fn(),
@@ -412,6 +421,7 @@ test('the checkbox half can shrink, so the Fetch button stays on the row', () =>
     <ReaderOfferCard
       candidates={[{ slug: 'ghost', title: 'A very long paper title '.repeat(6), year: null, has_text: false }]}
       selected={new Set()}
+      maxTargets={8}
       onToggle={() => undefined}
       onStart={() => undefined}
       onDismiss={() => undefined}
@@ -424,4 +434,73 @@ test('the checkbox half can shrink, so the Fetch button stays on the row', () =>
   expect(main.flex).toBe(1);
   const fetch = StyleSheet.flatten(screen.getByTestId('reader-fetch-ghost').props.style);
   expect(fetch.flexShrink).toBe(0);
+});
+
+// ------------------------------------------------------------------ DR-155: the pass limit
+
+describe('the offer states the pass limit', () => {
+  const many: ReaderCandidate[] = Array.from({ length: 17 }, (_, i) => (
+    { slug: `p${i}`, title: `Paper ${i}`, year: null, has_text: true }
+  ));
+
+  function offer(selected: string[], maxTargets = 8) {
+    return render(
+      <ReaderOfferCard
+        candidates={many}
+        selected={new Set(selected)}
+        maxTargets={maxTargets}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        starting={false}
+      />,
+    );
+  }
+
+  test('says the cap and the count before it binds, and only when it can bind', () => {
+    const screen = offer(['p0', 'p1']);
+    expect(screen.getByTestId('reader-cap-note').props.children.join('')).toContain(
+      'One pass reads up to 8 — 2 of 17 chosen',
+    );
+    // The button must never offer more than the pass accepts (it read "Read 17 papers").
+    expect(screen.queryByText(/Read 17 papers/)).toBeNull();
+
+    // With fewer candidates than the cap the line is noise, so it is not there at all.
+    const small = render(
+      <ReaderOfferCard
+        candidates={CANDIDATES}
+        selected={new Set(['h3'])}
+        maxTargets={8}
+        onToggle={jest.fn()}
+        onStart={jest.fn()}
+        onDismiss={jest.fn()}
+        starting={false}
+      />,
+    );
+    expect(small.queryByTestId('reader-cap-note')).toBeNull();
+  });
+
+  test('at the cap the unchosen rows go inert and say why', () => {
+    const chosen = Array.from({ length: 8 }, (_, i) => `p${i}`);
+    const screen = offer(chosen);
+    expect(screen.getByTestId('reader-cap-note').props.children.join('')).toContain(
+      'Untick one to choose another.',
+    );
+
+    const unchosen = screen.getByTestId('reader-candidate-p8');
+    expect(unchosen.props.accessibilityState.disabled).toBe(true);
+    // DR-145's lesson: a row that goes dead has to explain itself where it is, not only in a
+    // line the reader may have scrolled past.
+    expect(unchosen.props.accessibilityLabel).toContain('One pass reads up to 8 papers');
+
+    // A chosen row stays live — unticking is how you make room.
+    expect(screen.getByTestId('reader-candidate-p0').props.accessibilityState.disabled).toBe(false);
+    expect(screen.getByText('Read 8 papers')).toBeTruthy();
+  });
+
+  test('below the cap every readable row is still selectable', () => {
+    const screen = offer(['p0']);
+    expect(screen.getByTestId('reader-candidate-p8').props.accessibilityState.disabled).toBe(false);
+    expect(screen.getByTestId('reader-candidate-p8').props.accessibilityLabel).toBe('Paper 8');
+  });
 });

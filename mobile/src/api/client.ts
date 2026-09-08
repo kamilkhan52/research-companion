@@ -82,6 +82,36 @@ export function authenticatedMediaSource(path: string): {
   };
 }
 
+/**
+ * What to show a reader for an error body's `detail`.
+ *
+ * Ours is always a string — every domain layer raises `HTTPException(detail="a sentence")`.
+ * FastAPI's own request-validation failures are not: `detail` is a LIST of pydantic error
+ * objects, and stringifying one put
+ * `[{"type":"too_long","loc":["body","targets"],"msg":…,"input":[…17 slugs…]}]` on Kamil's
+ * phone, under the buttons, in place of an answer to "is there a limit?" (DR-155).
+ *
+ * The `msg` fields are the only human part, so they are what survives. `input` is dropped on
+ * purpose: it is the payload the app just sent — here a slug list, elsewhere the reader's own
+ * prose — and it belongs in a log, not on a card. With no usable `msg` the generic status line
+ * is still better than JSON.
+ */
+function describeDetail(value: unknown, status: number): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((entry) => (entry && typeof entry === 'object'
+        ? (entry as { msg?: unknown }).msg : null))
+      .filter((msg): msg is string => typeof msg === 'string' && msg.trim().length > 0)
+      .map((msg) => msg.trim());
+    const unique = [...new Set(messages)];
+    if (unique.length) {
+      return unique.map((msg) => (/[.!?]$/.test(msg) ? msg : `${msg}.`)).join(' ');
+    }
+  }
+  return `Request failed (${status})`;
+}
+
 async function parseError(res: Response): Promise<never> {
   let detail = `Request failed (${res.status})`;
   let body: unknown = null;
@@ -89,7 +119,7 @@ async function parseError(res: Response): Promise<never> {
     body = await res.json();
     if (body && typeof body === 'object' && 'detail' in body) {
       const value = (body as { detail?: unknown }).detail;
-      if (value) detail = typeof value === 'string' ? value : JSON.stringify(value);
+      if (value) detail = describeDetail(value, res.status);
     }
   } catch {
     // non-JSON error body; keep the generic message

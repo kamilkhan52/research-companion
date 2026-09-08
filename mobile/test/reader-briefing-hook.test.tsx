@@ -7,6 +7,7 @@ import {
   getActiveReaderJob,
   getReaderJob,
   getRetrievalJob,
+  startReaderJob,
   startRetrievalJob,
 } from '@/api/endpoints';
 import type { ReaderCandidate, ReaderJob, TranscriptEntry } from '@/api/types';
@@ -28,9 +29,14 @@ jest.mock('@/api/endpoints', () => ({
 }));
 
 let mockCandidates: ReaderCandidate[] = [];
+//: What the server says a pass may read. `undefined` on purpose by default, so every existing
+//: test still exercises the fallback a pre-DR-155 server (or a cached payload) leaves behind.
+let mockMaxTargets: number | undefined;
 jest.mock('@/api/queries', () => ({
   keys: { session: (...parts: string[]) => ['session', ...parts] },
-  useReaderCandidates: () => ({ data: { assistant_index: 0, candidates: mockCandidates } }),
+  useReaderCandidates: () => ({
+    data: { assistant_index: 0, candidates: mockCandidates, max_targets: mockMaxTargets },
+  }),
 }));
 
 jest.mock('@/lib/readerOffer', () => ({
@@ -392,6 +398,107 @@ describe('the offer window does not open over another screen (review of #503)', 
     const view = mountOffer(createTestQueryClient(), true);
     await waitFor(() => expect(view.result.current.offerOpen).toBe(true));
     expect(deferReaderOffer).toHaveBeenCalled();
+    view.unmount();
+  });
+});
+
+
+// ------------------------------------------------------------------ DR-155: the pass limit
+//
+// "I tried to stress test it with as many papers I could. It gives me this error. Is there a
+// limit?" — Kamil, on a response citing seventeen unread papers. There was, and only the
+// request validator knew it: every readable candidate was ticked, the button offered to read
+// all seventeen, and the server answered with a list of pydantic error objects.
+
+describe('the pass limit', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (getActiveReaderJob as jest.Mock).mockResolvedValue({ job: null });
+    (isReaderOfferDeferred as jest.Mock).mockResolvedValue(false);
+    (readerAutoFetchAttempted as jest.Mock).mockResolvedValue(new Set<string>());
+    // Nothing ever lands, so `has_text` only changes when a test says so.
+    (startRetrievalJob as jest.Mock).mockResolvedValue({
+      job: { id: 'ret', status: 'done', retrieved: false, phase: 'done', error: null },
+    });
+    mockMaxTargets = 3;
+    mockCandidates = Array.from({ length: 5 }, (_, i) => (
+      { slug: `p${i}`, title: `Paper ${i}`, year: null, has_text: true }
+    ));
+  });
+
+  test('the default selection stops at what one pass reads', async () => {
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.offer?.candidates).toHaveLength(5));
+    await act(async () => undefined);
+    expect([...view.result.current.selected]).toEqual(['p0', 'p1', 'p2']);
+    expect(view.result.current.maxTargets).toBe(3);
+    view.unmount();
+  });
+
+  test('ticking past the limit is refused, and unticking makes room', async () => {
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.selected.size).toBe(3));
+
+    act(() => view.result.current.toggle('p4'));
+    expect(view.result.current.selected.has('p4')).toBe(false);
+    expect(view.result.current.selected.size).toBe(3);
+
+    act(() => view.result.current.toggle('p0'));
+    act(() => view.result.current.toggle('p4'));
+    expect([...view.result.current.selected].sort()).toEqual(['p1', 'p2', 'p4']);
+    view.unmount();
+  });
+
+  test('a paper whose text arrives mid-offer fills only room the reader left', async () => {
+    mockCandidates = [
+      ...Array.from({ length: 3 }, (_, i) => (
+        { slug: `p${i}`, title: `Paper ${i}`, year: null, has_text: true }
+      )),
+      { slug: 'late', title: 'Late arrival', year: null, has_text: false },
+    ];
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.selected.size).toBe(3));
+
+    // Its fetch lands with the selection already full: it must not displace a chosen paper,
+    // and it must not push the selection past what the server will accept.
+    mockCandidates = mockCandidates.map((c) => (
+      c.slug === 'late' ? { ...c, has_text: true } : c
+    ));
+    view.rerender(undefined as never);
+    await act(async () => undefined);
+    expect([...view.result.current.selected].sort()).toEqual(['p0', 'p1', 'p2']);
+
+    // Make room, and the arrival is now takeable.
+    act(() => view.result.current.toggle('p1'));
+    act(() => view.result.current.toggle('late'));
+    expect([...view.result.current.selected].sort()).toEqual(['late', 'p0', 'p2']);
+    view.unmount();
+  });
+
+  test('a server that does not report the cap still bounds the selection at eight', async () => {
+    mockMaxTargets = undefined;
+    mockCandidates = Array.from({ length: 17 }, (_, i) => (
+      { slug: `p${i}`, title: `Paper ${i}`, year: null, has_text: true }
+    ));
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.offer?.candidates).toHaveLength(17));
+    await act(async () => undefined);
+    expect(view.result.current.maxTargets).toBe(8);
+    expect(view.result.current.selected.size).toBe(8);
+    view.unmount();
+  });
+
+  test('start sends no more targets than the pass accepts', async () => {
+    (startReaderJob as jest.Mock).mockResolvedValue({
+      job: { id: 'reader-1', status: 'running', targets: [], finished_at: null },
+    });
+    (getReaderJob as jest.Mock).mockResolvedValue({
+      job: { id: 'reader-1', status: 'done', targets: [], finished_at: 'x', analysis_job_id: null },
+    });
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.selected.size).toBe(3));
+    await act(async () => { await view.result.current.start(); });
+    expect(startReaderJob).toHaveBeenCalledWith('p1', 'flint', ['p0', 'p1', 'p2'], expect.anything());
     view.unmount();
   });
 });

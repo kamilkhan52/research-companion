@@ -393,6 +393,9 @@ export interface ReaderCandidates {
   /** Which response the candidates were taken from; null when there is no response yet. */
   assistant_index: number | null;
   candidates: ReaderCandidate[];
+  /** How many of them one pass may read (`reader_jobs.MAX_TARGETS`). Optional because a
+   *  cached payload from before DR-155 has no such field; the client falls back to 8. */
+  max_targets?: number;
 }
 
 /** One reading assistant's brief on one paper, as attached to the response it informed. */

@@ -2920,6 +2920,7 @@ function DiscussionThread({
         onClose={reader.closeOffer}
         candidates={reader.offer.candidates}
         selected={reader.selected}
+        maxTargets={reader.maxTargets}
         onToggle={reader.toggle}
         onStart={() => void reader.start()}
         onDismiss={reader.closeOffer}
