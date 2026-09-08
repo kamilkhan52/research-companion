@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '@/api/client';
-import { getFavoriteModels } from '@/api/endpoints';
+import { getFavoriteModels, getPlan } from '@/api/endpoints';
+import { PlanUsage } from '@/components/Plan';
 import type { FavoriteModel } from '@/api/types';
 import './Settings.css';
 
@@ -40,6 +41,11 @@ export function Settings({ onClose }: Props) {
   const [priorNotesScope, setPriorNotesScope] = useState<'related' | 'all'>('related');
   const [autoplay, setAutoplay] = useState(false);
   const [prompts, setPrompts] = useState<{ key: string; label: string; valid: boolean }[]>([]);
+  // Only the plan SUMMARY is kept here — the row carries no balance badge, so Settings never
+  // becomes a usage check. When enforcement is off there is no row at all, rather than a row
+  // that opens a screen with nothing true to say.
+  const [planSummary, setPlanSummary] = useState<string | null>(null);
+  const [showPlan, setShowPlan] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +61,9 @@ export function Settings({ onClose }: Props) {
     }).finally(() => { if (!cancelled) setLoading(false); });
     void apiGet<{ prompts: { key: string; label: string; valid: boolean }[] }>('/api/prompts')
       .then((response) => { if (!cancelled) setPrompts(response.prompts || []); }).catch(() => {});
+    void getPlan().then((response) => {
+      if (!cancelled) setPlanSummary(response.enforced ? response.plan.summary : null);
+    }).catch(() => {});
     void getFavoriteModels().then(({ models }) => {
       if (!cancelled) setFavorites(Array.isArray(models) ? models : []);
     }).catch(() => {});
@@ -127,8 +136,13 @@ export function Settings({ onClose }: Props) {
         <label className="field"><span>Firecrawl API key (web fetch)</span><input type="password" value={firecrawlKey} onChange={(event) => setFirecrawlKey(event.target.value)} placeholder="optional — leave blank to keep current" disabled={!canEditShared} /><small className="muted">{data?.has_firecrawl_key ? `key set: ${data.firecrawl_key_hint}` : 'no key set'}</small></label>
         <label className="field"><span>Prior notes scope</span><select value={priorNotesScope} onChange={(event) => setPriorNotesScope(event.target.value as 'related' | 'all')} disabled={!canEditPrefs}><option value="related">Related papers only</option><option value="all">All read papers</option></select></label>
         {prompts.length > 0 && <div className="prompts-status"><h4 className="settings-subhead">Prompt status</h4>{prompts.map((prompt) => <div className="prompts-row" key={prompt.key}><span>{prompt.label}</span><span className={`badge ${prompt.valid ? 'badge-green' : 'badge-amber'}`}>{prompt.valid ? 'valid' : 'INVALID'}</span></div>)}</div>}
+        {planSummary !== null && <><hr className="settings-hr" /><button className="settings-row-link" onClick={() => setShowPlan(true)}>
+          <span><span className="settings-row-label">Plan &amp; usage</span><span className="muted settings-row-sub">{planSummary}</span></span>
+          <span aria-hidden="true">›</span>
+        </button></>}
         {message && <p className="settings-message">{message}</p>}<button className="btn primary" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : (canEditShared || canEditPrefs) ? 'Save' : 'Save autoplay'}</button>
       </div>}
     </section>
+    {showPlan && <PlanUsage onClose={() => setShowPlan(false)} />}
   </div>;
 }

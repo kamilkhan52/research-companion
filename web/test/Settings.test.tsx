@@ -6,6 +6,13 @@ import { Settings } from '@/components/Settings';
 const api = vi.hoisted(() => ({ apiGet: vi.fn(), apiPost: vi.fn() }));
 vi.mock('@/api/client', () => api);
 
+let planResponse: Record<string, unknown> = {
+  plan: { name: 'basic', summary: '20 papers a month, with narration to match', monthly_credits: 2500 },
+  limit_nanousd: 1, spent_nanousd: 0, held_nanousd: 0, remaining_nanousd: 1,
+  spent_fraction: 0, warn: false, warn_at_fraction: 0.8, at_capacity: false,
+  period_ends: '2026-10-01T00:00:00+00:00', enforced: true, usage_available: true,
+};
+
 const settings = {
   has_key: true, key_hint: '…1234', model: 'model/a', narration_model: 'model/narrate',
   speech_provider: 'openai', has_openai_key: false, openai_key_hint: '', tts_voice: 'nova',
@@ -14,8 +21,12 @@ const settings = {
 
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
-  api.apiGet.mockImplementation((path: string) => path === '/api/settings'
-    ? Promise.resolve(settings) : Promise.resolve({ prompts: [{ key: 'opening', label: 'Opening', valid: true }] }));
+  planResponse = { ...planResponse, enforced: true };
+  api.apiGet.mockImplementation((path: string) => {
+    if (path === '/api/settings') return Promise.resolve(settings);
+    if (path === '/api/plan') return Promise.resolve(planResponse);
+    return Promise.resolve({ prompts: [{ key: 'opening', label: 'Opening', valid: true }] });
+  });
   api.apiPost.mockResolvedValue({});
 });
 
@@ -131,5 +142,47 @@ describe('Settings', () => {
     await screen.findByText('offline');
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByDisplayValue('model/a');
+  });
+});
+
+describe('Settings plan entry', () => {
+  it('offers one row carrying the plan promise and no balance', async () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    const row = await screen.findByRole('button', { name: /Plan & usage/ });
+    expect(row).toHaveTextContent('20 papers a month, with narration to match');
+    // No badge: Settings must not become a usage check on every visit.
+    expect(row.textContent).not.toMatch(/%|\$/);
+  });
+
+  it('opens the usage surface from that row', async () => {
+    const user = userEvent.setup();
+    render(<Settings onClose={vi.fn()} />);
+
+    await user.click(await screen.findByRole('button', { name: /Plan & usage/ }));
+
+    expect(await screen.findByRole('dialog', { name: 'Plan and usage' })).toBeInTheDocument();
+  });
+
+  it('omits the row entirely when no allowance is enforced', async () => {
+    // Not a disabled row and not a zero: with no ceiling there is nothing true to say.
+    planResponse = { ...planResponse, enforced: false };
+    render(<Settings onClose={vi.fn()} />);
+
+    await screen.findByDisplayValue('model/a');
+    expect(screen.queryByRole('button', { name: /Plan & usage/ })).not.toBeInTheDocument();
+  });
+
+  it('stays usable when the plan request fails', async () => {
+    api.apiGet.mockImplementation((path: string) => {
+      if (path === '/api/settings') return Promise.resolve(settings);
+      if (path === '/api/plan') return Promise.reject(new Error('down'));
+      return Promise.resolve({ prompts: [] });
+    });
+    render(<Settings onClose={vi.fn()} />);
+
+    await screen.findByDisplayValue('model/a');
+    expect(screen.queryByRole('button', { name: /Plan & usage/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
   });
 });
