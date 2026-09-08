@@ -86,7 +86,7 @@ test('the missing line says the abstract is absent, never that it is on its way'
   const missing = screen.getByTestId('paper-abstract-missing');
   expect(missing).toBeTruthy();
   const said = JSON.stringify(missing.props.children);
-  expect(said).not.toMatch(/arrives|coming|yet|soon|fetch/i);
+  expect(said).not.toMatch(/arriv|coming|yet|soon|fetch/i);
   expect(screen.getByText('Abstract')).toBeTruthy();
 });
 

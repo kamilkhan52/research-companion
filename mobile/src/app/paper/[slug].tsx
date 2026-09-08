@@ -4397,21 +4397,22 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
   // renders NOTHING, because a row of blanks reads as the app failing rather than as the fact
   // not being known yet (the decision this component was built around, and still right).
   //
-  // Retrieval is NOT the condition. `abstract` is the reading-list entry's own `Abstract:`
-  // paragraph — written by whatever added the paper (Discover supplies one) or by
-  // `scripts/backfill_abstracts.py`, and by nothing else: fetching the full text writes
-  // `corpus/<slug>.md` and never touches it. So an absent abstract is absent, not late, and
-  // the line below must not forecast an arrival the code has no mechanism to produce
-  // (Opus review of #509).
-  const showsAbstractSlot = !!abstract || facts.length > 0;
+  // Retrieval is NOT a condition on any of this. `abstract` is the reading-list entry's own
+  // `Abstract:` paragraph, and `store._abstract_paragraph` — the only thing that writes one —
+  // is reached from exactly two places: adding the paper, and `scripts/backfill_abstracts.py`
+  // run by hand. Fetching the full text writes `corpus/<slug>.md` and calls `annotate_entry`,
+  // which has no abstract to pass. So an absent abstract is absent, not late, and the line
+  // below must not forecast an arrival the code cannot produce (Opus review of #509).
   if (!facts.length && !abstract) return null;
+  // Past that guard the card is saying SOMETHING, so the abstract always gets its slot —
+  // named when it is here, and named as missing when it is not.
 
   return (
     <View style={{ gap: space.xs }}>
       {facts.length ? (
         <Text variant="caption" color={t.muted}>{facts.join('  ·  ')}</Text>
       ) : null}
-      {showsAbstractSlot ? <Text variant="overline">Abstract</Text> : null}
+      <Text variant="overline">Abstract</Text>
       {abstract ? (
         <Pressable
           onPress={() => setExpanded((value) => !value)}
@@ -4422,11 +4423,11 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
             {abstract}
           </Text>
         </Pressable>
-      ) : showsAbstractSlot ? (
+      ) : (
         <Text variant="body" color={t.muted} testID="paper-abstract-missing">
           Not recorded for this paper.
         </Text>
-      ) : null}
+      )}
     </View>
   );
 }
