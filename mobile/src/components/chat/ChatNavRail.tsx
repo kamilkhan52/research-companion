@@ -45,8 +45,9 @@ const WAKE_COALESCE_MS = 250;
 const RAIL_DIM_MS = 380;
 
 export interface ChatNavRailHandle {
-  /** Bring the rail back to full strength and restart the idle countdown. Called for scroll
-   *  events too, so the rail behaves like the scroll indicator it echoes. */
+  /** Bring the rail back to full strength and restart the idle countdown. Called for a press,
+   *  and for a scroll the reader's own finger drove far enough to be a seek — never for the
+   *  app's own scrolling (DR-151; `lib/seekGesture` draws that line). */
   wake(): void;
 }
 

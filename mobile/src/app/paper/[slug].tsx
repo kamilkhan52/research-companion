@@ -3428,9 +3428,6 @@ export function ComposeFirst({
           <Chip label={isRetrieved ? 'Paper ready' : 'Unread paper'} dot={false} />
           <Text variant="editorial">{title}</Text>
           <PaperContext paper={paper} />
-          <Text variant="body" color={t.muted}>
-            Choose how the analyst should open the discussion.
-          </Text>
         </Card>
 
         {/* The first turn has no transcript yet, so its failure cannot use the discussion
@@ -4392,6 +4389,14 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
   }
 
   const abstract = (paper.abstract ?? '').trim();
+  // DR-152 — the abstract is now NAMED, and its absence is said out loud. Kamil met this card on
+  // a paper with neither: what was under the title was "Choose how the analyst should open the
+  // discussion", which the READING MODES section three lines below already said. Removing that
+  // sentence leaves a card that has to be honest about what it does and does not know instead.
+  // Only where the card is already saying things: a paper nobody knows anything about still
+  // renders NOTHING, because a row of blanks reads as the app failing rather than as the fact
+  // not being known yet (the decision this component was built around, and still right).
+  const showsAbstractSlot = !!abstract || (facts.length > 0 && !paper.retrieved);
   if (!facts.length && !abstract) return null;
 
   return (
@@ -4399,6 +4404,7 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
       {facts.length ? (
         <Text variant="caption" color={t.muted}>{facts.join('  ·  ')}</Text>
       ) : null}
+      {showsAbstractSlot ? <Text variant="overline">Abstract</Text> : null}
       {abstract ? (
         <Pressable
           onPress={() => setExpanded((value) => !value)}
@@ -4409,6 +4415,10 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
             {abstract}
           </Text>
         </Pressable>
+      ) : showsAbstractSlot ? (
+        <Text variant="body" color={t.muted} testID="paper-abstract-missing">
+          Not here yet — it arrives with the paper&apos;s text.
+        </Text>
       ) : null}
     </View>
   );

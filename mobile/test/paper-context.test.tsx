@@ -64,3 +64,32 @@ test('a paper known only by what it cites is not treated as unknown', async () =
   })} />);
   expect(screen.getByText('Cites 3 here')).toBeTruthy();
 });
+
+// ---------------------------------------------------------------------------------- DR-152
+
+test('names the abstract, and says plainly when there is not one yet', async () => {
+  // Kamil met this card on an unread paper with a year and no abstract. What sat under the
+  // title was "Choose how the analyst should open the discussion" — which the READING MODES
+  // section three lines below already said. That sentence is gone, so the card has to be
+  // honest about what it does and does not know instead.
+  await renderAsync(<PaperContext paper={paper({ year: 2023 })} />);
+  expect(screen.getByText('Abstract')).toBeTruthy();
+  expect(screen.getByTestId('paper-abstract-missing')).toBeTruthy();
+});
+
+test('a paper whose text is here is not promised an abstract that is not coming', async () => {
+  // "it arrives with the paper's text" is only true while the text is still on its way.
+  await renderAsync(<PaperContext paper={paper({ year: 2023, retrieved: true })} />);
+  expect(screen.queryByTestId('paper-abstract-missing')).toBeNull();
+  expect(screen.queryByText('Abstract')).toBeNull();
+  expect(screen.getByText('2023')).toBeTruthy();
+});
+
+test('an abstract that IS here is named too, so the card offers it rather than just showing it', async () => {
+  await renderAsync(<PaperContext paper={paper({
+    abstract: 'Iteration-level scheduling for transformer serving.',
+  })} />);
+  expect(screen.getByText('Abstract')).toBeTruthy();
+  expect(screen.getByText(/Iteration-level scheduling/)).toBeTruthy();
+  expect(screen.queryByTestId('paper-abstract-missing')).toBeNull();
+});
