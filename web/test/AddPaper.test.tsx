@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AddPaperSheet } from '@/components/AddPaper';
@@ -22,6 +22,7 @@ function renderSheet(overrides: Partial<Parameters<typeof AddPaperSheet>[0]> = {
     pid: 'project-1',
     onClose: vi.fn(),
     onAdded: vi.fn(),
+    onListChanged: vi.fn(),
     onExplore: vi.fn(),
     ...overrides,
   };
@@ -340,18 +341,97 @@ describe('AddPaperSheet', () => {
     expect(api.addPaper).not.toHaveBeenCalled();
   });
 
-  it('points a failed upload at the paper it already created, not at a second add', async () => {
-    // The reading-list entry exists by then. Inviting another add from here would duplicate it.
+  it('retries a failed upload in place, against the paper it already created', async () => {
+    // The reading-list entry exists by then, so a second add would duplicate it — and unlike
+    // mobile, the web reading screen has no upload action to hand the reader off to.
     const user = userEvent.setup();
-    api.uploadPaper.mockRejectedValue(new ApiError(413, 'PDF is larger than the 40 MB limit.'));
+    api.uploadPaper.mockRejectedValueOnce(new ApiError(502, 'Upstream closed the connection.'));
     const { props } = renderSheet();
 
-    await user.upload(screen.getByLabelText('PDF file'), pdf('paper.pdf'));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('larger than the 40 MB limit');
+    await user.upload(screen.getByLabelText('PDF file'), pdf('thesis.pdf'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Upstream closed the connection');
     expect(props.onAdded).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: /open it to try again/i }));
+
+    await user.click(screen.getByRole('button', { name: /send it again/i }));
+
+    await waitFor(() => expect(props.onAdded).toHaveBeenCalledWith('added-paper', null));
+    // Exactly one entry, and the retry sent the same bytes to it.
+    expect(api.addPaper).toHaveBeenCalledTimes(1);
+    expect(api.uploadPaper).toHaveBeenCalledTimes(2);
+    expect(api.uploadPaper.mock.calls.map(([, slug]) => slug)).toEqual(['added-paper', 'added-paper']);
+    expect((api.uploadPaper.mock.calls[1][2] as File).name).toBe('thesis.pdf');
+  });
+
+  it('names the file in its recovery, and can still just open the paper', async () => {
+    const user = userEvent.setup();
+    api.uploadPaper.mockRejectedValue(new ApiError(502, 'Upstream closed the connection.'));
+    const { props } = renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('thesis.pdf'));
+    expect(await screen.findByText(/“thesis.pdf” is on your reading list/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /open the paper/i }));
     expect(props.onAdded).toHaveBeenCalledWith('added-paper', null);
+  });
+
+  it('does not leave one file\'s recovery standing over another file\'s refusal', async () => {
+    const user = userEvent.setup();
+    api.uploadPaper.mockRejectedValue(new ApiError(502, 'Upstream closed the connection.'));
+    renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('thesis.pdf'));
+    await screen.findByRole('button', { name: /send it again/i });
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('huge.pdf', 41_000_000));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The limit is 40 MB');
+    expect(screen.queryByRole('button', { name: /send it again/i })).not.toBeInTheDocument();
+  });
+
+  it('tells the Library the list changed even when the reader has already left', async () => {
+    const user = userEvent.setup();
+    let land!: (value: { paper: { slug: string } }) => void;
+    api.addPaper.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+    const { props } = renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention{Enter}');
+    await user.keyboard('{Escape}');
+
+    land({ paper: { slug: 'attention' } });
+    await waitFor(() => expect(props.onListChanged).toHaveBeenCalled());
+    expect(props.onAdded).not.toHaveBeenCalled();
+  });
+
+  it('will not start a second upload while one is running', async () => {
+    const user = userEvent.setup();
+    api.addPaper.mockReturnValue(new Promise(() => {}));
+    renderSheet();
+
+    const input = screen.getByLabelText('PDF file') as HTMLInputElement;
+    await user.upload(input, pdf('a.pdf'));
+    await screen.findByRole('button', { name: 'Uploading…' });
+
+    // Two protections, and only the second survives a change event that arrives anyway — which
+    // is why the disabled attribute alone is not enough to call this covered.
+    expect(input).toBeDisabled();
+    Object.defineProperty(input, 'files', { value: [pdf('b.pdf')], configurable: true });
+    fireEvent.change(input);
+
+    expect(api.addPaper).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts the same file again after a refusal', async () => {
+    // The input is cleared after every pick; without that, re-choosing the file a reader just
+    // fixed the size of (or that failed transiently) fires no change event at all.
+    const user = userEvent.setup();
+    const file = pdf('paper.pdf');
+    renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), file);
+    await waitFor(() => expect(api.addPaper).toHaveBeenCalledTimes(1));
+    await user.upload(screen.getByLabelText('PDF file'), file);
+
+    await waitFor(() => expect(api.addPaper).toHaveBeenCalledTimes(2));
   });
 
   it('reports a cross-project duplicate from the upload path the same way', async () => {

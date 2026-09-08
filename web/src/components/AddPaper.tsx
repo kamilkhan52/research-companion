@@ -12,20 +12,25 @@ interface Props {
   onClose: () => void;
   /** The paper was created — open it. `source` is what to retrieve, when the input named one. */
   onAdded: (slug: string, source: string | null) => void;
+  /** A paper was created. Fires even when the reader has already left, because an add that
+   *  lands after a dismissal still changed the reading list and nothing else reloads it. */
+  onListChanged: () => void;
   onExplore: () => void;
 }
 
-export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
+export function AddPaperSheet({ pid, onClose, onAdded, onListChanged, onExplore }: Props) {
   const draftKey = addPaperDraftKey(pid);
   const [text, setText] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [adding, setAdding] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elsewhere, setElsewhere] = useState<PaperLocation[] | null>(null);
-  // An upload that failed AFTER the reading-list entry was created. The entry exists, so the
-  // way forward is that paper's own setup screen (which has the same upload action), not a
-  // second add from here — mobile learned the same thing.
-  const [stranded, setStranded] = useState<string | null>(null);
+  // An upload that failed AFTER the reading-list entry was created. The entry exists, so a
+  // second add would duplicate it — and unlike mobile, the web reading screen has no upload
+  // action to send the reader to: its fetch form takes an arXiv id or a public URL, and a
+  // paper you are uploading is by definition on neither. So the retry stays here, holding the
+  // file, and re-sends exactly those bytes to the paper already created.
+  const [stranded, setStranded] = useState<{ slug: string; file: File } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -71,31 +76,53 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
 
   async function upload(file: File) {
     if (adding || uploading) return;
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setError(`That PDF is ${Math.round(file.size / 1_000_000)} MB. The limit is 40 MB.`);
-      return;
-    }
-    setUploading(true);
+    // Reset first. A refusal below must not leave the previous attempt's recovery action or
+    // duplicate list on screen, pointing at a different file's paper.
     setError(null);
     setElsewhere(null);
     setStranded(null);
+    if (file.size > MAX_UPLOAD_BYTES) {
+      // Ceil, not round: 40.4 MB is over the limit, and "That PDF is 40 MB. The limit is 40 MB."
+      // reads as a contradiction.
+      setError(`That PDF is ${Math.ceil(file.size / 1_000_000)} MB. The limit is 40 MB.`);
+      return;
+    }
+    setUploading(true);
     try {
       // A local PDF has no identifier, so its filename is the provisional title; extraction
       // then offers the real one on the paper screen.
       const { paper } = await addPaper(pid, titleFromPdfName(file.name));
-      try {
-        await uploadPaper(pid, paper.slug, file);
-      } catch (caught) {
-        if (closed.current) return;
-        setStranded(paper.slug);
-        setError(caught instanceof Error ? caught.message : String(caught));
-        return;
-      }
-      if (closed.current) return;
-      onAdded(paper.slug, null);
+      onListChanged();
+      await send(paper.slug, file);
     } catch (caught) {
       if (closed.current) return;
       reportAddFailure(caught);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  /** Post the bytes for a reading-list entry that already exists — the tail of a first upload
+   *  and the whole of a retry, so both behave identically. */
+  async function send(slug: string, file: File) {
+    try {
+      await uploadPaper(pid, slug, file);
+    } catch (caught) {
+      if (closed.current) return;
+      setStranded({ slug, file });
+      setError(caught instanceof Error ? caught.message : String(caught));
+      return;
+    }
+    if (closed.current) return;
+    exit(() => onAdded(slug, null));
+  }
+
+  async function retryUpload() {
+    if (!stranded || uploading) return;
+    setUploading(true);
+    setError(null);
+    try {
+      await send(stranded.slug, stranded.file);
     } finally {
       setUploading(false);
     }
@@ -111,7 +138,7 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
     try {
       const { paper } = await addPaper(pid, parsed.title, parsed.arxivId);
       localStorage.removeItem(draftKey);
-      // The paper is on the reading list either way; the Library refetches when this closes.
+      onListChanged();
       if (closed.current) return;
       onAdded(paper.slug, parsed.source);
     } catch (caught) {
@@ -154,6 +181,7 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
           type="file"
           accept="application/pdf,.pdf"
           aria-label="PDF file"
+          disabled={adding || uploading}
           onChange={(event) => {
             const file = event.target.files?.[0];
             // Clear the input so choosing the SAME file again still fires a change event —
@@ -170,10 +198,17 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
         {error && <p className="build-progress-error" role="alert">{error}</p>}
         {stranded && (
           <div className="add-paper-stranded">
-            <p className="muted">The paper is on your reading list; only the upload did not start.</p>
-            <button className="btn primary" onClick={() => { closed.current = true; onAdded(stranded, null); }}>
-              Open it to try again
-            </button>
+            <p className="muted">
+              “{stranded.file.name}” is on your reading list; only its upload did not go through.
+            </p>
+            <div className="add-paper-stranded-actions">
+              <button className="btn primary" onClick={() => void retryUpload()} disabled={uploading}>
+                {uploading ? 'Uploading…' : 'Send it again'}
+              </button>
+              <button className="btn ghost" onClick={() => exit(() => onAdded(stranded.slug, null))}>
+                Open the paper
+              </button>
+            </div>
           </div>
         )}
         {elsewhere && elsewhere.length > 0 && (
