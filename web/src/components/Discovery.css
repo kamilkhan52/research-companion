@@ -100,3 +100,48 @@
 
 /* DR-149: the pointer back to the Library's add-a-paper action. */
 .discovery-known p { margin: 0 0 var(--space-md); }
+
+/* ---- run control and hidden recommendations ---- */
+
+.discovery-progress { display: flex; align-items: center; gap: var(--space-sm); }
+.discovery-phase { flex: 1; min-width: 0; }
+.discovery-stopped { margin: var(--space-sm) 0 0; }
+
+.suggestion-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.suggestion-hide { font-size: 12px; }
+
+.discovery-hidden-list {
+  list-style: none;
+  margin: var(--space-sm) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discovery-hidden-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  font-size: 13px;
+}
+
+.discovery-hidden-list li span { flex: 1; min-width: 0; }
+
+/* Live finds. Read-only on purpose: the server trims these to a renderable subset, so they
+   carry no arXiv id and cannot be added — offering "+ Add" here would fetch the wrong thing. */
+.discovery-finds p { margin: 0 0 var(--space-sm); }
+
+.discovery-find-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.discovery-find-list li { display: flex; flex-direction: column; gap: 2px; }
+.discovery-find-title { font-size: 14px; }
+.discovery-find-reason { font-size: 12px; }

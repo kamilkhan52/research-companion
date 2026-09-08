@@ -29,6 +29,7 @@ directly from `main`.
 | 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 | 9 | `opus/web-parity-overnight` | [#511](https://github.com/kamilkhan52/research-companion/pull/511) | Add-a-paper front door (DR-149 parity) + source-title offer |
 | 10 | `opus/web-parity-overnight` | [#513](https://github.com/kamilkhan52/research-companion/pull/513) | Upload a PDF — DR-149's third entry path |
+| 11 | `opus/web-parity-overnight` | [#514](https://github.com/kamilkhan52/research-companion/pull/514) | Stop a Discover run; hide/unhide a recommendation |
 
 ## Parity backlog (2026-09-08)
 
@@ -50,7 +51,6 @@ are the mobile client, so a web PR must never claim one.
 | Author board + lab research | `getGraphAuthors`, `startLabsResearch`, `startAuthorProfile` | A whole mobile route (`authors.tsx`) with no web equivalent. |
 | Spend visibility | `getUsage`, `getPlan` | Web shows no usage or plan at all. |
 | Notes: discard, project-notes fold, discussion update | `discardNotesJob`, `startProjectNotesFold`, `startNotesDiscussionUpdate` | Web has only the agent-proposal path. |
-| Discovery: hide/unhide, cancel | `hideSuggestion`, `unhideSuggestion`, `cancelDiscovery` | Small, self-contained. |
 | Project management | `deleteProject`, `moveProject`, `splitProject`, `updateProjectMeta` | Web can create and switch, nothing else. |
 | Clear chats, report content, account deletion | `clearChats`, `reportContent`, `startAccountDeletion` | `delete-account.tsx` is a store requirement on mobile; check whether web needs it. |
 
