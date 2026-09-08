@@ -27,6 +27,32 @@ directly from `main`.
 | 6 | `web/settings-audio` | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Merged |
 | 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Merged |
 | 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
+| 9 | `opus/web-parity-overnight` | [#511](https://github.com/kamilkhan52/research-companion/pull/511) | Add-a-paper front door (DR-149 parity) + source-title offer |
+
+## Parity backlog (2026-09-08)
+
+Phase 8 closed the *screen* gap; the gap that remains is per-feature, and it is wider than the
+status table above suggests. Measured by endpoint coverage, `web/src/api/endpoints.ts` wires 43
+of the 96 calls `mobile/src/api/endpoints.ts` does. This list is what a future web round should
+pick from, roughly in value order — each is an independent, user-visible slice.
+
+Web-only checks are `npm test`, `npx tsc --noEmit`, `npm run build`; `web/dist` is committed and
+CI verifies it was rebuilt. **No web change can be device-verified** — the ledger's device passes
+are the mobile client, so a web PR must never claim one.
+
+| Gap | Mobile has | Notes |
+|---|---|---|
+| Upload a PDF from the add sheet | `uploadPaper` | Needs a multipart path in `api/client.ts`; the sheet already has the slot for it. Mobile's third DR-149 entry path. |
+| Per-paper reference graph | `getPaperGraph` (DR-093) | The server lays the ego view out, and `web/src/graph/engine.ts` can render it as-is. Probably the best value-per-line left. |
+| Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | Needs header-authenticated image loading (blob URLs), which paper covers also need. |
+| Paper covers in the Library | `getPaperCover`, `paperCoverImageSource` | Same authenticated-media problem; do it with figures. |
+| Corpus neighbourhood line | `getNeighbourhood` (DR-052) | The shared Map/Discover freshness both screens show on mobile. |
+| Author board + lab research | `getGraphAuthors`, `startLabsResearch`, `startAuthorProfile` | A whole mobile route (`authors.tsx`) with no web equivalent. |
+| Spend visibility | `getUsage`, `getPlan` | Web shows no usage or plan at all. |
+| Notes: discard, project-notes fold, discussion update | `discardNotesJob`, `startProjectNotesFold`, `startNotesDiscussionUpdate` | Web has only the agent-proposal path. |
+| Discovery: hide/unhide, cancel | `hideSuggestion`, `unhideSuggestion`, `cancelDiscovery` | Small, self-contained. |
+| Project management | `deleteProject`, `moveProject`, `splitProject`, `updateProjectMeta` | Web can create and switch, nothing else. |
+| Clear chats, report content, account deletion | `clearChats`, `reportContent`, `startAccountDeletion` | `delete-account.tsx` is a store requirement on mobile; check whether web needs it. |
 
 ## Phase 1 — Foundation
 
