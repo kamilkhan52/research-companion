@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { App } from '@/App';
 import { vi, afterEach } from 'vitest';
 
@@ -62,6 +63,22 @@ describe('App', () => {
 
     expect(await screen.findByText(/No reference map for this paper yet/i)).toBeInTheDocument();
     expect(screen.queryByText(/loading library/i)).not.toBeInTheDocument();
+  });
+
+  it('comes back to the reference map after Settings, not to the library', async () => {
+    // `routeHash` has a case per view. Without the paper-graph one it falls through to the bare
+    // view name, `parseHash` no longer matches, and closing Settings drops the reader in the
+    // Library with the slug gone — a path no other test walks.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+    window.location.hash = '#paper-graph/llm-compiler';
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText(/No reference map for this paper yet/i);
+
+    await user.click(screen.getByLabelText('Settings'));
+    await user.click(await screen.findByLabelText('Close'));
+
+    expect(window.location.hash).toBe('#paper-graph/llm-compiler');
   });
 
   it('shows settings gear icon', async () => {

@@ -51,6 +51,11 @@ export class GraphEngine {
   private width = 0;
   private height = 0;
   private dpr = 1;
+  // Held as ONE function. `addEventListener('resize', () => this.resize())` paired with a
+  // `removeEventListener` of another arrow removes nothing: every engine ever built kept a
+  // listener alive holding its canvas, its node arrays and its 2D context for the life of the
+  // page. Harmless when a canvas is built once; the per-paper map is navigated in and out of.
+  private readonly onWindowResize = () => this.resize();
 
   constructor(canvas: HTMLCanvasElement, options?: GraphEngineOptions) {
     this.canvas = canvas;
@@ -67,7 +72,7 @@ export class GraphEngine {
     d3.select(canvas).call(this.zoomBehavior);
 
     this.resize();
-    window.addEventListener('resize', () => this.resize());
+    window.addEventListener('resize', this.onWindowResize);
 
     canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
     canvas.addEventListener('click', (e) => this.onClick(e));
@@ -344,7 +349,7 @@ export class GraphEngine {
   destroy() {
     if (this.simulation) this.simulation.stop();
     if (this.animFrame) cancelAnimationFrame(this.animFrame);
-    window.removeEventListener('resize', () => this.resize());
+    window.removeEventListener('resize', this.onWindowResize);
   }
 
   zoomToFit() {

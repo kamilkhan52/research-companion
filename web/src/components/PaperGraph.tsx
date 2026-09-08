@@ -37,7 +37,6 @@ export function PaperGraph({ slug, onNavigate }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<GraphEngine | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,10 +62,10 @@ export function PaperGraph({ slug, onNavigate }: Props) {
     const engine = new GraphEngine(canvas, {
       onNodeClick: (node) => setSelected(node),
     });
-    engineRef.current = engine;
     engine.setData(ego.nodes, ego.edges, []);
+    // The layout is centred on the origin, so an unfitted canvas shows empty space.
     engine.zoomToFit();
-    return () => { engine.destroy(); engineRef.current = null; };
+    return () => engine.destroy();
   }, [ego]);
 
   if (loading) return <div className="lc-loading"><span className="spinner" /> Loading reference map…</div>;

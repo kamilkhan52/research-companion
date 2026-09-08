@@ -47,6 +47,7 @@ are the mobile client, so a web PR must never claim one.
 | Gap | Mobile has | Notes |
 |---|---|---|
 | Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | Needs header-authenticated image loading (blob URLs), which paper covers also need. |
+| A canvas the tests can draw on | — | jsdom has no 2D context, so `web/src/graph/engine.ts` is doubled wherever it is used and **its drawing is exercised by nothing**. `web/test/engine.test.ts` reaches it with a no-op proxy for listener bookkeeping only; anything about what appears on screen needs a canvas stub or a headless-browser runner. That is a decision about the whole `web/` suite, not about one view — and Figures and covers will want the same thing. Component tests pin what is HANDED to the engine, which is the right contract for them. |
 | Paper covers in the Library | `getPaperCover`, `paperCoverImageSource` | Same authenticated-media problem; do it with figures. |
 | Corpus neighbourhood line | `getNeighbourhood` (DR-052) | The shared Map/Discover freshness both screens show on mobile. |
 | Author board + lab research | `getGraphAuthors`, `startLabsResearch`, `startAuthorProfile` | A whole mobile route (`authors.tsx`) with no web equivalent. |
