@@ -459,3 +459,42 @@
   border-top: 1px solid var(--line);
   font-size: 13px;
 }
+
+.add-paper-or {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+  font-size: 12px;
+}
+
+.add-paper-or::before,
+.add-paper-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* The real control is the button beside it; a bare file input cannot be styled and reads badly.
+   Kept in the accessibility tree (not `display: none`) so it is still reachable and labelled. */
+.add-paper-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.add-paper-upload { width: 100%; }
+
+.add-paper-stranded {
+  margin-top: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: flex-start;
+}

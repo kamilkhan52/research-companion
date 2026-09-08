@@ -168,6 +168,9 @@ export function Library({ onNavigate }: Props) {
             leaveAddSheet();
             onNavigate(paperHash(slug, source));
           }}
+          // Fires even after a dismissal: `leaveAddSheet` refetches at CLOSE time, which for a
+          // slow add is before it lands, and `POST /papers` scans every project the caller owns.
+          onListChanged={refetch}
           onExplore={() => { leaveAddSheet(); onNavigate('discover'); }}
         />
       )}

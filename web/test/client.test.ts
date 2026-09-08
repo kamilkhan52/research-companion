@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, apiPatch, apiPost } from '@/api/client';
+import { ApiError, apiForm, apiPatch, apiPost } from '@/api/client';
 
 function respond(status: number, body: unknown): Response {
   return { ok: false, status, json: () => Promise.resolve(body) } as Response;
@@ -104,5 +104,43 @@ describe('apiPatch', () => {
   it('reports a refusal the same way every other verb does', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(409, { detail: 'Project is being split.' }));
     await expect(apiPatch('/api/x', {})).rejects.toMatchObject({ status: 409, message: 'Project is being split.' });
+  });
+});
+
+describe('apiForm', () => {
+  it('lets the browser write Content-Type, so the multipart boundary is named', async () => {
+    // Setting it here produces a body FastAPI cannot parse — every upload 422s, and only in
+    // production, because component tests mock the endpoint rather than reaching the wire.
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ job: {} }) } as Response);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+
+    const body = new FormData();
+    body.append('slug', 'attention');
+    body.append('file', new File(['%PDF'], 'p.pdf', { type: 'application/pdf' }));
+    await apiForm('/api/projects/p1/upload_paper', body);
+
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/projects/p1/upload_paper');
+    expect(init.method).toBe('POST');
+    expect(Object.keys(init.headers as Record<string, string>)).not.toContain('Content-Type');
+    expect(init.body).toBe(body);
+    expect((init.body as FormData).get('slug')).toBe('attention');
+    expect(((init.body as FormData).get('file') as File).name).toBe('p.pdf');
+  });
+
+  it('still carries the bearer token', async () => {
+    localStorage.setItem('rc_token', 'tok');
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) } as Response);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+
+    await apiForm('/api/x', new FormData());
+
+    expect((fetch.mock.calls[0][1].headers as Record<string, string>).Authorization).toBe('Bearer tok');
+  });
+
+  it('reads a refusal the same way every other verb does', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(413, { detail: 'PDF is larger than the 40 MB limit.' }));
+    await expect(apiForm('/api/x', new FormData()))
+      .rejects.toMatchObject({ status: 413, message: 'PDF is larger than the 40 MB limit.' });
   });
 });

@@ -95,3 +95,12 @@ export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
   if (!res.ok) throw await parseError(res);
   return res.json() as Promise<T>;
 }
+
+/** Multipart POST. The `Content-Type` header is deliberately NOT set: the browser has to write
+ *  it itself so it can name the boundary it generated, and setting it here produces a body the
+ *  server cannot parse. */
+export async function apiForm<T>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(BASE_URL + path, { method: 'POST', headers: authHeaders(), body });
+  if (!res.ok) throw await parseError(res);
+  return res.json() as Promise<T>;
+}

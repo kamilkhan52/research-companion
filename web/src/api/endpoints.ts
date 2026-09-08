@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPatch, apiPost } from '@/api/client';
+import { apiDelete, apiForm, apiGet, apiPatch, apiPost } from '@/api/client';
 import type { FavoriteModel, ModelOption, Paper, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
 import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
 import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
@@ -150,6 +150,20 @@ export interface RetrievalJob {
 
 export function startRetrievalJob(pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) {
   return apiPost<{ job: RetrievalJob }>(`${P(pid)}/retrieval/jobs`, { slug, ...opts });
+}
+
+/** The server's own ceiling (`routers/session.py`). Checked client-side too so a reader is told
+ *  before spending minutes uploading something that will be refused on arrival. */
+export const MAX_UPLOAD_BYTES = 40_000_000;
+
+/** Last-resort source: the reader's own PDF, for a paper that is on no public index. The request
+ *  carries only the bytes — extraction and persistence run in the same background retrieval job
+ *  every other source uses, so the reading screen watches it exactly as it watches a fetch. */
+export function uploadPaper(pid: string, slug: string, file: File) {
+  const body = new FormData();
+  body.append('slug', slug);
+  body.append('file', file);
+  return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body);
 }
 
 export function getRetrievalJob(pid: string, jobId: string) {
