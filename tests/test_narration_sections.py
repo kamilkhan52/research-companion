@@ -264,3 +264,46 @@ def test_a_sentence_cut_inside_inline_math_is_refused(monkeypatch):
     for section in sent:
         assert section.count("\\(") == section.count("\\)"), section[-120:]
     assert "".join(sent) == text
+
+
+def test_a_narration_with_no_project_reserves_against_none(monkeypatch):
+    """`audio_jobs` binds `usage.UNATTRIBUTED` as the active project around the narration call so
+    the spend lands on that ledger. It is not a row in `rc_projects`, so a hold taken under it
+    would be refused — "The project is no longer available." — and the FIRST hold ever taken
+    inside that rebind is this PR's per-section one. Long responses would simply stop playing.
+    """
+    from app import config, spend_ceiling, spend_limits, usage
+
+    seen: list[dict] = []
+
+    class _Stop(Exception):
+        pass
+
+    def fake_reserve(**kwargs):
+        seen.append(kwargs)
+        raise _Stop  # everything after the argument is the ledger's business, not this test's
+
+    monkeypatch.setattr(spend_limits, "enabled", lambda: True)
+    monkeypatch.setattr(spend_ceiling.config, "active_user_id", lambda: "user-1")
+    monkeypatch.setattr(spend_ceiling.quotas, "reserve", fake_reserve)
+
+    token = config.set_active_project(usage.UNATTRIBUTED)
+    try:
+        with pytest.raises(_Stop):
+            spend_ceiling.hold("narration", "job-1", model="narrator")
+    finally:
+        config.reset_active_project(token)
+
+    assert seen and seen[0]["project_id"] is None
+
+
+def test_a_cancel_stops_the_remaining_sections(monkeypatch):
+    """`audio_jobs.cancel_job` promises at most one in-flight upstream call completes after a
+    cancel returns. A narration that is several calls has to honour that too."""
+    calls = _record(monkeypatch)
+    _held(monkeypatch)
+
+    with pytest.raises(agent.AgentError) as excinfo:
+        agent.narrate(_long_text(), unit_id="job-1", should_stop=lambda: len(calls) >= 1)
+    assert "cancelled" in str(excinfo.value)
+    assert len(calls) == 1

@@ -160,7 +160,7 @@ def get_job(job_id: str) -> AudioJob | None:
 
 def cancel_job(job_id: str) -> AudioJob | None:
     """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
-    its next checkpoint — before the narration call and between TTS segments — so at most one
+    its next checkpoint — before and between the narration call's sections, and between TTS segments — so at most one
     in-flight upstream call completes after this returns. Segments already synthesized stay in the
     cache, so a re-request resumes rather than restarting from zero.
 
@@ -223,7 +223,8 @@ def start_job(text: str, billing_project: str | None = None,
         # admission ticket reserved exactly ONE narration lease
         # (`spend_limits.speech_hold_nanousd`) and N calls under it would be a ceiling that does
         # not bound. Bound here rather than at the default above because only `work` has the job.
-        narrate = narrate_fn or (lambda body: agent.narrate(body, unit_id=job.id))
+        narrate = narrate_fn or (lambda body: agent.narrate(
+            body, unit_id=job.id, should_stop=cancelled))
         narration = sessions.get_cached_narration(text)
         if narration is None:
             # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
@@ -233,6 +234,13 @@ def start_job(text: str, billing_project: str | None = None,
             token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
             try:
                 narration = narrate(text)
+            except Exception:
+                # A cancel raises out of the sectioned narration (see `agent.narrate`); the
+                # registry has already flipped the job, so exit the way every other checkpoint
+                # here does rather than reporting an error for work the reader stopped.
+                if cancelled():
+                    return
+                raise
             finally:
                 config.reset_active_project(token)
             sessions.cache_narration(text, narration)

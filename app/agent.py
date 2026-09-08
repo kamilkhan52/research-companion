@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from collections.abc import Callable
 
 from . import assembler, config, figures, llm, model_provenance, prompts, sessions, spend_ceiling
 from .models import REVIEW_SLUG, ProposedCommit, Turn
@@ -426,18 +427,26 @@ def stream_tokens(slug: str, history: list[dict], model: str | None = None):
 # DR-098 made for math splitting.
 #
 #: Narrate in one call at or below this many characters, and use it as the per-section budget
-#: above it. Sized from the measurement: the 7,698-char response complied, so a section this
-#: size is one the model has been observed to follow, and the 31,133-char case that failed
-#: becomes four such sections rather than one it compresses.
+#: above it. Sized just above the 7,698-char response that complied, so the case measured good
+#: keeps its single call and the 31,133-char case that failed becomes four sections instead of
+#: one. **This is a probability-reduction measure, not a fix for a length-determined failure**,
+#: and the review of #512 is why that is stated rather than claimed the other way: matching
+#: every entry in the reader's narration cache back to its canonical (19 pairs) found a
+#: 35,352-char response narrated to 105% of its length at median correspondence 0.99, one day
+#: before the failure, on the same model and prompt — so length does not separate the flagged
+#: response from the ones that were fine. What is defensible is that a smaller input lowers the
+#: chance of the collapse, and 85 of 87 long responses in that corpus pay a longer wait for it.
+#: If Kamil finds the wait worse than the drift, raising this is the lever.
 NARRATION_SECTION_CHARS = 9_000
 #: Never dispatch more than this many narration calls for one response. Sections are paid
 #: calls made in sequence, each bounded by `operation_limits["narration"]`'s per-call ceiling,
 #: so their COUNT is what bounds the wall clock and the spend of one pathological response;
 #: past this the sections grow instead of multiplying.
 NARRATION_MAX_SECTIONS = 6
-#: Total wall clock for a sectioned narration. The per-call ceiling bounds one section; this
-#: bounds their sum, so a response that splits into six slow sections cannot hold a listener's
-#: audio job for the product of the two.
+#: Total wall clock for a sectioned narration, checked before each section is DISPATCHED — so
+#: the true bound is this plus one `operation_limits["narration"]` per-call ceiling, not this
+#: alone. It exists so a response that splits into six slow sections cannot hold a listener's
+#: audio job for the full product of the count and the per-call ceiling.
 NARRATION_TOTAL_TIMEOUT_S = 900.0
 #: A section this small is folded into its neighbour, up to 1.2x the budget. Two reasons, and
 #: the second is the important one: it is not worth its own paid call, and a display equation
@@ -446,8 +455,8 @@ NARRATION_TOTAL_TIMEOUT_S = 900.0
 NARRATION_MIN_SECTION_RATIO = 0.1
 
 _SECTION_INSTRUCTION = (
-    "This is section {index} of {total} of ONE longer response, and the sections are joined "
-    "verbatim in order. Narrate only the text below, all of it, and nothing else: no "
+    "This is section {index} of {total} of ONE longer response. The sections are spoken one "
+    "after another, in order, with nothing between them. Narrate only the text below, all of it, and nothing else: no "
     "introduction, no recap of earlier sections, no closing, no section number — anything you "
     "add lands in the middle of the transcript. It is short so that you can follow it sentence "
     "by sentence; do not summarize, merge or shorten it."
@@ -594,7 +603,8 @@ def _narrate_one(text: str, *, model: str | None, section: tuple[int, int] | Non
                      reasoning=llm.no_reasoning_payload()).strip()
 
 
-def narrate(canonical_text: str, *, unit_id: str | None = None) -> str:
+def narrate(canonical_text: str, *, unit_id: str | None = None,
+            should_stop: Callable[[], bool] | None = None) -> str:
     """Stage 2: faithfully adapt one canonical response into a TTS transcript. Uses the
     (separate, lighter) narration model with no paper context.
 
@@ -605,6 +615,11 @@ def narrate(canonical_text: str, *, unit_id: str | None = None) -> str:
     does not bound. A section that is refused, empty or too late ends the whole narration
     rather than returning what arrived: the sections compose one artifact, and half a narration
     is audio that stops mid-argument with nothing to say so.
+
+    `should_stop` is the caller's cancellation checkpoint, polled between sections. Without one,
+    `audio_jobs.cancel_job`'s promise — at most one in-flight upstream call completes after a
+    cancel returns — would be false the moment a narration became several calls: a cancelled job
+    would go on paying for up to `NARRATION_MAX_SECTIONS` more of them.
     """
     if not canonical_text.strip():
         return ""
@@ -617,6 +632,8 @@ def narrate(canonical_text: str, *, unit_id: str | None = None) -> str:
     deadline = time.monotonic() + NARRATION_TOTAL_TIMEOUT_S
     spoken: list[str] = []
     for index, section in enumerate(sections, start=1):
+        if should_stop is not None and should_stop():
+            raise AgentError("Narration was cancelled.")
         if index > 1 and time.monotonic() > deadline:
             raise AgentError(
                 f"Narration took too long: {index - 1} of {len(sections)} sections were spoken "
