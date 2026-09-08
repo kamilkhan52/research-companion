@@ -186,7 +186,10 @@ export interface DiscoverySuggestion {
 }
 
 export interface DiscoveryJob {
-  status: 'running' | 'done' | 'error';
+  /** `cancelled` is set the moment a stop is accepted; the worker runs on to its next stage
+   *  boundary before it actually exits, so this is a terminal status the screen must handle,
+   *  not a transient one (`app/jobs.py` — a thread cannot be killed). */
+  status: 'running' | 'done' | 'error' | 'cancelled';
   phase: string;
   error: string | null;
 }
@@ -197,11 +200,44 @@ export interface DiscoveryResult {
 }
 
 export function getDiscovery(pid: string) {
-  return apiGet<{ job: DiscoveryJob | null; result: DiscoveryResult | null; goals: string }>(`${P(pid)}/discover`);
+  return apiGet<{
+    job: DiscoveryJob | null;
+    result: DiscoveryResult | null;
+    /** Every suggestion the reader has hidden, so the count and the undo can be shown without
+     *  a second request. The stored result keeps hidden entries, so unhiding never re-runs. */
+    hidden?: HiddenRecommendation[];
+    goals: string;
+  }>(`${P(pid)}/discover`);
 }
 
 export function startDiscovery(pid: string, goals: string) {
   return apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
+}
+
+/** Stop the current run at its next stage boundary. Cooperative, so the button reports
+ *  "Stopping…" until the worker reaches one; the last completed result stays persisted, and the
+ *  cancelled snapshot keeps whatever the run had already found. */
+export function cancelDiscovery(pid: string) {
+  return apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {});
+}
+
+/** One paper the reader has told Discover to stop recommending. */
+export interface HiddenRecommendation {
+  keys: string[];
+  title: string;
+  hidden_at: string;
+}
+
+/** Hide one recommendation from every recommendation surface. Send the suggestion as rendered;
+ *  the server derives every identity it can be recognised by later (arXiv, DOI, S2, title), so
+ *  the same work stays hidden when a later run finds it through a different index. */
+export function hideSuggestion(pid: string, candidate: DiscoverySuggestion) {
+  return apiPost<{ hidden: HiddenRecommendation }>(`${P(pid)}/discover/hide`, { candidate });
+}
+
+/** Undo a hide by any of its identity keys. */
+export function unhideSuggestion(pid: string, keys: string[]) {
+  return apiPost<{ removed: boolean }>(`${P(pid)}/discover/unhide`, { keys });
 }
 
 export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string, year?: number | null) {

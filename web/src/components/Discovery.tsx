@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addPaper,
+  cancelDiscovery,
   getDiscovery,
+  hideSuggestion,
   startDiscovery,
+  unhideSuggestion,
   type DiscoveryJob,
   type DiscoverySuggestion,
+  type HiddenRecommendation,
 } from '@/api/endpoints';
 import { useActivePid, useLibrary, useProjectMembership } from '@/hooks/useLibrary';
 import './Discovery.css';
@@ -23,6 +27,9 @@ export function Discovery({ onNavigate }: Props) {
   const { isInProject } = useProjectMembership();
   const { refetch } = useLibrary();
   const [addingId, setAddingId] = useState<string | null>(null);
+  const [hidden, setHidden] = useState<HiddenRecommendation[]>([]);
+  const [stopping, setStopping] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const scopeRef = useRef({ pid: activePid });
   scopeRef.current = { pid: activePid };
   const goalsKey = activePid ? `rc.draft.v1:${activePid}:discovery:goals` : '';
@@ -34,6 +41,7 @@ export function Discovery({ onNavigate }: Props) {
     if (scopeRef.current.pid !== pid) return null;
     setGoals(localStorage.getItem(goalsKey) ?? response.goals ?? response.result?.goals ?? '');
     setSuggestions(response.result?.suggestions || []);
+    setHidden(response.hidden || []);
     setJob(response.job);
     if (response.job?.status === 'error') setError(response.job.error || 'Discovery failed');
     return response;
@@ -45,7 +53,10 @@ export function Discovery({ onNavigate }: Props) {
     setError(null);
     setJob(null);
     setSuggestions([]);
+    setHidden([]);
     setShowAll(false);
+    setShowHidden(false);
+    setStopping(false);
     if (!activePid) {
       setLoading(false);
       return () => { cancelled = true; };
@@ -85,8 +96,52 @@ export function Discovery({ onNavigate }: Props) {
     setError(null);
     try {
       const response = await startDiscovery(activePid, goals.trim());
-      if (scopeRef.current.pid === activePid) setJob(response.job);
+      if (scopeRef.current.pid === activePid) { setJob(response.job); setStopping(false); }
       localStorage.removeItem(goalsKey);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  // A run is minutes of paid model work. Stopping is cooperative — the worker finishes the
+  // stage it is inside, so the button stays "Stopping…" until the snapshot turns terminal.
+  async function stopDiscovery() {
+    if (!activePid || stopping) return;
+    setStopping(true);
+    setError(null);
+    try {
+      const response = await cancelDiscovery(activePid);
+      if (scopeRef.current.pid === activePid) setJob(response.job);
+    } catch (caught) {
+      setStopping(false);
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function hide(suggestion: DiscoverySuggestion) {
+    const pid = activePid;
+    if (!pid) return;
+    setError(null);
+    // Drop it from the list first: the server is authoritative, but a card that lingers after
+    // "Not this one" reads as a failure. `load` puts it back if the write is refused.
+    setSuggestions((previous) => previous.filter((item) => item !== suggestion));
+    try {
+      const { hidden: entry } = await hideSuggestion(pid, suggestion);
+      if (scopeRef.current.pid === pid) setHidden((previous) => [...previous, entry]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      void load().catch(() => {});
+    }
+  }
+
+  async function unhide(entry: HiddenRecommendation) {
+    const pid = activePid;
+    if (!pid) return;
+    setError(null);
+    try {
+      await unhideSuggestion(pid, entry.keys);
+      // The stored result keeps every suggestion, so the paper comes back without a re-run.
+      await load();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -126,7 +181,15 @@ export function Discovery({ onNavigate }: Props) {
         </button>
       </section>
 
-      {job?.status === 'running' && <div className="discovery-progress"><span className="spinner" /> {job.phase || 'Searching…'}</div>}
+      {job?.status === 'running' && <div className="discovery-progress">
+        <span className="spinner" /> <span className="discovery-phase">{job.phase || 'Searching…'}</span>
+        <button className="btn ghost danger" onClick={() => void stopDiscovery()} disabled={stopping}>
+          {stopping ? 'Stopping…' : 'Stop'}
+        </button>
+      </div>}
+      {job?.status === 'cancelled' && <p className="muted discovery-stopped">
+        Discovery stopped. Anything it had already found is below; start again to go further.
+      </p>}
       {error && <p className="build-progress-error">{error}</p>}
 
       {suggestions.length > 0 && (
@@ -148,13 +211,35 @@ export function Discovery({ onNavigate }: Props) {
                     <p className="suggestion-abstract muted">{suggestion.abstract.slice(0, 200)}{suggestion.abstract.length > 200 ? '…' : ''}</p>
                   ) : null}
                 </div>
-                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract, suggestion.year)} disabled={inLibrary || addingId === id}>
-                  {added.has(id) ? 'Added ✓' : inLibrary ? 'In library' : addingId === id ? 'Adding…' : '+ Add'}
-                </button>
+                <div className="suggestion-actions">
+                  <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract, suggestion.year)} disabled={inLibrary || addingId === id}>
+                    {added.has(id) ? 'Added ✓' : inLibrary ? 'In library' : addingId === id ? 'Adding…' : '+ Add'}
+                  </button>
+                  <button className="btn ghost suggestion-hide" onClick={() => void hide(suggestion)}
+                    aria-label={`Stop recommending ${suggestion.title}`}>Not this one</button>
+                </div>
               </div>;
             })}
           </div>
           {suggestions.length > 5 && !showAll && <button className="btn ghost" onClick={() => setShowAll(true)}>Show all {suggestions.length}</button>}
+        </section>
+      )}
+
+      {hidden.length > 0 && (
+        <section className="discovery-section discovery-hidden">
+          <button className="btn ghost" onClick={() => setShowHidden((previous) => !previous)}
+            aria-expanded={showHidden}>
+            {showHidden ? 'Hide' : 'Show'} {hidden.length} you told Discover to skip
+          </button>
+          {showHidden && <ul className="discovery-hidden-list">
+            {hidden.map((entry) => (
+              <li key={entry.keys.join('|')}>
+                <span>{entry.title || 'Untitled paper'}</span>
+                <button className="btn ghost" onClick={() => void unhide(entry)}
+                  aria-label={`Recommend ${entry.title || 'this paper'} again`}>Undo</button>
+              </li>
+            ))}
+          </ul>}
         </section>
       )}
 
