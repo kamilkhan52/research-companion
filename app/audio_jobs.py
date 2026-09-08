@@ -160,9 +160,9 @@ def get_job(job_id: str) -> AudioJob | None:
 
 def cancel_job(job_id: str) -> AudioJob | None:
     """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
-    its next checkpoint — before and between the narration call's sections, and between TTS segments — so at most one
-    in-flight upstream call completes after this returns. Segments already synthesized stay in the
-    cache, so a re-request resumes rather than restarting from zero.
+    its next checkpoint — before and between the narration call's sections, and between TTS
+    segments — so at most one in-flight upstream call completes after this returns. Segments
+    already synthesized stay in the cache, so a re-request resumes rather than restarting from zero.
 
     Dedup joins only within one user's scope, so cancelling can no longer stop a preparation
     somebody else is waiting on. That used to be documented as acceptable for a single-household
@@ -235,9 +235,11 @@ def start_job(text: str, billing_project: str | None = None,
             try:
                 narration = narrate(text)
             except Exception:
-                # A cancel raises out of the sectioned narration (see `agent.narrate`); the
-                # registry has already flipped the job, so exit the way every other checkpoint
-                # here does rather than reporting an error for work the reader stopped.
+                # A cancel raises out of the sectioned narration (see `agent.narrate`). The
+                # terminal state would be right without this — `jobs._run` lets `cancelled`
+                # win over a failure — but the raise still reaches the registry's WARNING as
+                # `error audio job=…`, and a reader tapping Cancel is not an error. Exit the
+                # way this worker's other checkpoints do instead.
                 if cancelled():
                     return
                 raise

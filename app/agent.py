@@ -444,9 +444,10 @@ NARRATION_SECTION_CHARS = 9_000
 #: past this the sections grow instead of multiplying.
 NARRATION_MAX_SECTIONS = 6
 #: Total wall clock for a sectioned narration, checked before each section is DISPATCHED — so
-#: the true bound is this plus one `operation_limits["narration"]` per-call ceiling, not this
-#: alone. It exists so a response that splits into six slow sections cannot hold a listener's
-#: audio job for the full product of the count and the per-call ceiling.
+#: the true bound is this plus however long the last section takes, which is `llm.complete`'s
+#: retries times `operation_limits["narration"]`, not one of them. It exists so a response that
+#: splits into six slow sections cannot hold a listener's audio job for the full product of the
+#: section count and that per-call ceiling.
 NARRATION_TOTAL_TIMEOUT_S = 900.0
 #: A section this small is folded into its neighbour, up to 1.2x the budget. Two reasons, and
 #: the second is the important one: it is not worth its own paid call, and a display equation
@@ -456,7 +457,8 @@ NARRATION_MIN_SECTION_RATIO = 0.1
 
 _SECTION_INSTRUCTION = (
     "This is section {index} of {total} of ONE longer response. The sections are spoken one "
-    "after another, in order, with nothing between them. Narrate only the text below, all of it, and nothing else: no "
+    "after another, in order, with nothing between them. Narrate only the text below, all "
+    "of it, and nothing else: no "
     "introduction, no recap of earlier sections, no closing, no section number — anything you "
     "add lands in the middle of the transcript. It is short so that you can follow it sentence "
     "by sentence; do not summarize, merge or shorten it."
