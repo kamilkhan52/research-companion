@@ -15,8 +15,11 @@ prose with equations/quotes/links breaks JSON string escaping.
 from __future__ import annotations
 
 import re
+import time
+import uuid
 
-from . import assembler, config, figures, llm, model_provenance, prompts, sessions
+from . import (assembler, config, figures, llm, model_provenance, prompts,
+               sessions, spend_ceiling)
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
@@ -406,21 +409,223 @@ def stream_tokens(slug: str, history: list[dict], model: str | None = None):
     yield from stream_messages(messages, max_tokens=16000, operation="analysis", model=model)
 
 
-def narrate(canonical_text: str) -> str:
-    """Stage 2: faithfully adapt one canonical response into a TTS transcript. Uses the
-    (separate, lighter) narration model with no paper context."""
-    if not canonical_text.strip():
-        return ""
-    settings = config.load_settings()
-    model = settings.get("narration_model") or settings.get("model")
+# ---- Stage-2 narration ------------------------------------------------------------------
+#
+# DR-153. The narration model follows the "sentence by sentence" instruction faithfully on a
+# short response and abandons it on a long one. Measured on Kamil's own H3 session: a
+# 7,698-char response narrated to 7,598 chars (99%, median per-sentence correspondence 0.99),
+# while a 31,133-char response in the SAME thread, same model, same prompt, came back at
+# 13,990 chars (45%, median 0.50). It was not truncated — the transcript ends on the same
+# complete clause the written text does — and the instruction it disobeyed is present in the
+# live prompt. The model reached the end and compressed on the way, merging and re-saying
+# rather than dropping passages, which is exactly what leaves DR-133's sentence alignment
+# nothing to anchor to (DR-154).
+#
+# So the lever is not the prompt's wording. Narrate the canonical text in sections each no
+# larger than the size the model was measured to follow, and concatenate: faithfulness stops
+# depending on how long the response was, and the cheap narration model can stay. Same move
+# DR-098 made for math splitting.
+#
+#: Narrate in one call at or below this many characters, and use it as the per-section budget
+#: above it. Sized from the measurement: the 7,698-char response complied, so a section this
+#: size is one the model has been observed to follow, and the 31,133-char case that failed
+#: becomes four such sections rather than one it compresses.
+NARRATION_SECTION_CHARS = 9_000
+#: Never dispatch more than this many narration calls for one response. Sections are paid
+#: calls made in sequence, each bounded by `operation_limits["narration"]`'s per-call ceiling,
+#: so their COUNT is what bounds the wall clock and the spend of one pathological response;
+#: past this the sections grow instead of multiplying.
+NARRATION_MAX_SECTIONS = 6
+#: Total wall clock for a sectioned narration. The per-call ceiling bounds one section; this
+#: bounds their sum, so a response that splits into six slow sections cannot hold a listener's
+#: audio job for the product of the two.
+NARRATION_TOTAL_TIMEOUT_S = 900.0
+#: A section this small is folded into its neighbour, up to 1.2x the budget. Two reasons, and
+#: the second is the important one: it is not worth its own paid call, and a display equation
+#: or a code block with no prose around it narrates BADLY — the model has nothing to speak the
+#: symbols as. Keeping a span whole must not turn it into a section by itself.
+NARRATION_MIN_SECTION_RATIO = 0.1
+
+_SECTION_INSTRUCTION = (
+    "This is section {index} of {total} of ONE longer response, and the sections are joined "
+    "verbatim in order. Narrate only the text below, all of it, and nothing else: no "
+    "introduction, no recap of earlier sections, no closing, no section number — anything you "
+    "add lands in the middle of the transcript. It is short so that you can follow it sentence "
+    "by sentence; do not summarize, merge or shorten it."
+)
+
+#: A paragraph break: a run of blank lines, matched so that splitting keeps the newline that
+#: ended the paragraph with the paragraph and hands the rest back as the separator. Joining
+#: the pieces reproduces the input exactly, which is the property the tests pin.
+_PARAGRAPH_RE = re.compile(r"(?<=\n)\n+")
+#: A sentence end, used only to divide a single paragraph larger than one section on its own.
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _spans_open(text: str) -> bool:
+    """Whether `text` leaves a code fence or a math span unclosed.
+
+    Cutting inside one hands the model half a construct and opens the next section
+    mid-equation — the failure DR-098 hit when it split math naively, where an unbalanced
+    delimiter is not merely ugly but unrenderable.
+    """
+    return (text.count("```") % 2 == 1
+            or text.count("$$") % 2 == 1
+            or text.count(r"\[") != text.count(r"\]")
+            or text.count(r"\(") != text.count(r"\)"))
+
+
+def _paragraph_pieces(text: str, budget: int) -> list[str]:
+    """`text` divided at paragraph breaks, re-joining any break that falls inside a span.
+
+    The re-join is bounded at twice the budget. A genuine multi-paragraph equation or code
+    block is far smaller than that, while a single UNMATCHED delimiter — one stray `\\(` in a
+    30,000-character response — would otherwise swallow everything after it into one piece and
+    silently turn the fix off for exactly the responses it exists for.
+    """
+    parts = _PARAGRAPH_RE.split(text)
+    separators = _PARAGRAPH_RE.findall(text)
+    pieces: list[str] = []
+    for index, part in enumerate(parts):
+        joined = part + (separators[index] if index < len(separators) else "")
+        if pieces and len(pieces[-1]) < budget * 2 and _spans_open(pieces[-1]):
+            pieces[-1] += joined
+        else:
+            pieces.append(joined)
+    return [piece for piece in pieces if piece]
+
+
+def _sentence_units(piece: str) -> list[str]:
+    """`piece` as sentences, each carrying the whitespace that ended it."""
+    units: list[str] = []
+    start = 0
+    for match in _SENTENCE_END_RE.finditer(piece):
+        units.append(piece[start:match.end()])
+        start = match.end()
+    if start < len(piece):
+        units.append(piece[start:])
+    return units
+
+
+def _sentence_pieces(piece: str, budget: int) -> list[str]:
+    """`piece` divided at sentence ends that leave the part before them balanced.
+
+    Only reached for a paragraph that exceeds one section by itself. A paragraph with no
+    balanced split point is returned whole and oversized on purpose: handing the model more
+    than the budget costs fidelity, and handing it a broken equation is a defect.
+    """
+    out: list[str] = []
+    current = ""
+    for unit in _sentence_units(piece):
+        if current and len(current) + len(unit) > budget and not _spans_open(current):
+            out.append(current)
+            current = unit
+        else:
+            current += unit
+    if current:
+        out.append(current)
+    return out
+
+
+def _pack(pieces: list[str], budget: int) -> list[str]:
+    """Greedily fill sections up to `budget`, never splitting a piece."""
+    sections: list[str] = []
+    for piece in pieces:
+        if sections and len(sections[-1]) + len(piece) <= budget:
+            sections[-1] += piece
+        else:
+            sections.append(piece)
+    return sections
+
+
+def _merge_runts(sections: list[str], budget: int) -> list[str]:
+    """Fold sections too small to be worth a call into a neighbour (see the ratio above)."""
+    floor = budget * NARRATION_MIN_SECTION_RATIO
+    ceiling = budget * 1.2
+    out: list[str] = []
+    for section in sections:
+        if out and len(section) < floor and len(out[-1]) + len(section) <= ceiling:
+            out[-1] += section
+        else:
+            out.append(section)
+    # The first section has no earlier neighbour, so it folds forward instead.
+    if len(out) > 1 and len(out[0]) < floor and len(out[0]) + len(out[1]) <= ceiling:
+        out[1] = out[0] + out[1]
+        out.pop(0)
+    return out
+
+
+def narration_sections(canonical_text: str) -> list[str]:
+    """Divide one canonical response into the sections it will be narrated in.
+
+    Returns the text unchanged as a single section at any length the model has been measured
+    to narrate faithfully in one call, so the common case stays exactly the single call it was.
+    Joining the result with `""` reproduces the input.
+    """
+    if len(canonical_text) <= NARRATION_SECTION_CHARS:
+        return [canonical_text]
+    budget = NARRATION_SECTION_CHARS
+    pieces: list[str] = []
+    for piece in _paragraph_pieces(canonical_text, budget):
+        pieces.extend(_sentence_pieces(piece, budget) if len(piece) > budget else [piece])
+    sections = _merge_runts(_pack(pieces, budget), budget)
+    # Past the cap, grow the sections rather than adding more: a larger section narrates less
+    # faithfully, which is a degradation, where an unbounded number of paid sequential calls
+    # is an incident. Terminates — the budget reaches the whole text, which is one section.
+    while len(sections) > NARRATION_MAX_SECTIONS and budget < len(canonical_text):
+        budget = int(budget * 1.5) + 1
+        sections = _merge_runts(_pack(pieces, budget), budget)
+    return sections
+
+
+def _narrate_one(text: str, *, model: str | None, section: tuple[int, int] | None) -> str:
+    instructions = (
+        prompts.get("narration_system") + "\n\n" + prompts.get("self_contained_research")
+    )
+    if section is not None:
+        instructions += "\n\n" + _SECTION_INSTRUCTION.format(index=section[0], total=section[1])
     messages = [
-        {"role": "system", "content": (
-            prompts.get("narration_system") + "\n\n" + prompts.get("self_contained_research")
-        )},
-        {"role": "user", "content": canonical_text},
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": text},
     ]
     # Reasoning off: narration is a rewrite of an argument that has already been made, not a
     # problem to solve, and a reasoning model can spend its whole budget thinking and return
     # nothing — which is exactly how a listener ends up with silence (2026-07-30).
     return _complete(messages, model=model, temperature=0.2, operation="narration",
                      reasoning=llm.no_reasoning_payload()).strip()
+
+
+def narrate(canonical_text: str, *, unit_id: str | None = None) -> str:
+    """Stage 2: faithfully adapt one canonical response into a TTS transcript. Uses the
+    (separate, lighter) narration model with no paper context.
+
+    A response longer than one section is narrated in sections and concatenated (DR-153).
+    `unit_id` names the job the sections belong to for the spend ledger: each section is its
+    own paid call and holds for itself through `spend_ceiling.per_unit`, because the caller's
+    admission ticket reserved ONE narration lease and N calls under it would be a ceiling that
+    does not bound. A section that is refused, empty or too late ends the whole narration
+    rather than returning what arrived: the sections compose one artifact, and half a narration
+    is audio that stops mid-argument with nothing to say so.
+    """
+    if not canonical_text.strip():
+        return ""
+    settings = config.load_settings()
+    model = settings.get("narration_model") or settings.get("model")
+    sections = narration_sections(canonical_text)
+    if len(sections) == 1:
+        return _narrate_one(sections[0], model=model, section=None)
+    unit = unit_id or uuid.uuid4().hex
+    deadline = time.monotonic() + NARRATION_TOTAL_TIMEOUT_S
+    spoken: list[str] = []
+    for index, section in enumerate(sections, start=1):
+        if index > 1 and time.monotonic() > deadline:
+            raise AgentError(
+                f"Narration took too long: {index - 1} of {len(sections)} sections were spoken "
+                f"within {int(NARRATION_TOTAL_TIMEOUT_S)}s.")
+        with spend_ceiling.per_unit("narration", unit, model=model):
+            part = _narrate_one(section, model=model, section=(index, len(sections)))
+        if not part:
+            raise AgentError(
+                f"The narration model returned nothing for section {index} of {len(sections)}.")
+        spoken.append(part)
+    return "\n\n".join(spoken)

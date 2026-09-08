@@ -164,9 +164,12 @@ def test_synthesis_failure_surfaces_as_an_error_job():
 
 # ---- narration cost attribution (audio is app-global, but spend bills the initiating project) ----
 
-def _billing_narrate(text: str) -> str:
+def _billing_narrate(text: str, **_) -> str:
     """Stand-in for agent.narrate: records usage against the ACTIVE project, exactly as
-    llm.complete does, so the test sees whether the worker bound the right project."""
+    llm.complete does, so the test sees whether the worker bound the right project.
+
+    Takes `**_` because it also stands in for the real `agent.narrate`, which the worker calls
+    with the job id (`unit_id=`) so a sectioned narration's holds carry it (DR-153)."""
     from app import usage
     usage.record("narration", "narr-model", {"prompt_tokens": 5, "cost": 0.02})
     return f"narrated: {text}"
