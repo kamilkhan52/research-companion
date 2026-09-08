@@ -595,6 +595,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
         <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
           onDeliveryMode={setDeliveryMode} model={model} onModel={setModel} favorites={favorites} compact />
         <button className="btn ghost" onClick={() => void showRelated()}>Related works</button>
+        <button className="btn ghost" onClick={() => onNavigate(`paper-graph/${encodeURIComponent(slug)}`)}>Reference map</button>
       </header>
       {related && <RelatedPanel related={related} onNavigate={onNavigate} onClose={() => setRelated(null)} />}
       {titleOffer}
