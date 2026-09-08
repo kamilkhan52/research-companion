@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, apiPost } from '@/api/client';
+import { ApiError, apiPatch, apiPost } from '@/api/client';
 
 function respond(status: number, body: unknown): Response {
   return { ok: false, status, json: () => Promise.resolve(body) } as Response;
@@ -82,5 +82,27 @@ describe('parseError', () => {
     expect(localStorage.getItem('rc_token')).toBeNull();
     expect(regate).toHaveBeenCalled();
     window.removeEventListener('rc:auth-required', regate);
+  });
+});
+
+describe('apiPatch', () => {
+  it('sends a real PATCH with a JSON body — the only writer of a title decision', async () => {
+    // Component tests mock the endpoint module, so nothing else exercises the wire method; the
+    // backend route is `@project_router.patch`, and a POST here would be a 405 in production.
+    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ paper: {} }) } as Response);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+
+    await apiPatch('/api/projects/p1/papers/attention', { title: 'X', title_confirmed: true });
+
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe('/api/projects/p1/papers/attention');
+    expect(init.method).toBe('PATCH');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(String(init.body))).toEqual({ title: 'X', title_confirmed: true });
+  });
+
+  it('reports a refusal the same way every other verb does', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(409, { detail: 'Project is being split.' }));
+    await expect(apiPatch('/api/x', {})).rejects.toMatchObject({ status: 409, message: 'Project is being split.' });
   });
 });

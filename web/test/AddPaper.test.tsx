@@ -218,7 +218,9 @@ describe('AddPaperSheet', () => {
     expect(screen.queryByText(/in Transformers/)).not.toBeInTheDocument();
   });
 
-  it('refuses to dismiss an add that is still in flight', async () => {
+  it('can always be dismissed, even while an add is in flight', async () => {
+    // `POST /papers` scans every project the caller owns, so it can be slow; a modal with no
+    // exit is worse than a late answer.
     const user = userEvent.setup();
     api.addPaper.mockReturnValue(new Promise(() => {}));
     const { props } = renderSheet();
@@ -227,8 +229,37 @@ describe('AddPaperSheet', () => {
     await screen.findByRole('button', { name: 'Adding…' });
 
     await user.keyboard('{Escape}');
-    await user.click(screen.getByLabelText('Close'));
-    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it('does not open a paper the reader walked away from', async () => {
+    const user = userEvent.setup();
+    let land!: (value: { paper: { slug: string } }) => void;
+    api.addPaper.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+    const { props } = renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention{Enter}');
+    await screen.findByRole('button', { name: 'Adding…' });
+    await user.keyboard('{Escape}');
+
+    land({ paper: { slug: 'attention' } });
+    await waitFor(() => expect(localStorage.getItem(addPaperDraftKey('project-1'))).toBeNull());
+    expect(props.onAdded).not.toHaveBeenCalled();
+  });
+
+  it('does not report a failure to a screen the reader left', async () => {
+    const user = userEvent.setup();
+    let fail!: (reason: unknown) => void;
+    api.addPaper.mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+    renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention{Enter}');
+    await screen.findByRole('button', { name: 'Adding…' });
+    await user.keyboard('{Escape}');
+
+    fail(new ApiError(500, 'Server exploded'));
+    await waitFor(() => expect(api.addPaper).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('closes on a click outside the sheet', async () => {

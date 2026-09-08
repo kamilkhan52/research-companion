@@ -150,6 +150,13 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   // Update during render rather than waiting for an effect: an A request that resolves during
   // B's render must never write A's transcript/review/draft into B's screen.
   const routeRef = useRef({ pid: activePid, slug });
+  // The source is a one-shot hand-off, not part of this paper's identity, and it only ever
+  // arrives WITH a new paper. Holding it in a ref keyed to the (project, paper) pair keeps it
+  // out of initialization's inputs — otherwise an unrelated re-render that happens to drop it
+  // (opening Settings does exactly that) re-runs initialization and throws away whatever
+  // un-submitted work is on the screen, including edits to a notes proposal.
+  const sourceRef = useRef(source);
+  if (routeRef.current.pid !== activePid || routeRef.current.slug !== slug) sourceRef.current = source;
   routeRef.current = { pid: activePid, slug };
   // The title decision needs the paper as the server last described it, read from a retrieval
   // callback that must not re-run every time the title changes.
@@ -246,15 +253,16 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     setSuggestedTitle(null);
     paperRef.current = null;
     setTitleState(null);
-    const named = source ? parseKnownPaper(source) : null;
+    const named = sourceRef.current ? parseKnownPaper(sourceRef.current) : null;
     setArxivId(named?.arxivId ?? '');
     setPdfUrl(named?.pdfUrl ?? '');
-    // Read once. Everything below has the value it needs; leaving it in the URL would re-arm
-    // the automatic fetch on every reload of this tab.
-    if (named) forgetRouteSource(slug);
 
     const initialize = async () => {
       if (!activePid) return;
+      // Spend the source only once this run can actually act on it. Everything below already
+      // holds the value; leaving it in the URL would re-arm the automatic fetch on every
+      // reload of this tab, and the guard against that is server memory a restart clears.
+      if (named) forgetRouteSource(slug);
       try {
         let session = await getSession(activePid, slug);
         if (cancelled) return;
@@ -301,7 +309,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   // watcher callbacks are stable for a pid; including the whole watcher objects would restart
   // initialization on every snapshot.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePid, slug, source, applySession, loadDraft, loadReview]);
+  }, [activePid, slug, applySession, loadDraft, loadReview]);
 
   useEffect(() => {
     const job = chatWatch.job;
@@ -393,6 +401,10 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     try {
       await updatePaper(pid, slug, useSuggested ? suggestedTitle : undefined, true);
       setSuggestedTitle(null);
+      // Record the ruling before awaiting the canonical session: the re-entry read is an
+      // in-memory registry lookup and lands first, so a still-unconfirmed `titleState` would
+      // pop the panel straight back up for the moment in between.
+      setTitleState((previous) => (previous ? { ...previous, confirmed: true } : previous));
       // The reading-list entry moved; the opening draft was built from the old title.
       await fetchCanonicalSession();
       await loadDraft();

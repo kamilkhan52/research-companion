@@ -154,7 +154,9 @@ export function Library({ onNavigate }: Props) {
       {showAdd && (
         <AddPaperSheet
           pid={activePid}
-          onClose={() => setShowAdd(false)}
+          // Refetch on every close, not only on the hand-off: an add that landed after the
+          // reader dismissed the sheet is still on the reading list and has to show up.
+          onClose={() => { setShowAdd(false); refetch(); }}
           onAdded={(slug, source) => {
             setShowAdd(false);
             refetch();

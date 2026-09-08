@@ -194,6 +194,24 @@ describe('Discussion source hand-off', () => {
     expect(api.startRetrievalJob).not.toHaveBeenCalled();
   });
 
+  it('does not re-initialize when only the source is dropped', async () => {
+    // Opening Settings re-renders this screen from a remembered route that no longer carries
+    // the source. Re-initializing on that would throw away whatever is un-submitted on screen —
+    // a typed fetch URL here, an edited notes proposal on the review screen.
+    api.getRetrievalJob.mockResolvedValue({ job: running });
+    const user = userEvent.setup();
+    const { rerender } = render(<Discussion slug="paper-a" source="2309.06180" onNavigate={vi.fn()} />);
+    // The automatic fetch is under way, so the button reads "Fetching…" — wait for the form.
+    const pdfField = await screen.findByPlaceholderText('https://…/paper.pdf');
+    await user.type(pdfField, 'https://example.org/mine.pdf');
+    const sessionReads = api.getSession.mock.calls.length;
+
+    rerender(<Discussion slug="paper-a" onNavigate={vi.fn()} />);
+
+    expect(screen.getByPlaceholderText('https://…/paper.pdf')).toHaveValue('https://example.org/mine.pdf');
+    expect(api.getSession).toHaveBeenCalledTimes(sessionReads);
+  });
+
   it('does not carry one paper\'s source into the next paper\'s fetch form', async () => {
     api.getSession.mockImplementation((_pid: string, slug: string) => Promise.resolve(
       session(slug, slug, { paper: { slug, title: slug, retrieved: false, list_status: 'unread' } }),
@@ -292,6 +310,45 @@ describe('Discussion source-title offer', () => {
     render(<Discussion slug="arxiv-2405-17057" onNavigate={vi.fn()} />);
 
     expect(await screen.findByText('Use the source title?')).toBeInTheDocument();
+  });
+
+  it('clears a standing offer when a canonical session reports the title settled', async () => {
+    // Another tab (or a rename elsewhere) can settle the title while this panel is up. Nothing
+    // else clears it: the re-entry read is suppressed by `suggestedTitle`, not by the answer.
+    const user = userEvent.setup();
+    api.getLatestRetrievalJob.mockResolvedValue({ job: retrieved });
+    api.startJob.mockResolvedValue({ job: { id: 'chat-1' } });
+    api.getChatJob.mockResolvedValue({ job: { id: 'chat-1', status: 'done', turn: null, items: [], error: null } });
+
+    render(<Discussion slug="arxiv-2405-17057" source="2405.17057" onNavigate={vi.fn()} />);
+    await screen.findByText('Use the source title?');
+
+    api.getSession.mockResolvedValue(session('arxiv-2405-17057', 'The LLM Compiler', {
+      paper: paper({ title: 'The LLM Compiler', title_confirmed: true, retrieved: true }),
+    }));
+    await user.click(screen.getByRole('button', { name: 'Generate paper summary' }));
+
+    await waitFor(() => expect(screen.queryByText('Use the source title?')).not.toBeInTheDocument());
+  });
+
+  it('does not flash the offer back up between the ruling and the canonical session', async () => {
+    const user = userEvent.setup();
+    render(<Discussion slug="arxiv-2405-17057" source="2405.17057" onNavigate={vi.fn()} />);
+    await screen.findByText('Use the source title?');
+    const readsBeforeRuling = api.getLatestRetrievalJob.mock.calls.length;
+
+    // The canonical read is the slow one; the in-memory re-entry lookup lands first, and would
+    // re-raise the panel in the gap if the ruling were not recorded locally at the same time.
+    api.getSession.mockReturnValue(new Promise(() => {}));
+    await user.click(screen.getByRole('button', { name: 'Keep mine' }));
+    await waitFor(() => expect(api.updatePaper).toHaveBeenCalled());
+
+    // Long enough for the re-entry effect to have run and landed had it been allowed to. The
+    // ruling is what stops it: without it recorded locally, this lookup fires again and the
+    // panel comes back while the canonical read is still outstanding.
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(api.getLatestRetrievalJob).toHaveBeenCalledTimes(readsBeforeRuling);
+    expect(screen.queryByText('Use the source title?')).not.toBeInTheDocument();
   });
 
   it('does not re-offer a title a person already ruled on', async () => {

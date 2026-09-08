@@ -25,10 +25,12 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Dismissal is refused while the add is in flight. Closing would not cancel the request, and
-  // whichever way it landed the reader would be misled: a success jumps them into a paper they
-  // just dismissed, and a failure has nowhere left to report itself.
-  const dismiss = useCallback(() => { if (!adding) onClose(); }, [adding, onClose]);
+  // Dismissal always works, including mid-flight: `POST /papers` scans every project the caller
+  // owns and can be slow, and a modal with no exit is worse than a late answer. Closing cannot
+  // cancel the request, so it is the LANDING that is suppressed — a dismissed add neither jumps
+  // the reader into a paper they walked away from nor reports its failure to a screen they left.
+  const closed = useRef(false);
+  const dismiss = useCallback(() => { closed.current = true; onClose(); }, [onClose]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
@@ -54,8 +56,11 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
     try {
       const { paper } = await addPaper(pid, parsed.title, parsed.arxivId);
       localStorage.removeItem(draftKey);
+      // The paper is on the reading list either way; the Library refetches when this closes.
+      if (closed.current) return;
       onAdded(paper.slug, parsed.source);
     } catch (caught) {
+      if (closed.current) return;
       // The cross-project duplicate is a refusal the reader can act on, not a failure: name
       // where the paper already is instead of rendering the payload that carries the answer.
       if (caught instanceof ApiError && isPaperExistsElsewhere(caught.detail)) {
@@ -75,7 +80,7 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
       <section className="add-paper-sheet" role="dialog" aria-modal="true" aria-label="Add a paper">
         <div className="add-paper-head">
           <h2>Add a paper</h2>
-          <button className="icon-btn" onClick={dismiss} disabled={adding} aria-label="Close">✕</button>
+          <button className="icon-btn" onClick={dismiss} aria-label="Close">✕</button>
         </div>
         <p className="muted add-paper-hint">Paste a title, DOI, arXiv id or link, or a direct PDF link.</p>
         <div className="add-paper-row">
