@@ -584,6 +584,12 @@ def test_no_more_than_the_bound_read_at_once(temp_project, monkeypatch):
     for extra in ("third", "fourth"):
         add_paper(temp_project, extra, extra.title(), full_text="t")
     monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    # A barrier of exactly the bound, not a sleep: a sleep only says "they overlapped for 50ms
+    # on this machine", and on a loaded two-core CI runner the second thread may not be
+    # scheduled inside it at all. Two arrivals release the pair; a third would have to wait for
+    # one of them to finish, so a bound that had been ignored would let three through and the
+    # `live` ceiling below would catch it.
+    wave = threading.Barrier(2, timeout=5)
     lock = threading.Lock()
     live = 0
     peak = 0
@@ -593,7 +599,7 @@ def test_no_more_than_the_bound_read_at_once(temp_project, monkeypatch):
         with lock:
             live += 1
             peak = max(peak, live)
-        time.sleep(0.05)
+        wave.wait()
         with lock:
             live -= 1
         return f"{target} brief"
@@ -604,6 +610,9 @@ def test_no_more_than_the_bound_read_at_once(temp_project, monkeypatch):
     ).id, timeout=10)
     assert job.status == "done", job.error
     assert peak == 2, peak
+    # Derived from the rows, so a finished assistant cannot blank it while others read — and
+    # nothing is left "reading" once the pass is over.
+    assert job.current is None
 
 
 def test_the_analyst_gets_the_briefs_in_the_offers_order_not_the_finishing_order(temp_project):
@@ -631,12 +640,11 @@ def test_the_analyst_gets_the_briefs_in_the_offers_order_not_the_finishing_order
     assert briefing[0]["text"].index("h3 brief") < briefing[0]["text"].index("memexplorer brief")
 
 
-def test_every_assistant_runs_bound_to_the_right_project_and_user(temp_project, monkeypatch):
+def test_every_assistant_runs_bound_to_the_right_project_and_user(temp_project):
     """Invariant 2. A pool thread inherits no contextvars, so an assistant that skipped the
     rebind would read another project's corpus and meter its spend against nobody."""
     slug = _project(temp_project)
     add_paper(temp_project, "third", "Third", full_text="t")
-    monkeypatch.setattr(config, "_active_user", config._active_user)
     user_token = config.set_active_user("user-under-test")
     seen: list[tuple[str, str | None]] = []
     lock = threading.Lock()
@@ -693,3 +701,36 @@ def test_stop_leaves_the_papers_no_assistant_picked_up_alone(temp_project, monke
     assert [t["status"] for t in settled.targets[2:]] == ["skipped", "skipped"]
     # What the first wave paid for is kept, and still reaches the analyst.
     assert [b["slug"] for b in settled.briefs] == ["h3", "memexplorer"]
+
+
+def test_a_paper_nobody_touched_is_not_blamed_for_another_papers_failure(temp_project,
+                                                                        monkeypatch):
+    """`skipped` means never attempted. Showing it the last failure that happened anywhere in
+    the pass told the reader "Skipped — The model returned an empty brief" about a paper no
+    model was ever asked about (Opus review of #516)."""
+    slug = _project(temp_project)
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    refused = threading.Event()
+
+    def reader(target, account, current):
+        if target == "memexplorer":
+            refused.set()
+            raise quotas.QuotaExceeded(used_nanousd=1, requested_nanousd=2, limit_nanousd=2)
+        assert refused.wait(timeout=5)
+        return ""  # a failure of its own: an empty brief
+
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
+        turn_runner=_runner(FOLLOW_UP),
+    ).id, timeout=10)
+    rows = {t["slug"]: t for t in job.targets}
+    assert rows["h3"]["status"] == "error"
+    assert rows["h3"]["error"] == "The model returned an empty brief."
+    for untouched in ("third", "fourth"):
+        assert rows[untouched]["status"] == "skipped"
+        # The refusal's words, which are the true reason this paper was never read — never the
+        # other paper's failure.
+        assert rows[untouched]["error"] == job.stopped_reason
+        assert "brief" not in (rows[untouched]["error"] or "")

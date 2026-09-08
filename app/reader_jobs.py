@@ -110,9 +110,11 @@ class ReaderJob(Job):
     thread_id: str = sessions.MAIN_THREAD
     #: Which response the reader was answering when they asked; informational.
     assistant_index: int | None = None
-    #: One row per chosen paper, in reading order:
+    #: One row per chosen paper, in the order the offer listed them — which is no longer the
+    #: order they are read in (DR-150), only the order their briefs reach the analyst:
     #: {slug, title, status: queued | reading | done | error | skipped, error}. `skipped` is a
-    #: paper never attempted because the account ran out of budget first (the `refusal` says so).
+    #: paper NEVER ATTEMPTED, and so never billed: either the account ran out of budget before
+    #: an assistant picked it up (the `refusal` says so) or the reader pressed Stop.
     targets: list = field(default_factory=list)
     current: str | None = None
     delivery_mode: str = "reading"
@@ -359,6 +361,12 @@ class _PassStop:
 
     stopped: bool = False
     refusal: Exception | None = None
+    #: Why the pass closed, shown on the rows nobody started. Only ever a refusal — a paper
+    #: that failed on its own says so on its OWN row, and putting that text on an untouched
+    #: paper would tell the reader "Skipped — the model returned an empty brief" about a paper
+    #: no model was ever asked about (Opus review of #516).
+    reason: str = ""
+    #: The most recent failure of any kind, for the message when NOTHING could be read.
     last_error: str = ""
 
 
@@ -371,13 +379,13 @@ def _read_one(job: ReaderJob, index: int, account: str, reader, stop: _PassStop)
     """
     row = job.targets[index]
     with _registry.lock:
-        stopped = stop.stopped
+        stopped, reason = stop.stopped, stop.reason
     # Both doors are checked HERE rather than before the fan-out, because with several readers
     # in flight the answer changes while the pass runs: Stop arrives, or an earlier paper is
     # told the account is out of room. A paper that has not started yet is `skipped`, which is
     # what tells the client it was never attempted (and never billed).
     if stopped or _registry.is_cancelled(job):
-        _set(job, index, "skipped", stop.last_error or None)
+        _set(job, index, "skipped", reason or None)
         return None
     _set(job, index, "reading")
     try:
@@ -399,6 +407,7 @@ def _read_one(job: ReaderJob, index: int, account: str, reader, stop: _PassStop)
             if not stop.stopped:
                 stop.stopped = True
                 stop.refusal = exc
+                stop.reason = reason
                 job.stopped_reason = reason
                 job.refusal = exc.refusal_payload()
             stop.last_error = reason
@@ -447,7 +456,8 @@ def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
     for index, result in enumerate(results):
         if isinstance(result, BaseException):
             reason = str(result)[:200] or type(result).__name__
-            stop.last_error = reason
+            with _registry.lock:
+                stop.last_error = reason
             _set(job, index, "error", reason)
             log.warning("reader worker failed for %s (chat=%s): %s",
                         job.targets[index]["slug"], job.id[:8], reason)
@@ -456,15 +466,17 @@ def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
         # The live list was appended in completion order; the record is the offer's order.
         job.briefs = [dict(b) for b in briefs]
     if not briefs:
-        if stop.refusal is not None:
+        with _registry.lock:
+            refusal, last_error = stop.refusal, stop.last_error
+        if refusal is not None:
             # The registry stamps the refusal centrally when a worker fails with it — the same
             # payload the HTTP admission would have answered.
-            raise stop.refusal
+            raise refusal
         if _registry.is_cancelled(job):
             return
         raise ReaderError(
             "None of the papers could be read"
-            + (f": {stop.last_error}" if stop.last_error else ".")
+            + (f": {last_error}" if last_error else ".")
         )
     # The briefs become a turn. Same locks as every route that records a user message. If the
     # reader sent a reply while the assistants read, its turn is generating now: recording into
