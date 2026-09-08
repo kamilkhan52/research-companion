@@ -73,7 +73,7 @@ test('a request-validation body reaches the reader as words, not pydantic JSON',
     }],
   }));
 
-  const error = await apiGet('/api/example').catch((e: unknown) => e as ApiError);
+  const error = (await apiGet('/api/example').catch((e: unknown) => e)) as ApiError;
   expect(error).toBeInstanceOf(ApiError);
   expect(error.message).toBe('List should have at most 8 items after validation, not 17.');
   // The three things that made it unreadable: the JSON scaffolding, the internal field path,
@@ -93,12 +93,29 @@ test('an unreadable validation body falls back to the status, still never JSON',
     message: 'Request failed (422)',
   });
 
-  // A dict-shaped detail (not FastAPI's, but nothing stops a handler returning one) is the
-  // same hazard and takes the same route out.
+  // A dict-shaped detail with nothing written in it takes the same route out.
   jest.spyOn(global, 'fetch').mockResolvedValueOnce(response(400, { detail: { why: 'nope' } }));
   await expect(apiGet('/api/example')).rejects.toMatchObject({
     status: 400,
     message: 'Request failed (400)',
+  });
+});
+
+test('a structured refusal keeps the sentence it was written with', async () => {
+  // `routers/notes.py` answers a cross-project duplicate with {code, message, matches}. The
+  // sentence is the point of the payload — reducing it to "Request failed (409)" would be the
+  // same defect as DR-155 in the other direction (Opus review of #507).
+  await setBaseUrl('https://api.example');
+  jest.spyOn(global, 'fetch').mockResolvedValueOnce(response(409, {
+    detail: {
+      code: 'paper_exists_elsewhere',
+      message: 'This paper already exists in another project.',
+      matches: [{ pid: 'other', title: 'H3' }],
+    },
+  }));
+  await expect(apiGet('/api/example')).rejects.toMatchObject({
+    status: 409,
+    message: 'This paper already exists in another project.',
   });
 });
 

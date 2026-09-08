@@ -42,8 +42,9 @@ const POLL_MS = 1500;
 const FETCH_POLL_MS = 2000;
 /** What a pass reads, and so also what may be auto-fetched, when the server has not said —
  *  an older backend, or a candidates payload from cache that predates `max_targets`. Mirrors
- *  `reader_jobs.MAX_TARGETS`. The live value travels with the candidates; this is the floor
- *  under it, never the authority. */
+ *  `reader_jobs.MAX_TARGETS`. The live value travels with the candidates and is what the offer
+ *  obeys; this constant is the fallback when it has not arrived, and the standing bound on
+ *  automatic fetches. */
 const DEFAULT_MAX_TARGETS = 8;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -136,7 +137,9 @@ export function useReaderBriefing({
   //: Auto-fetches run one after another rather than as a burst of paid hunts.
   const autoQueueRef = useRef<Promise<void>>(Promise.resolve());
   //: How many automatic fetches this conversation may still spend. A TOTAL, not a concurrency
-  //: limit — see the auto-fetch effect.
+  //: limit — see the auto-fetch effect. Deliberately NOT `maxTargets`: this is a spend bound on
+  //: paid retrievals, it is armed on a conversation change before the new candidates (and their
+  //: cap) have been read, and it must not rise because a server raised what a pass may read.
   const autoFetchBudgetRef = useRef(DEFAULT_MAX_TARGETS);
   const watchRef = useRef<string | null>(null);
   const aliveRef = useRef(true);
@@ -264,16 +267,23 @@ export function useReaderBriefing({
     const prev = prevSelectionBasis.current;
     if (prev && prev.slugKey === slugKey && prev.index === candidatesIndex) {
       const added = readable.filter((s) => !prev.readable.has(s));
-      if (added.length) {
-        setSelected((current) => {
-          const next = new Set(current);
-          for (const s of added) {
-            if (next.size >= maxTargets) break;
-            next.add(s);
-          }
-          return next;
-        });
-      }
+      setSelected((current) => {
+        // A cap that has SHRUNK (a server constant lowered between two candidate reads) must
+        // take the selection with it: the ADD branch alone would leave the card showing eight
+        // ticked while `start` sent three of them (Opus review of #507). Order is the offer's,
+        // so what survives is the top of the list the reader is looking at.
+        const kept = current.size > maxTargets
+          ? readable.filter((s) => current.has(s)).slice(0, maxTargets)
+          : [...current];
+        const next = new Set(kept);
+        for (const s of added) {
+          if (next.size >= maxTargets) break;
+          next.add(s);
+        }
+        return next.size === current.size && [...next].every((s) => current.has(s))
+          ? current
+          : next;
+      });
     } else {
       setSelected(new Set(readable.slice(0, maxTargets)));
     }

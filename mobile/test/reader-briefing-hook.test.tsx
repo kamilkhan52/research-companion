@@ -488,6 +488,22 @@ describe('the pass limit', () => {
     view.unmount();
   });
 
+  // Leave the module-level mock as the rest of the file expects to find it.
+  afterEach(() => { mockMaxTargets = undefined; });
+
+  test('a cap that shrinks takes the selection with it', async () => {
+    const view = mountOffer();
+    await waitFor(() => expect(view.result.current.selected.size).toBe(3));
+
+    mockMaxTargets = 2;
+    view.rerender(undefined as never);
+    await act(async () => undefined);
+    // Not "start quietly sends two of the three still ticked" — the card must agree with the
+    // request (Opus review of #507).
+    expect([...view.result.current.selected].sort()).toEqual(['p0', 'p1']);
+    view.unmount();
+  });
+
   test('start sends no more targets than the pass accepts', async () => {
     (startReaderJob as jest.Mock).mockResolvedValue({
       job: { id: 'reader-1', status: 'running', targets: [], finished_at: null },

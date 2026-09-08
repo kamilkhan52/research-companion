@@ -85,16 +85,21 @@ export function authenticatedMediaSource(path: string): {
 /**
  * What to show a reader for an error body's `detail`.
  *
- * Ours is always a string — every domain layer raises `HTTPException(detail="a sentence")`.
- * FastAPI's own request-validation failures are not: `detail` is a LIST of pydantic error
- * objects, and stringifying one put
- * `[{"type":"too_long","loc":["body","targets"],"msg":…,"input":[…17 slugs…]}]` on Kamil's
- * phone, under the buttons, in place of an answer to "is there a limit?" (DR-155).
+ * Almost always a string — the domain layers raise `HTTPException(detail="a sentence")`. Two
+ * shapes are not, and both used to be `JSON.stringify`d straight onto the screen:
  *
- * The `msg` fields are the only human part, so they are what survives. `input` is dropped on
- * purpose: it is the payload the app just sent — here a slug list, elsewhere the reader's own
- * prose — and it belongs in a log, not on a card. With no usable `msg` the generic status line
- * is still better than JSON.
+ *  * FastAPI's own request-validation failures, where `detail` is a LIST of pydantic error
+ *    objects. One of them put
+ *    `[{"type":"too_long","loc":["body","targets"],"msg":…,"input":[…17 slugs…]}]` on Kamil's
+ *    phone, under the buttons, in place of an answer to "is there a limit?" (DR-155).
+ *    The `msg` fields are the only human part, so they are what survives. `input` is dropped
+ *    on purpose: it is the payload the app just sent — a slug list here, the reader's own
+ *    prose elsewhere — and it belongs in a log, not on a card.
+ *  * our own structured refusals, which carry a human `message` beside their machine fields
+ *    (`routers/notes.py` answers a cross-project duplicate with `{code, message, matches}`).
+ *    That sentence is the whole point of the payload, so it is preferred over the status line.
+ *
+ * With nothing human in either, the generic status line is still better than JSON.
  */
 function describeDetail(value: unknown, status: number): string {
   if (typeof value === 'string') return value;
@@ -107,6 +112,11 @@ function describeDetail(value: unknown, status: number): string {
     const unique = [...new Set(messages)];
     if (unique.length) {
       return unique.map((msg) => (/[.!?]$/.test(msg) ? msg : `${msg}.`)).join(' ');
+    }
+  } else if (value && typeof value === 'object') {
+    const written = (value as { message?: unknown; detail?: unknown });
+    for (const candidate of [written.message, written.detail]) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
     }
   }
   return `Request failed (${status})`;
