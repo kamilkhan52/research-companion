@@ -18,8 +18,7 @@ import re
 import time
 import uuid
 
-from . import (assembler, config, figures, llm, model_provenance, prompts,
-               sessions, spend_ceiling)
+from . import assembler, config, figures, llm, model_provenance, prompts, sessions, spend_ceiling
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]

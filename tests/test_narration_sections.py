@@ -11,7 +11,6 @@ bounded, each section holds its own spend, and no failure mode returns half a na
 import contextlib
 
 import pytest
-
 from app import agent, quotas
 
 
