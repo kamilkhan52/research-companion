@@ -19,9 +19,10 @@ export function remainingFraction(plan: Pick<Plan, 'limit_nanousd' | 'spent_nano
   return Math.max(0, Math.min(1, (plan.limit_nanousd - plan.spent_nanousd) / plan.limit_nanousd));
 }
 
-/** A percentage that never rounds a real value to a false absolute. The server sends
- *  `spent_fraction` unrounded precisely so that any value strictly between empty and full renders
- *  as neither: a small real charge is "99%", not "100%", and a hair of allowance left is ">0%". */
+/** A percentage that never rounds a real value to a false absolute. The server sends its
+ *  fractions unrounded precisely so that any value strictly between empty and full renders as
+ *  neither: a month with a hair of allowance spent reads ">99%" remaining, not "100%", and one
+ *  with a hair left reads "<1%", not "0%". Those two states are the ones a reader acts on. */
 export function percentLabel(fraction: number): string {
   if (fraction <= 0) return '0%';
   if (fraction >= 1) return '100%';
@@ -29,6 +30,14 @@ export function percentLabel(fraction: number): string {
   if (percent < 1) return '<1%';
   if (percent > 99) return '>99%';
   return `${Math.round(percent)}%`;
+}
+
+/** The same value for `aria-valuenow`, which must not contradict the label beside it: a bar
+ *  announcing 100 while its label says ">99%" reports the month as untouched when it is not. */
+export function percentValue(fraction: number): number {
+  if (fraction <= 0) return 0;
+  if (fraction >= 1) return 100;
+  return Math.min(99, Math.max(1, Math.round(fraction * 100)));
 }
 
 /** `Resets 1 October`. Never a raw ISO string, and never "days left", which drifts across
@@ -127,7 +136,7 @@ function PlanBody({ plan }: { plan: Plan }) {
     <div
       className="plan-bar"
       role="progressbar"
-      aria-valuenow={Math.round(remaining * 100)}
+      aria-valuenow={percentValue(remaining)}
       aria-valuemin={0}
       aria-valuemax={100}
       // Held work is deliberately absent from this label as well as from the bar.

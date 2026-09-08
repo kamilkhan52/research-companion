@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PlanUsage, percentLabel, remainingFraction, resetLabel } from '@/components/Plan';
+import { PlanUsage, percentLabel, percentValue, remainingFraction, resetLabel } from '@/components/Plan';
 
 const api = vi.hoisted(() => ({ getPlan: vi.fn() }));
 vi.mock('@/api/endpoints', () => api);
@@ -71,6 +71,22 @@ describe('percentLabel', () => {
   });
 });
 
+describe('percentValue', () => {
+  it('never contradicts the label beside it', () => {
+    // A bar announcing 100 next to a label reading ">99%" reports an untouched month that is
+    // not untouched — the assistive-technology reading and the visible one must agree.
+    for (const fraction of [0, 0.0001, 0.004, 0.5, 0.995, 0.9999, 1]) {
+      const label = percentLabel(fraction);
+      const value = percentValue(fraction);
+      if (label === '0%') expect(value).toBe(0);
+      else if (label === '100%') expect(value).toBe(100);
+      else expect(value).toBeGreaterThanOrEqual(1);
+      if (label !== '100%') expect(value).toBeLessThan(100);
+      if (label !== '0%') expect(value).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('resetLabel', () => {
   it('names the UTC boundary day, not the local one', () => {
     // `period_ends` is the UTC start of the next month. Formatting it locally shows the day
@@ -103,6 +119,7 @@ describe('PlanUsage', () => {
 
     const bar = await screen.findByRole('progressbar');
     expect(bar).toHaveAttribute('aria-valuenow', '80');
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
     expect(bar.getAttribute('aria-label')).toBe("80% of this month's allowance remaining.");
   });
 
