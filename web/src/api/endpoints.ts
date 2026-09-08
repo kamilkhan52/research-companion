@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPost } from '@/api/client';
-import type { FavoriteModel, ModelOption, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
+import type { FavoriteModel, ModelOption, Paper, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
 import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
 import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
 
@@ -189,7 +189,32 @@ export function startDiscovery(pid: string, goals: string) {
 
 export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string, year?: number | null) {
   // year dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
-  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined, year: year ?? undefined });
+  return apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined, year: year ?? undefined });
+}
+
+/** One reading-list location a candidate already occupies, as returned inside the add's
+ *  `paper_exists_elsewhere` 409. Only the fields an add surface needs to name it are typed. */
+export interface PaperLocation {
+  slug: string;
+  title: string;
+  project_id: string;
+  project_name: string;
+  has_notes: boolean;
+  has_discussion: boolean;
+  retrieved: boolean;
+}
+
+/** The structured half of the cross-project duplicate refusal. */
+export interface PaperExistsElsewhere {
+  code: 'paper_exists_elsewhere';
+  message: string;
+  matches: PaperLocation[];
+}
+
+export function isPaperExistsElsewhere(detail: unknown): detail is PaperExistsElsewhere {
+  return !!detail && typeof detail === 'object'
+    && (detail as { code?: unknown }).code === 'paper_exists_elsewhere'
+    && Array.isArray((detail as { matches?: unknown }).matches);
 }
 
 export function removePaper(pid: string, slug: string) {

@@ -29,9 +29,17 @@ import { ApiError } from '@/api/client';
 import { useActivePid, useProjectDefaults } from '@/hooks/useLibrary';
 import { useAudio } from '@/audio/AudioProvider';
 import { RichMarkdown } from '@/components/RichMarkdown';
+import { parseKnownPaper } from '@/lib/paper-reference';
 import './Discussion.css';
 
-interface Props { slug: string; onNavigate: (hash: string) => void; }
+interface Props {
+  slug: string;
+  /** What the reader named when they added this paper — an arXiv id or a direct PDF link.
+   *  Prefills the fetch form, and starts the fetch itself when nothing has been tried yet, so
+   *  adding a known paper is one gesture rather than "add, then paste the same link again". */
+  source?: string;
+  onNavigate: (hash: string) => void;
+}
 type View = 'compose' | 'chat' | 'review' | 'start';
 interface WatchableJob { id: string; status: 'running' | 'done' | 'error'; }
 
@@ -105,7 +113,7 @@ function useJobWatcher<T extends WatchableJob>(
   return { job, missingVersion, start, accept, clear };
 }
 
-export function Discussion({ slug, onNavigate }: Props) {
+export function Discussion({ slug, source, onNavigate }: Props) {
   const [activePid] = useActivePid();
   const defaults = useProjectDefaults();
   const [view, setView] = useState<View>('compose');
@@ -221,6 +229,9 @@ export function Discussion({ slug, onNavigate }: Props) {
     setRetrievalError(null);
     setCandidates([]);
     setRelated(null);
+    const named = source ? parseKnownPaper(source) : null;
+    setArxivId(named?.arxivId ?? '');
+    setPdfUrl(named?.pdfUrl ?? '');
 
     const initialize = async () => {
       if (!activePid) return;
@@ -249,7 +260,15 @@ export function Discussion({ slug, onNavigate }: Props) {
         if (!session.paper.retrieved) {
           setView('start');
           const { job } = await getLatestRetrievalJob(activePid, slug);
-          if (!cancelled && job) retrievalWatch.accept(job);
+          if (cancelled) return;
+          if (job) { retrievalWatch.accept(job); return; }
+          // Nothing has been tried for this paper yet and the reader named a concrete source,
+          // so fetch it. Gated on there being no prior job: a fetch that already failed must
+          // surface its error and wait for a decision, not silently retry on every re-entry.
+          // The start is server-deduped by slug, so a repeated effect joins rather than doubles.
+          const concrete = named?.arxivId || named?.pdfUrl;
+          if (!concrete) return;
+          await beginRetrieval({ arxiv_id: named?.arxivId, pdf_url: named?.pdfUrl });
           return;
         }
         await loadDraft();
@@ -262,7 +281,7 @@ export function Discussion({ slug, onNavigate }: Props) {
   // watcher callbacks are stable for a pid; including the whole watcher objects would restart
   // initialization on every snapshot.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePid, slug, applySession, loadDraft, loadReview]);
+  }, [activePid, slug, source, applySession, loadDraft, loadReview]);
 
   useEffect(() => {
     const job = chatWatch.job;

@@ -97,3 +97,6 @@
   margin: 6px 0 0;
   line-height: 1.45;
 }
+
+/* DR-149: the pointer back to the Library's add-a-paper action. */
+.discovery-known p { margin: 0 0 var(--space-md); }

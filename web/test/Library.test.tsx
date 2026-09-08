@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Library } from '@/components/Library';
 import { LibraryProvider } from '@/hooks/useLibrary';
@@ -197,5 +197,70 @@ describe('Library', () => {
 
     await user.click(screen.getByText('Attention Is All You Need'));
     expect(onNavigate).toHaveBeenCalledWith('paper/attention-is-all-you-need');
+  });
+});
+
+describe('Library add-a-paper', () => {
+  const json = (body: unknown) => ({ ok: true, status: 200, json: () => Promise.resolve(body) } as Response);
+
+  /** Route by URL rather than call order: the Library also fetches recent sessions, and an
+   *  order-based mock silently hands one endpoint another's body when that timing shifts. */
+  function routedFetch(routes: { state?: unknown; addPaper?: () => Promise<Response> } = {}) {
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const url = String(input);
+      if (url.endsWith('/api/projects')) return Promise.resolve(json({ projects: mockProjects }));
+      if (url.includes('/state')) return Promise.resolve(json(routes.state ?? mockState));
+      if (url.includes('/recent-sessions')) return Promise.resolve(json({ sessions: [] }));
+      if (url.endsWith('/papers')) {
+        return routes.addPaper ? routes.addPaper() : Promise.resolve(json({ paper: { slug: 'added' } }));
+      }
+      return Promise.resolve(json({}));
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch as unknown as typeof globalThis.fetch);
+    return fetch;
+  }
+
+  it('opens the add sheet from the plus beside the active project', async () => {
+    routedFetch();
+    const user = userEvent.setup();
+    renderLibrary();
+
+    await user.click(await screen.findByLabelText('Add a paper'));
+    expect(screen.getByRole('dialog', { name: 'Add a paper' })).toBeInTheDocument();
+  });
+
+  it('opens the added paper, carrying what to fetch', async () => {
+    const fetch = routedFetch({ addPaper: () => Promise.resolve(json({ paper: { slug: 'llm-compiler' } })) });
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+    renderLibrary(onNavigate);
+
+    await user.click(await screen.findByLabelText('Add a paper'));
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'arxiv.org/abs/2405.17057');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('paper/llm-compiler?source=2405.17057'));
+    expect(screen.queryByRole('dialog', { name: 'Add a paper' })).not.toBeInTheDocument();
+    const addCall = fetch.mock.calls.find(([url]) => String(url).endsWith('/papers'));
+    expect(JSON.parse(String(addCall?.[1]?.body))).toEqual({
+      title: 'arXiv 2405.17057', arxiv_id: '2405.17057',
+    });
+  });
+
+  it('offers both ways in from an empty project', async () => {
+    routedFetch({ state: { ...mockState, papers: [] } });
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+    renderLibrary(onNavigate);
+
+    const empty = await screen.findByText('Start this project');
+    const actions = within(empty.parentElement as HTMLElement);
+    await user.click(actions.getByRole('button', { name: 'Add a paper' }));
+    expect(screen.getByRole('dialog', { name: 'Add a paper' })).toBeInTheDocument();
+
+    const sheet = within(screen.getByRole('dialog', { name: 'Add a paper' }));
+    await user.click(sheet.getByRole('button', { name: /explore with discover/i }));
+    expect(onNavigate).toHaveBeenCalledWith('discover');
   });
 });

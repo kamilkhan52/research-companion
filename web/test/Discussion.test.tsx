@@ -127,3 +127,75 @@ describe('Discussion job recovery', () => {
     await waitFor(() => expect(api.getRetrievalJob).toHaveBeenCalledWith('project-1', 'retrieval-1'));
   });
 });
+
+describe('Discussion source hand-off', () => {
+  const unretrieved = () => session('paper-a', 'Paper A', {
+    paper: { slug: 'paper-a', title: 'Paper A', retrieved: false, list_status: 'unread' },
+  });
+  const running = {
+    id: 'retrieval-1', slug: 'paper-a', status: 'running', phase: 'resolving', detail: '',
+    items: [], candidates: [], retrieved: false, error: null,
+  };
+
+  beforeEach(() => {
+    api.getSession.mockResolvedValue(unretrieved());
+    api.startRetrievalJob.mockResolvedValue({ job: running });
+    api.getRetrievalJob.mockResolvedValue({
+      job: { ...running, status: 'done', phase: 'done', retrieved: true },
+    });
+  });
+
+  it('fetches the arXiv id the reader named, without asking for it again', async () => {
+    render(<Discussion slug="paper-a" source="2309.06180" onNavigate={vi.fn()} />);
+
+    await waitFor(() => expect(api.startRetrievalJob).toHaveBeenCalledWith('project-1', 'paper-a', {
+      arxiv_id: '2309.06180', pdf_url: undefined,
+    }));
+  });
+
+  it('fetches a direct PDF link the same way', async () => {
+    render(<Discussion slug="paper-a" source="https://example.org/p.pdf" onNavigate={vi.fn()} />);
+
+    await waitFor(() => expect(api.startRetrievalJob).toHaveBeenCalledWith('project-1', 'paper-a', {
+      arxiv_id: undefined, pdf_url: 'https://example.org/p.pdf',
+    }));
+  });
+
+  it('leaves a failed fetch to the reader, with the source still in the form', async () => {
+    api.getLatestRetrievalJob.mockResolvedValue({
+      job: { ...running, status: 'error', phase: 'resolving', error: 'No PDF found for 2309.06180.' },
+    });
+
+    render(<Discussion slug="paper-a" source="2309.06180" onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('No PDF found for 2309.06180.')).toBeInTheDocument();
+    // The prefill is what makes "try again" one click rather than a re-paste.
+    expect(screen.getByDisplayValue('2309.06180')).toBeInTheDocument();
+    expect(api.startRetrievalJob).not.toHaveBeenCalled();
+  });
+
+  it('waits for the button when the route names no concrete source', async () => {
+    render(<Discussion slug="paper-a" source="Attention Is All You Need" onNavigate={vi.fn()} />);
+
+    await screen.findByRole('button', { name: 'Fetch paper' });
+    expect(api.startRetrievalJob).not.toHaveBeenCalled();
+  });
+
+  it('does not carry one paper\'s source into the next paper\'s fetch form', async () => {
+    api.getSession.mockImplementation((_pid: string, slug: string) => Promise.resolve(
+      session(slug, slug, { paper: { slug, title: slug, retrieved: false, list_status: 'unread' } }),
+    ));
+    // Keep both papers on the fetch screen: a resolved retrieval would move paper-a to compose
+    // and the assertion would pass for the wrong reason.
+    api.getRetrievalJob.mockResolvedValue({ job: running });
+
+    const { rerender } = render(<Discussion slug="paper-a" source="2309.06180" onNavigate={vi.fn()} />);
+    await screen.findByDisplayValue('2309.06180');
+
+    rerender(<Discussion slug="paper-b" onNavigate={vi.fn()} />);
+    // Wait for paper-b's own fetch screen. The component passes through a form-less view while
+    // it re-initializes, and asserting during that gap would pass however stale the field is.
+    await screen.findByRole('heading', { name: 'paper-b' });
+    expect(screen.queryByDisplayValue('2309.06180')).not.toBeInTheDocument();
+  });
+});

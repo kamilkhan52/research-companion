@@ -10,12 +10,16 @@ import { NowPlaying, Player } from '@/audio/AudioPlayer';
 import { AuthGate } from '@/components/AuthGate';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LibraryProvider } from '@/hooks/useLibrary';
+import { paperHash, splitRouteQuery } from '@/routes';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
 interface Route {
   view: View;
   param?: string;
+  /** `paper` only: the arXiv id or PDF link an add carried, so the reading screen can fetch
+   *  exactly what the reader named rather than asking for it again. */
+  source?: string;
 }
 
 function parseHash(): Route {
@@ -26,7 +30,10 @@ function parseHash(): Route {
   if (raw === 'player') return { view: 'player' };
   if (raw === 'settings') return { view: 'settings' };
   if (raw.startsWith('notes/')) return { view: 'notes', param: decodeRouteParam(raw.slice(6)) };
-  if (raw.startsWith('paper/')) return { view: 'paper', param: decodeRouteParam(raw.slice(6)) };
+  if (raw.startsWith('paper/')) {
+    const { path, query } = splitRouteQuery(raw.slice(6));
+    return { view: 'paper', param: decodeRouteParam(path), source: query.get('source') || undefined };
+  }
   return { view: 'library' };
 }
 
@@ -35,7 +42,8 @@ function decodeRouteParam(value: string): string {
 }
 
 function routeHash(route: Route): string {
-  if (route.view === 'paper' || route.view === 'notes') return `${route.view}/${encodeURIComponent(route.param ?? '')}`;
+  if (route.view === 'paper') return paperHash(route.param ?? '', route.source);
+  if (route.view === 'notes') return `notes/${encodeURIComponent(route.param ?? '')}`;
   return route.view === 'library' ? 'library' : route.view;
 }
 
@@ -139,7 +147,7 @@ function ViewRouter({
     case 'graph':
       return <Graph onNavigate={navigate} />;
     case 'paper':
-      return <Discussion slug={route.param ?? ''} onNavigate={navigate} />;
+      return <Discussion slug={route.param ?? ''} source={route.source} onNavigate={navigate} />;
     case 'discover':
       return <Discovery onNavigate={navigate} />;
     case 'notes':
