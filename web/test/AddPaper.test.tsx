@@ -465,5 +465,8 @@ describe('AddPaperSheet', () => {
     land({ job: { id: 'retrieval-1' } });
     await waitFor(() => expect(api.uploadPaper).toHaveBeenCalled());
     expect(props.onAdded).not.toHaveBeenCalled();
+    // The entry is created BEFORE the bytes are sent, so a reader who dismisses mid-upload is
+    // exactly who ends up with a paper the list does not show unless this fires.
+    expect(props.onListChanged).toHaveBeenCalled();
   });
 });
