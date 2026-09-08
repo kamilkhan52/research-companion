@@ -1,6 +1,6 @@
 import { apiDelete, apiForm, apiGet, apiPatch, apiPost } from '@/api/client';
 import type { FavoriteModel, ModelOption, Paper, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
-import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
+import type { GraphResponse, GraphBuildJob, GraphNode, GraphEdge } from '@/api/graph-types';
 import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
 
 export function listProjects(): Promise<{ projects: Project[] }> {
@@ -70,6 +70,31 @@ export function buildGraph(
     force,
     retrieval_sources: retrievalSources,
   });
+}
+
+/** The per-paper reference graph: the paper, what it references, and what on the reading list
+ *  cites it. A derived VIEW over the built graph — no LLM, no network — and already laid out
+ *  server-side (`layout.algo`), so the canvas renders these positions rather than simulating. */
+export interface PaperEgo {
+  center_id: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  references_count: number;
+  citers_count: number;
+  /** Works OUTSIDE the reading list that cite this paper, as a count — they are not nodes here.
+   *  `null` means no forward scan has run yet, which is different from a scan that found none. */
+  external_citer_count: number | null;
+  /** Either side was trimmed to the most significant; the counts above are the true totals. */
+  capped: boolean;
+  layout: { algo: string };
+}
+
+/** `ego` is null when the paper is not a built project node. That is a build/absent offer for
+ *  the client to render, never an error (DR-046); `build` says whether one is already running. */
+export function getPaperGraph(pid: string, slug: string) {
+  return apiGet<{ ego: PaperEgo | null; build: GraphBuildJob | null }>(
+    `${P(pid)}/graph/paper/${encodeURIComponent(slug)}`,
+  );
 }
 
 export function getGraphBuildStatus(pid: string): Promise<{ build: GraphBuildJob }> {

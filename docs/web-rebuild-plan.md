@@ -31,6 +31,7 @@ directly from `main`.
 | 10 | `opus/web-parity-overnight` | [#513](https://github.com/kamilkhan52/research-companion/pull/513) | Upload a PDF — DR-149's third entry path |
 | 11 | `opus/web-parity-overnight` | [#514](https://github.com/kamilkhan52/research-companion/pull/514) | Stop a Discover run; hide/unhide a recommendation |
 | 12 | `opus/web-parity-overnight` | [#515](https://github.com/kamilkhan52/research-companion/pull/515) | Plan & usage surface |
+| 13 | `opus/web-parity-overnight` | [#517](https://github.com/kamilkhan52/research-companion/pull/517) | Per-paper reference graph (DR-093 ego view) |
 
 ## Parity backlog (2026-09-08)
 
@@ -45,7 +46,6 @@ are the mobile client, so a web PR must never claim one.
 
 | Gap | Mobile has | Notes |
 |---|---|---|
-| Per-paper reference graph | `getPaperGraph` (DR-093) | The server lays the ego view out, and `web/src/graph/engine.ts` can render it as-is. Probably the best value-per-line left. |
 | Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | Needs header-authenticated image loading (blob URLs), which paper covers also need. |
 | Paper covers in the Library | `getPaperCover`, `paperCoverImageSource` | Same authenticated-media problem; do it with figures. |
 | Corpus neighbourhood line | `getNeighbourhood` (DR-052) | The shared Map/Discover freshness both screens show on mobile. |

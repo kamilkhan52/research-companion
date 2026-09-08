@@ -53,6 +53,17 @@ describe('App', () => {
     expect(screen.queryByLabelText('Back')).not.toBeInTheDocument();
   });
 
+  it('routes a paper-graph hash to the reference map, not to the library', async () => {
+    // `paper-graph/` and `paper/` share a prefix in the eye but not in the parser; a fall-through
+    // here would silently land the reader on the library with no sign anything went wrong.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
+    window.location.hash = '#paper-graph/attention';
+    render(<App />);
+
+    expect(await screen.findByText(/No reference map for this paper yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/loading library/i)).not.toBeInTheDocument();
+  });
+
   it('shows settings gear icon', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);

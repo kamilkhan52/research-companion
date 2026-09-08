@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { Library } from '@/components/Library';
 import { Graph } from '@/components/Graph';
 import { Discussion } from '@/components/Discussion';
+import { PaperGraph } from '@/components/PaperGraph';
 import { Discovery } from '@/components/Discovery';
 import { Notes } from '@/components/Notes';
 import { Settings } from '@/components/Settings';
@@ -12,7 +13,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { LibraryProvider } from '@/hooks/useLibrary';
 import { paperHash, splitRouteQuery } from '@/routes';
 
-type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
+type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper' | 'paper-graph';
 
 interface Route {
   view: View;
@@ -30,6 +31,9 @@ function parseHash(): Route {
   if (raw === 'player') return { view: 'player' };
   if (raw === 'settings') return { view: 'settings' };
   if (raw.startsWith('notes/')) return { view: 'notes', param: decodeRouteParam(raw.slice(6)) };
+  // Before `paper/`: `startsWith('paper/')` would never match this, but a future reader adding
+  // another `paper`-prefixed route should see the specific one tested first.
+  if (raw.startsWith('paper-graph/')) return { view: 'paper-graph', param: decodeRouteParam(raw.slice(12)) };
   if (raw.startsWith('paper/')) {
     const { path, query } = splitRouteQuery(raw.slice(6));
     return { view: 'paper', param: decodeRouteParam(path), source: query.get('source') || undefined };
@@ -44,6 +48,7 @@ function decodeRouteParam(value: string): string {
 function routeHash(route: Route): string {
   if (route.view === 'paper') return paperHash(route.param ?? '', route.source);
   if (route.view === 'notes') return `notes/${encodeURIComponent(route.param ?? '')}`;
+  if (route.view === 'paper-graph') return `paper-graph/${encodeURIComponent(route.param ?? '')}`;
   return route.view === 'library' ? 'library' : route.view;
 }
 
@@ -150,6 +155,8 @@ function ViewRouter({
       return <Graph onNavigate={navigate} />;
     case 'paper':
       return <Discussion slug={route.param ?? ''} source={route.source} onNavigate={navigate} />;
+    case 'paper-graph':
+      return <PaperGraph slug={route.param ?? ''} onNavigate={navigate} />;
     case 'discover':
       return <Discovery onNavigate={navigate} />;
     case 'notes':
