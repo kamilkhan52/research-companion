@@ -19,6 +19,15 @@ That is exactly the shape here, with the app's standing rules applied:
   current paper — under `spend_ceiling.per_unit`, so a reader who can afford two of four papers
   gets two rather than a refusal, and the registry holds no ticket of its own (`reserves=False`,
   the `lab_research` shape). Per-paper status is what the client shows.
+* **The assistants read CONCURRENTLY** (DR-150). Kamil: "When running multiple agents, please
+  run them in parallel. I think that makes sense since the agents should have the information
+  they need at the initialization." He is right that nothing in a pass is ordered — `_account`
+  is built once before any assistant starts, every one of them gets that same account, and none
+  reads another's brief — so the sequential loop was charging the reader the SUM of eight model
+  reads for work that has no sequence in it. See `_run` for the three things concurrency had to
+  keep: a budget refusal that stops the pass instead of becoming one refusal per paper, a Stop
+  that still takes effect for papers not yet started, and briefs handed to the analyst in the
+  order the offer listed them rather than the order they happened to finish.
 * **The briefs become context by becoming a turn**: when the assistants finish, the job appends
   a hidden user record (`sessions.record_briefing`) carrying the framed briefs and the
   briefing instruction, then chains the ordinary chat turn on it — the analyst revises its
@@ -48,7 +57,7 @@ from . import (
     spend_ceiling,
     store,
 )
-from .jobs import Job, JobRegistry, new_id
+from .jobs import Job, JobRegistry, new_id, run_parallel
 from .models import IN_DISCUSSION
 
 log = logging_config.get("reader")
@@ -65,6 +74,14 @@ MAX_TARGET_TEXT_CHARS = 160_000
 MAX_ACCOUNT_CHARS = 24_000
 MAX_BRIEF_CHARS = 12_000
 MAX_TARGETS = 8
+
+#: How many assistants read at once (DR-150). Bounded rather than "all of them": each read
+#: carries up to `MAX_TARGET_TEXT_CHARS` to the provider, so a pass of eight would open eight
+#: simultaneous large requests; and the bound is also what limits how many papers can be in
+#: flight — and therefore already paid for — at the moment a budget refusal arrives. Four turns
+#: the worst case Kamil can reach from two full rounds of reading into two, which is the whole
+#: of what he asked for.
+READER_CONCURRENCY = 4
 
 # Fixed independently of the account's Analysis model. The reservation below is $0.08 for one
 # paper and must remain a real ceiling even if an operator selects an expensive model in Settings.
@@ -144,8 +161,9 @@ def latest_for(slug: str, thread_id: str | None = None) -> ReaderJob | None:
 
 
 def request_cancel(job_id: str) -> dict | None:
-    """Stop after the paper currently being read; nothing already briefed is lost, but a pass
-    that produced no brief chains no turn."""
+    """Stop after the papers currently being read; nothing already briefed is lost, but a pass
+    that produced no brief chains no turn. A thread cannot be killed, and the reads in flight
+    are already paid for, so what Stop ends is the papers no assistant has picked up yet."""
     if _registry.cancel(job_id) is None:
         return None
     return snapshot(job_id)
@@ -321,64 +339,132 @@ def _set(job: ReaderJob, index: int, status: str, error: str | None = None) -> N
     with _registry.lock:
         job.targets[index]["status"] = status
         job.targets[index]["error"] = error
-        job.current = job.targets[index]["slug"] if status == "reading" else None
+        # Derived, not "the row I just touched" (DR-150): several assistants read at once, so
+        # one of them finishing would otherwise blank `current` while three others are still
+        # going. The first row still reading is the honest answer to "what is happening now".
+        job.current = next(
+            (row["slug"] for row in job.targets if row["status"] == "reading"), None)
+
+
+@dataclass
+class _PassStop:
+    """What the assistants of one pass have to agree about, guarded by `_registry.lock`.
+
+    A budget refusal is a fact about the ACCOUNT, not about the paper that happened to hit it:
+    once one assistant is told there is no room, the papers nobody has started yet must be left
+    `skipped` under that one reason rather than each buying its own refusal. Papers already in
+    flight are a different matter — their hold was granted, so their work is paid for and is
+    kept (see `_read_one`).
+    """
+
+    stopped: bool = False
+    refusal: Exception | None = None
+    last_error: str = ""
+
+
+def _read_one(job: ReaderJob, index: int, account: str, reader, stop: _PassStop) -> dict | None:
+    """One assistant, one paper. Returns its brief, or None with the row's status already set.
+
+    Never raises: a pass is a set of independent readings, and one that ends the fan-out would
+    discard the others' paid work. Everything a caller needs afterwards is on the job rows and
+    on `stop`.
+    """
+    row = job.targets[index]
+    with _registry.lock:
+        stopped = stop.stopped
+    # Both doors are checked HERE rather than before the fan-out, because with several readers
+    # in flight the answer changes while the pass runs: Stop arrives, or an earlier paper is
+    # told the account is out of room. A paper that has not started yet is `skipped`, which is
+    # what tells the client it was never attempted (and never billed).
+    if stopped or _registry.is_cancelled(job):
+        _set(job, index, "skipped", stop.last_error or None)
+        return None
+    _set(job, index, "reading")
+    try:
+        # Per paper, not per pass (see the module docstring): the account is checked against
+        # what the NEXT paper costs, and a pass a reader can partly afford is partly done.
+        # Concurrent holds are safe by the ledger's own design — `quotas.reserve` locks the
+        # account row `for update`, so simultaneous assistants cannot both spend the last of
+        # the month, and the reservation key carries a uuid so two never collide.
+        with spend_ceiling.per_unit("paper_read", job.id, model=READER_MODEL):
+            text = reader(row["slug"], account, job.slug)
+    except quotas.QuotaError as exc:
+        # Out of budget, or the ledger is unreachable (fails closed by design). Close the pass
+        # for everyone who has not started: this is a fact about the account, so the papers left
+        # are `skipped` under ONE reason and ONE refusal payload (DR-049) rather than each
+        # buying its own. Whoever gets here first sets it; a second refusal racing in the same
+        # wave records the same outcome and does not overwrite it.
+        reason = str(exc)[:200]
+        with _registry.lock:
+            if not stop.stopped:
+                stop.stopped = True
+                stop.refusal = exc
+                job.stopped_reason = reason
+                job.refusal = exc.refusal_payload()
+            stop.last_error = reason
+        _set(job, index, "skipped", reason)
+        log.info("reader pass stopped at %s: %s", row["slug"], reason)
+        return None
+    except Exception as exc:  # noqa: BLE001 — one paper's failure must not end the pass
+        reason = str(exc)[:200] or type(exc).__name__
+        with _registry.lock:
+            stop.last_error = reason
+        _set(job, index, "error", reason)
+        log.warning("reader failed for %s (chat=%s): %s", row["slug"], job.id[:8], reason)
+        return None
+    text = (text or "").strip()
+    if not text:
+        with _registry.lock:
+            stop.last_error = "empty brief"
+        _set(job, index, "error", "The model returned an empty brief.")
+        return None
+    if len(text) > MAX_BRIEF_CHARS:
+        text = text[:MAX_BRIEF_CHARS].rstrip() + "\n\n[...truncated...]"
+    brief = {"slug": row["slug"], "title": row["title"], "text": text}
+    with _registry.lock:
+        # Appended as it lands, so the client sees briefs arrive during the pass; the ORDER the
+        # analyst is given is fixed below, once every assistant is done.
+        job.briefs.append(dict(brief))
+    _set(job, index, "done")
+    return brief
 
 
 def _run(job: ReaderJob, account: str, reader, turn_runner) -> None:
-    briefs: list[dict] = []
-    last_error = ""
-    refusal: Exception | None = None
-    for index in range(len(job.targets)):
-        if _registry.is_cancelled(job):
-            break
-        row = job.targets[index]
-        _set(job, index, "reading")
-        try:
-            # Per paper, not per pass (see the module docstring): the account is checked against
-            # what the NEXT paper costs, and a pass a reader can partly afford is partly done.
-            with spend_ceiling.per_unit("paper_read", job.id, model=READER_MODEL):
-                text = reader(row["slug"], account, job.slug)
-        except quotas.QuotaError as exc:
-            # Out of budget, or the ledger is unreachable (fails closed by design). Stop rather
-            # than refusing each remaining paper in turn; leave them `skipped` so the client can
-            # say which were never attempted, and carry the structured refusal (DR-049).
-            last_error = str(exc)[:200]
-            refusal = exc
-            _set(job, index, "skipped", last_error)
-            with _registry.lock:
-                job.stopped_reason = last_error
-                job.refusal = exc.refusal_payload()
-                for later in job.targets[index + 1:]:
-                    later["status"] = "skipped"
-            log.info("reader pass stopped at %s: %s", row["slug"], last_error)
-            break
-        except Exception as exc:  # noqa: BLE001 — one paper's failure must not end the pass
-            last_error = str(exc)[:200] or type(exc).__name__
-            _set(job, index, "error", last_error)
-            log.warning("reader failed for %s (chat=%s): %s", row["slug"], job.id[:8], last_error)
-            continue
-        text = (text or "").strip()
-        if not text:
-            _set(job, index, "error", "The model returned an empty brief.")
-            last_error = "empty brief"
-            continue
-        if len(text) > MAX_BRIEF_CHARS:
-            text = text[:MAX_BRIEF_CHARS].rstrip() + "\n\n[...truncated...]"
-        brief = {"slug": row["slug"], "title": row["title"], "text": text}
-        briefs.append(brief)
-        with _registry.lock:
-            job.briefs.append(dict(brief))
-        _set(job, index, "done")
+    stop = _PassStop()
+    # `run_parallel` is the sanctioned fan-out (`jobs.py`): it rebinds the active project and
+    # user on every pool thread — invariant 2, which a bare ThreadPoolExecutor would silently
+    # break — carries this job's reservation into them so the reads are metered against it, and
+    # returns results in the ORDER GIVEN. That last property is why the briefs the analyst reads
+    # are still in the order the offer listed the papers, whatever order they finished in.
+    results = run_parallel(
+        list(range(len(job.targets))),
+        lambda index: _read_one(job, index, account, reader, stop),
+        max_workers=READER_CONCURRENCY,
+        thread_name_prefix="reader",
+    )
+    # `_read_one` does not raise, so an exception here is a defect rather than a paper's own
+    # failure — but a row left mid-flight would poll as "reading" forever, so it is closed.
+    for index, result in enumerate(results):
+        if isinstance(result, BaseException):
+            reason = str(result)[:200] or type(result).__name__
+            stop.last_error = reason
+            _set(job, index, "error", reason)
+            log.warning("reader worker failed for %s (chat=%s): %s",
+                        job.targets[index]["slug"], job.id[:8], reason)
+    briefs = [r for r in results if isinstance(r, dict)]
+    with _registry.lock:
+        # The live list was appended in completion order; the record is the offer's order.
+        job.briefs = [dict(b) for b in briefs]
     if not briefs:
-        if refusal is not None:
+        if stop.refusal is not None:
             # The registry stamps the refusal centrally when a worker fails with it — the same
             # payload the HTTP admission would have answered.
-            raise refusal
+            raise stop.refusal
         if _registry.is_cancelled(job):
             return
         raise ReaderError(
             "None of the papers could be read"
-            + (f": {last_error}" if last_error else ".")
+            + (f": {stop.last_error}" if stop.last_error else ".")
         )
     # The briefs become a turn. Same locks as every route that records a user message. If the
     # reader sent a reply while the assistants read, its turn is generating now: recording into
