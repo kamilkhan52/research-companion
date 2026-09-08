@@ -158,7 +158,7 @@ import {
   narrationBoundaryKey,
   startNarrationLanding,
 } from '@/lib/narrationDiscussionScroll';
-import { createSeekDetector } from '@/lib/seekGesture';
+import { createSeekDetector, type SeekDetector } from '@/lib/seekGesture';
 import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
@@ -2086,7 +2086,9 @@ function DiscussionThread({
   // seeking a different part". `seekGesture` holds that judgement; this only reports frames to
   // it. DR-089's `away` tracking already receives every scroll event, so both ride along rather
   // than adding a second listener.
-  const seek = useRef(createSeekDetector()).current;
+  const seekRef = useRef<SeekDetector | null>(null);
+  if (!seekRef.current) seekRef.current = createSeekDetector();
+  const seek = seekRef.current;
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
       const y = event?.contentOffset?.y ?? event?.nativeEvent?.contentOffset?.y;
@@ -2818,7 +2820,10 @@ function DiscussionThread({
           followPausedUntil.current = Date.now() + 4000;
           narrationLandingCancel.current?.();
           chatNav.onScrollBeginDrag();
-          // DR-151 — the only door into the rail's wake path. A gesture measures from here.
+          // DR-151 — the only door into the rail's wake path. The origin is the last offset
+          // `onListScroll` recorded, which reaches JS on reanimated's scheduler while this
+          // arrives on RN's event queue, so it can lag a frame. That moves the threshold by
+          // a frame's travel, never the open/closed state — which is the part that matters.
           seek.beginDrag(listOffset.current);
         },
         onScrollEndDrag: () => seek.endDrag(),

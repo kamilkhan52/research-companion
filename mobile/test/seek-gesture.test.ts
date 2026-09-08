@@ -3,6 +3,7 @@
 import {
   createSeekDetector,
   FLING_GRACE_MS,
+  GESTURE_IDLE_MS,
   SEEK_FALLBACK_PX,
   SEEK_VIEWPORT_FRACTION,
 } from '@/lib/seekGesture';
@@ -89,4 +90,53 @@ test('with no viewport height in the event it falls back to a fixed distance', (
   const zero = createSeekDetector();
   zero.beginDrag(0);
   expect(zero.scroll(SEEK_FALLBACK_PX - 1, 0)).toBe(false);
+});
+
+test('a fling cancelled by a tap does not leave the window open for the app to use', () => {
+  // Android cancels a fling on touch-down without emitting a momentum end, and a tap that
+  // never becomes a drag emits no begin-drag either. Nothing would close the window, so the
+  // next scroll the APP made would wake the rail — the exact thing this module prevents
+  // (Opus review of #508).
+  let clock = 1000;
+  const seek = createSeekDetector(() => clock);
+  seek.beginDrag(0);
+  seek.endDrag();
+  clock += 16;
+  seek.momentumBegin();
+  clock += 16;
+  expect(seek.scroll(100, VIEWPORT)).toBe(false); // still under the threshold when tapped
+  // …the reader taps to stop it. No further frames; no momentumEnd ever arrives.
+  clock += GESTURE_IDLE_MS + 1;
+  expect(seek.scroll(SEEK * 4, VIEWPORT)).toBe(false);
+  // And it stays shut however long the app goes on scrolling itself.
+  clock += 10_000;
+  expect(seek.scroll(SEEK * 8, VIEWPORT)).toBe(false);
+});
+
+test('a finger held still mid-drag has not ended its gesture', () => {
+  // The idle expiry must not apply while a finger is down: a pause is a pause, and a reader
+  // who stops, thinks, then keeps dragging is still on one journey.
+  let clock = 1000;
+  const seek = createSeekDetector(() => clock);
+  seek.beginDrag(0);
+  expect(seek.scroll(100, VIEWPORT)).toBe(false);
+  clock += GESTURE_IDLE_MS * 5;
+  expect(seek.scroll(SEEK, VIEWPORT)).toBe(true);
+});
+
+test('momentum that keeps arriving is one continuous gesture', () => {
+  // The expiry closes a gesture that STOPPED, never one that is still travelling: frames
+  // arrive about every 16 ms while anything really moves.
+  let clock = 1000;
+  const seek = createSeekDetector(() => clock);
+  seek.beginDrag(0);
+  seek.endDrag();
+  clock += 16;
+  seek.momentumBegin();
+  let woke = false;
+  for (let y = 0; y <= SEEK; y += 20) {
+    clock += 16;
+    woke = seek.scroll(y, VIEWPORT) || woke;
+  }
+  expect(woke).toBe(true);
 });

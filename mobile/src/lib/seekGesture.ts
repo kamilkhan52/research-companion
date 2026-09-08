@@ -26,6 +26,14 @@ export const SEEK_VIEWPORT_FRACTION = 0.5;
 export const SEEK_FALLBACK_PX = 320;
 /** How soon after a finger lifts its momentum must begin to count as thrown by it. */
 export const FLING_GRACE_MS = 250;
+/** A gesture no finger is holding is over once its frames stop arriving. Android cancels a
+ *  fling on touch-down WITHOUT emitting a momentum end (`ReactScrollView.cancelPostTouchScrolling`),
+ *  and a tap that never becomes a drag emits no begin-drag either — so without this the window
+ *  would stay open with a stale origin, and the next scroll the APP made would wake the rail:
+ *  the one thing this module exists to prevent (Opus review of #508). Frames arrive every ~16 ms
+ *  while anything is really moving, so this only ever closes a gesture that has stopped. It is
+ *  not applied while a finger is down, where a pause is just a pause. */
+export const GESTURE_IDLE_MS = 400;
 
 export interface SeekDetector {
   /** A finger touched the transcript at this offset. */
@@ -42,21 +50,30 @@ export interface SeekDetector {
 export function createSeekDetector(now: () => number = Date.now): SeekDetector {
   //: Is a gesture the reader started still travelling?
   let open = false;
+  //: Is a finger down? While it is, a pause is just a pause and the window never expires.
+  let dragging = false;
   //: Where that gesture began. Distance is measured from here, not frame to frame.
   let origin = 0;
   //: One wake per gesture — the rail's own idle countdown decides when it settles again.
   let signalled = false;
   let liftedAt = 0;
+  //: When this gesture was last seen moving. See `GESTURE_IDLE_MS`.
+  let movedAt = 0;
 
   return {
     beginDrag(offset: number) {
       open = true;
+      dragging = true;
       origin = offset;
       signalled = false;
       liftedAt = 0;
+      movedAt = now();
     },
     scroll(offset: number, viewportHeight?: number): boolean {
-      if (!open || signalled) return false;
+      if (open && !dragging && now() - movedAt > GESTURE_IDLE_MS) open = false;
+      if (!open) return false;
+      movedAt = now();
+      if (signalled) return false;
       const threshold = viewportHeight && viewportHeight > 0
         ? viewportHeight * SEEK_VIEWPORT_FRACTION
         : SEEK_FALLBACK_PX;
@@ -66,15 +83,20 @@ export function createSeekDetector(now: () => number = Date.now): SeekDetector {
     },
     endDrag() {
       open = false;
+      dragging = false;
       liftedAt = now();
     },
     momentumBegin() {
       // `liftedAt` is zero unless a finger has lifted since the last gesture began, so
       // programmatic momentum finds the window shut.
-      if (liftedAt && now() - liftedAt <= FLING_GRACE_MS) open = true;
+      if (liftedAt && now() - liftedAt <= FLING_GRACE_MS) {
+        open = true;
+        movedAt = now();
+      }
     },
     momentumEnd() {
       open = false;
+      dragging = false;
       liftedAt = 0;
     },
   };
