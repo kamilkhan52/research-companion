@@ -71,6 +71,11 @@ export function Library({ onNavigate }: Props) {
   const visiblePapers = filter === 'all' ? papers : papers.filter((paper) => bucket(paper) === filter);
   const continueSession = recent.find((session) => session.kind === 'paper' && session.state !== 'committed');
 
+  function leaveAddSheet() {
+    setShowAdd(false);
+    refetch();
+  }
+
   async function confirmRemove(paper: Paper) {
     if (!activePid || !window.confirm(`Remove “${paper.title}” from this project? Its notes will be kept and marked as removed.`)) return;
     setRemoving(paper.slug); setActionError(null);
@@ -154,15 +159,16 @@ export function Library({ onNavigate }: Props) {
       {showAdd && (
         <AddPaperSheet
           pid={activePid}
-          // Refetch on every close, not only on the hand-off: an add that landed after the
-          // reader dismissed the sheet is still on the reading list and has to show up.
-          onClose={() => { setShowAdd(false); refetch(); }}
+          // EVERY exit refetches, not only the hand-off. An add that landed after the reader
+          // left is on the reading list, and nothing else reloads it — the provider refetches
+          // on a project change, never on a view change. A stale list would let Discover offer
+          // to add the same paper again and then answer its own duplicate refusal.
+          onClose={leaveAddSheet}
           onAdded={(slug, source) => {
-            setShowAdd(false);
-            refetch();
+            leaveAddSheet();
             onNavigate(paperHash(slug, source));
           }}
-          onExplore={() => { setShowAdd(false); onNavigate('discover'); }}
+          onExplore={() => { leaveAddSheet(); onNavigate('discover'); }}
         />
       )}
 

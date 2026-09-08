@@ -266,4 +266,21 @@ describe('Library add-a-paper', () => {
     await user.click(sheet.getByRole('button', { name: /explore with discover/i }));
     expect(onNavigate).toHaveBeenCalledWith('discover');
   });
+
+  it('refreshes the list on the way out to Discover, not only on the hand-off', async () => {
+    // An add can land after the reader has left for Discover. Nothing else reloads the list,
+    // so Discover would offer to add a paper that is already on it.
+    const fetch = routedFetch();
+    const user = userEvent.setup();
+    renderLibrary();
+
+    await user.click(await screen.findByLabelText('Add a paper'));
+    const reads = fetch.mock.calls.filter(([url]) => String(url).includes('/state')).length;
+    await user.click(within(screen.getByRole('dialog', { name: 'Add a paper' }))
+      .getByRole('button', { name: /explore with discover/i }));
+
+    await waitFor(() => expect(
+      fetch.mock.calls.filter(([url]) => String(url).includes('/state')).length,
+    ).toBeGreaterThan(reads));
+  });
 });
