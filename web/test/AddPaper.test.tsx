@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AddPaperSheet } from '@/components/AddPaper';
-import { addPaperDraftKey, parseKnownPaper } from '@/lib/paper-reference';
+import { addPaperDraftKey, parseKnownPaper, shouldSuggestCanonicalTitle } from '@/lib/paper-reference';
 import { ApiError } from '@/api/client';
 
 const api = vi.hoisted(() => ({
@@ -61,6 +61,30 @@ describe('parseKnownPaper', () => {
 
   it('does not mistake a year-like number inside a title for an arXiv id', () => {
     expect(parseKnownPaper('Scaling laws 2020 revisited').arxivId).toBeUndefined();
+  });
+});
+
+describe('shouldSuggestCanonicalTitle', () => {
+  const placeholder = { title: 'arXiv 2405.17057' };
+
+  it('offers a source title that differs from the placeholder the add recorded', () => {
+    expect(shouldSuggestCanonicalTitle(placeholder, 'The LLM Compiler')).toBe(true);
+  });
+
+  it('stays quiet once a person has ruled either way', () => {
+    expect(shouldSuggestCanonicalTitle({ ...placeholder, title_confirmed: true }, 'The LLM Compiler')).toBe(false);
+  });
+
+  it('does not treat case, punctuation or spacing as a difference', () => {
+    const paper = { title: 'Attention Is All You Need' };
+    expect(shouldSuggestCanonicalTitle(paper, 'ATTENTION IS ALL YOU NEED')).toBe(false);
+    expect(shouldSuggestCanonicalTitle(paper, 'Attention is all you   need.')).toBe(false);
+  });
+
+  it('says nothing when there is no paper or no source title', () => {
+    expect(shouldSuggestCanonicalTitle(null, 'The LLM Compiler')).toBe(false);
+    expect(shouldSuggestCanonicalTitle(placeholder, null)).toBe(false);
+    expect(shouldSuggestCanonicalTitle(placeholder, '')).toBe(false);
   });
 });
 
@@ -170,6 +194,48 @@ describe('AddPaperSheet', () => {
     await user.type(field, '{Enter}');
 
     expect(api.addPaper).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a refusal as soon as the text it was about changes', async () => {
+    const user = userEvent.setup();
+    api.addPaper.mockRejectedValue(new ApiError(409, 'This paper already exists in another project.', {
+      code: 'paper_exists_elsewhere',
+      message: 'This paper already exists in another project.',
+      matches: [{
+        slug: 'attention', title: 'Attention Is All You Need', project_id: 'other',
+        project_name: 'Transformers', has_notes: true, has_discussion: true, retrieved: true,
+      }],
+    }));
+    renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByRole('alert');
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), ' something else');
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/in Transformers/)).not.toBeInTheDocument();
+  });
+
+  it('refuses to dismiss an add that is still in flight', async () => {
+    const user = userEvent.setup();
+    api.addPaper.mockReturnValue(new Promise(() => {}));
+    const { props } = renderSheet();
+
+    await user.type(screen.getByLabelText(/paper title, doi, or arxiv link/i), 'Attention{Enter}');
+    await screen.findByRole('button', { name: 'Adding…' });
+
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByLabelText('Close'));
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it('closes on a click outside the sheet', async () => {
+    const user = userEvent.setup();
+    const { props, container } = renderSheet();
+    await user.click(container.querySelector('.add-paper-overlay') as HTMLElement);
+    expect(props.onClose).toHaveBeenCalled();
   });
 
   it('closes on Escape', async () => {

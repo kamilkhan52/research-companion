@@ -242,6 +242,9 @@ describe('Library add-a-paper', () => {
 
     await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('paper/llm-compiler?source=2405.17057'));
     expect(screen.queryByRole('dialog', { name: 'Add a paper' })).not.toBeInTheDocument();
+    // The list has to be refetched, or coming back from the paper shows a library without it.
+    const stateReads = fetch.mock.calls.filter(([url]) => String(url).includes('/state')).length;
+    expect(stateReads).toBeGreaterThan(1);
     const addCall = fetch.mock.calls.find(([url]) => String(url).endsWith('/papers'));
     expect(JSON.parse(String(addCall?.[1]?.body))).toEqual({
       title: 'arXiv 2405.17057', arxiv_id: '2405.17057',

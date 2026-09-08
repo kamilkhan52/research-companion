@@ -21,26 +21,47 @@ function authHeaders(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+/** Turn a FastAPI `detail` into one human sentence. Mirrors the mobile client's reader of the
+ *  same field (DR-155), which this deliberately keeps in step, because the two shapes that are
+ *  not plain strings both reach a person:
+ *
+ *  * a 422 validation detail, a LIST of `{loc, msg, type, input}`. The `msg` fields are the
+ *    only human part, so they are what survives. `input` is dropped on purpose — it is the
+ *    payload the app just sent, which belongs in a log rather than on screen.
+ *  * our own structured refusals, which carry a human `message` beside their machine fields
+ *    (`routers/notes.py` answers a cross-project duplicate with `{code, message, matches}`).
+ *
+ *  With nothing human in either, the generic status line still beats raw JSON.
+ */
+function describeDetail(value: unknown, status: number): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { msg?: unknown }).msg : null))
+      .filter((msg): msg is string => typeof msg === 'string' && msg.trim().length > 0)
+      .map((msg) => msg.trim());
+    const unique = [...new Set(messages)];
+    if (unique.length) return unique.map((msg) => (/[.!?]$/.test(msg) ? msg : `${msg}.`)).join(' ');
+  } else if (value && typeof value === 'object') {
+    const written = value as { message?: unknown; detail?: unknown };
+    for (const candidate of [written.message, written.detail]) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
+  }
+  return `Request failed (${status})`;
+}
+
 async function parseError(res: Response): Promise<never> {
   if (res.status === 401) {
     localStorage.removeItem('rc_token');
     window.dispatchEvent(new Event('rc:auth-required'));
   }
-  let message = `Request failed (${res.status})`;
   let detail: unknown;
   try {
     const body = await res.json();
-    if (body?.detail) {
-      detail = body.detail;
-      const carried = (body.detail as { message?: unknown }).message;
-      // Prefer the payload's own sentence over stringified JSON: a structured detail is still
-      // rendered by every generic `error.message` surface in the app.
-      if (typeof body.detail === 'string') message = body.detail;
-      else if (typeof carried === 'string' && carried) message = carried;
-      else message = JSON.stringify(body.detail);
-    }
+    if (body?.detail) detail = body.detail;
   } catch { /* non-JSON body */ }
-  throw new ApiError(res.status, message, detail);
+  throw new ApiError(res.status, describeDetail(detail, res.status), detail);
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
@@ -61,6 +82,16 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(BASE_URL + path, { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) throw await parseError(res);
+  return res.json() as Promise<T>;
+}
+
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(BASE_URL + path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   if (!res.ok) throw await parseError(res);
   return res.json() as Promise<T>;
 }

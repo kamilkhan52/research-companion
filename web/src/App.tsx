@@ -59,7 +59,9 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (route.view !== 'settings') lastContentRoute.current = route;
+    // Remember where to come back to, but not the one-shot source: by the time Settings closes
+    // the reading screen has already consumed it, and re-adding it would re-arm its fetch.
+    if (route.view !== 'settings') lastContentRoute.current = { ...route, source: undefined };
   }, [route]);
 
   const navigate = useCallback((hash: string) => {

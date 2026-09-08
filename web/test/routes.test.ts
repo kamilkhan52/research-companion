@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { paperHash, splitRouteQuery } from '@/routes';
+import { forgetRouteSource, paperHash, splitRouteQuery } from '@/routes';
 
 describe('paperHash', () => {
   it('omits the query when there is nothing to fetch', () => {
@@ -28,5 +28,19 @@ describe('splitRouteQuery', () => {
     const { path, query } = splitRouteQuery('some-slug');
     expect(path).toBe('some-slug');
     expect(query.get('source')).toBeNull();
+  });
+});
+
+describe('forgetRouteSource', () => {
+  it('strips a consumed source without navigating away from the paper', () => {
+    window.location.hash = paperHash('llm-compiler', '2405.17057');
+    forgetRouteSource('llm-compiler');
+    expect(window.location.hash).toBe('#paper/llm-compiler');
+  });
+
+  it('leaves a route that carries no source alone', () => {
+    window.location.hash = 'paper/llm-compiler';
+    forgetRouteSource('llm-compiler');
+    expect(window.location.hash).toBe('#paper/llm-compiler');
   });
 });

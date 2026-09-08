@@ -2,7 +2,7 @@
 // project, not at the bottom of a long Discover result list. This sheet keeps the entry paths
 // together: a known identifier or link, and an intentional jump into exploratory Discover.
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { addPaper, isPaperExistsElsewhere, type PaperLocation } from '@/api/endpoints';
 import { addPaperDraftKey, parseKnownPaper } from '@/lib/paper-reference';
@@ -25,14 +25,23 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
+  // Dismissal is refused while the add is in flight. Closing would not cancel the request, and
+  // whichever way it landed the reader would be misled: a success jumps them into a paper they
+  // just dismissed, and a failure has nowhere left to report itself.
+  const dismiss = useCallback(() => { if (!adding) onClose(); }, [adding, onClose]);
+
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [dismiss]);
 
   function updateText(value: string) {
     setText(value);
+    // A refusal is about the text that produced it. Editing makes it stale, and a duplicate
+    // list left under a different title reads as if it described the new one.
+    setError(null);
+    setElsewhere(null);
     if (value) localStorage.setItem(draftKey, value); else localStorage.removeItem(draftKey);
   }
 
@@ -62,11 +71,11 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
 
   return (
     <div className="add-paper-overlay" role="presentation"
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      onClick={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
       <section className="add-paper-sheet" role="dialog" aria-modal="true" aria-label="Add a paper">
         <div className="add-paper-head">
           <h2>Add a paper</h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
+          <button className="icon-btn" onClick={dismiss} disabled={adding} aria-label="Close">✕</button>
         </div>
         <p className="muted add-paper-hint">Paste a title, DOI, arXiv id or link, or a direct PDF link.</p>
         <div className="add-paper-row">

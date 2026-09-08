@@ -21,6 +21,7 @@ import {
   setSessionMode,
   startJob,
   startRetrievalJob,
+  updatePaper,
 } from '@/api/endpoints';
 import type { ChatJob, RelatedWork, RetrievalJob } from '@/api/endpoints';
 import type { FavoriteModel, ReadingMode, SessionState } from '@/api/types';
@@ -29,7 +30,8 @@ import { ApiError } from '@/api/client';
 import { useActivePid, useProjectDefaults } from '@/hooks/useLibrary';
 import { useAudio } from '@/audio/AudioProvider';
 import { RichMarkdown } from '@/components/RichMarkdown';
-import { parseKnownPaper } from '@/lib/paper-reference';
+import { parseKnownPaper, shouldSuggestCanonicalTitle } from '@/lib/paper-reference';
+import { forgetRouteSource } from '@/routes';
 import './Discussion.css';
 
 interface Props {
@@ -138,12 +140,17 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   const [candidates, setCandidates] = useState<RetrievalJob['candidates']>([]);
   const [arxivId, setArxivId] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
+  const [suggestedTitle, setSuggestedTitle] = useState<string | null>(null);
+  const [decidingTitle, setDecidingTitle] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   const { playText } = useAudio();
   // Update during render rather than waiting for an effect: an A request that resolves during
   // B's render must never write A's transcript/review/draft into B's screen.
   const routeRef = useRef({ pid: activePid, slug });
   routeRef.current = { pid: activePid, slug };
+  // The title decision needs the paper as the server last described it, read from a retrieval
+  // callback that must not re-run every time the title changes.
+  const paperRef = useRef<{ title: string; title_confirmed?: boolean } | null>(null);
 
   const chatWatch = useJobWatcher<ChatJob>(activePid, getChatJob);
   const retrievalWatch = useJobWatcher<RetrievalJob>(activePid, getRetrievalJob);
@@ -186,6 +193,9 @@ export function Discussion({ slug, source, onNavigate }: Props) {
 
   const applySession = useCallback((session: Session) => {
     setPaperTitle(session.paper.title);
+    // A ruling settles the offer for good; keep it from reappearing on the next refresh.
+    if (session.paper.title_confirmed) setSuggestedTitle(null);
+    paperRef.current = session.paper;
     setPaperYear(session.paper.year ?? null);
     setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
     setSessionState(session.state as SessionState);
@@ -229,9 +239,14 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     setRetrievalError(null);
     setCandidates([]);
     setRelated(null);
+    setSuggestedTitle(null);
+    paperRef.current = null;
     const named = source ? parseKnownPaper(source) : null;
     setArxivId(named?.arxivId ?? '');
     setPdfUrl(named?.pdfUrl ?? '');
+    // Read once. Everything below has the value it needs; leaving it in the URL would re-arm
+    // the automatic fetch on every reload of this tab.
+    if (named) forgetRouteSource(slug);
 
     const initialize = async () => {
       if (!activePid) return;
@@ -314,6 +329,8 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     } else if (job.candidates.length > 0) {
       setCandidates(job.candidates);
     } else if (job.retrieved) {
+      const found = job.matched_title?.trim() || null;
+      if (shouldSuggestCanonicalTitle(paperRef.current, found)) setSuggestedTitle(found);
       void loadDraft().catch((caught) => {
         setRetrievalError(caught instanceof Error ? caught.message : String(caught));
       });
@@ -342,6 +359,26 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     } catch (caught) {
       setWorking(false);
       setRetrievalError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  // The server never renames a paper on its own; adding by identifier alone therefore leaves a
+  // placeholder ("arXiv 2405.17057") standing in until a person rules. Either answer is a
+  // ruling, so the offer is made once.
+  async function decideTitle(useSuggested: boolean) {
+    const pid = activePid;
+    if (!pid || !suggestedTitle || decidingTitle) return;
+    setDecidingTitle(true);
+    try {
+      await updatePaper(pid, slug, useSuggested ? suggestedTitle : undefined, true);
+      setSuggestedTitle(null);
+      // The reading-list entry moved; the opening draft was built from the old title.
+      await fetchCanonicalSession();
+      await loadDraft();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setDecidingTitle(false);
     }
   }
 
@@ -484,7 +521,22 @@ export function Discussion({ slug, source, onNavigate }: Props) {
 
   if (view === 'compose' && draft) {
     return (
-      <div className="discussion"><div className="compose-panel">
+      <div className="discussion">
+        {suggestedTitle && (
+          <section className="title-offer" aria-label="Use the source title?">
+            <h4>Use the source title?</h4>
+            <p className="muted">You added</p>
+            <p className="title-offer-current">{paperTitle}</p>
+            <p className="muted">The source reports</p>
+            <p className="title-offer-found">{suggestedTitle}</p>
+            <p className="muted title-offer-note">Updating the title keeps the same paper identity, notes, and discussion.</p>
+            <div className="title-offer-actions">
+              <button className="btn primary" onClick={() => void decideTitle(true)} disabled={decidingTitle}>Use this title</button>
+              <button className="btn ghost" onClick={() => void decideTitle(false)} disabled={decidingTitle}>Keep mine</button>
+            </div>
+          </section>
+        )}
+        <div className="compose-panel">
         <h3>{draft.title ? `Start — ${draft.title}` : 'Start reading'}</h3>
         <p className="muted">Choose how the analyst should meet you, then edit the opening prompt if needed.</p>
         <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
@@ -494,7 +546,8 @@ export function Discussion({ slug, source, onNavigate }: Props) {
           setView('chat');
           void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, mode: readingMode, ...delivery }));
         }} disabled={working}>Generate paper summary</button></div>
-      </div></div>
+        </div>
+      </div>
     );
   }
 

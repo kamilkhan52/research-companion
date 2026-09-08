@@ -322,3 +322,32 @@
   outline: none;
   border-color: rgba(52, 231, 224, 0.5);
 }
+
+/* ---- source-title offer ---- */
+
+.title-offer {
+  background: linear-gradient(180deg, var(--panel), #0e111b);
+  border: 1px solid var(--line2);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.title-offer h4 {
+  margin: 0 0 10px;
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.title-offer p { margin: 0 0 2px; font-size: 13px; }
+.title-offer .muted { font-size: 12px; }
+.title-offer-current { margin-bottom: 10px !important; }
+.title-offer-found { font-family: var(--font-display); font-size: 15px; margin-bottom: 10px !important; }
+.title-offer-note { margin-top: 8px !important; }
+
+.title-offer-actions {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-top: var(--space-md);
+}

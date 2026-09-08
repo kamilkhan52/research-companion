@@ -32,11 +32,37 @@ describe('parseError', () => {
     expect((caught as ApiError).detail).toEqual(detail);
   });
 
-  it('falls back to JSON for a structured detail with no sentence', async () => {
-    // FastAPI's 422 validation detail is a list; there is nothing better to show than itself.
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(422, { detail: [{ loc: ['body', 'title'], msg: 'field required' }] }));
-    const caught: unknown = await apiPost('/api/x').catch((e: unknown) => e);
-    expect((caught as ApiError).message).toContain('field required');
+  it('reduces a 422 validation list to its messages, and keeps the payload out of the message', async () => {
+    // DR-155: `input` echoes what the app just sent — a slug list here, the reader's own prose
+    // elsewhere — and belongs in a log, not on screen.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(422, {
+      detail: [
+        { loc: ['body', 'title'], msg: 'Field required', type: 'missing', input: { secret: 'draft' } },
+        { loc: ['body', 'slug'], msg: 'Field required', type: 'missing', input: { secret: 'draft' } },
+        { loc: ['body', 'year'], msg: 'Input should be a valid integer', type: 'int_type' },
+      ],
+    }));
+
+    const caught = await apiPost('/api/x').catch((e: unknown) => e) as ApiError;
+    // Repeats collapse; each message is punctuated so they read as prose together.
+    expect(caught.message).toBe('Field required. Input should be a valid integer.');
+    expect(caught.message).not.toContain('secret');
+    expect(caught.message).not.toContain('loc');
+  });
+
+  it('falls back to the status line when a structured detail says nothing human', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(500, { detail: { code: 'oops', trace: [1, 2] } }));
+    const caught = await apiPost('/api/x').catch((e: unknown) => e) as ApiError;
+    expect(caught.message).toBe('Request failed (500)');
+    expect(caught.detail).toEqual({ code: 'oops', trace: [1, 2] });
+  });
+
+  it('never renders JSON at the reader, whatever the detail shape', async () => {
+    for (const detail of [[{ loc: ['body'] }], { code: 'x' }, [1, 2, 3], { message: 42 }]) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(400, { detail }));
+      const caught = await apiPost('/api/x').catch((e: unknown) => e) as ApiError;
+      expect(caught.message).toBe('Request failed (400)');
+    }
   });
 
   it('reports the status when the body is not JSON at all', async () => {

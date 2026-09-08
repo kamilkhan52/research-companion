@@ -368,7 +368,11 @@
   line-height: 1;
 }
 
+/* `.btn-row` carries no styles of its own anywhere in this app, so the row has to lay itself
+   out or the two pills render flush against each other. */
 .lc-empty-actions {
+  display: flex;
+  gap: var(--space-sm);
   justify-content: center;
   flex-wrap: wrap;
 }

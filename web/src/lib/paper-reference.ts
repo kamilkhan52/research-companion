@@ -30,8 +30,28 @@ export function parseKnownPaper(value: string): {
   return { title: text, source: null };
 }
 
-/** The draft key matches the field's old home at the bottom of Discover, so an unfinished
- *  title or link follows the control to the Library instead of disappearing in the move. */
+/** Named for the field's old home at the bottom of Discover, so the key stays the same one
+ *  mobile persists this draft under. (Web's removed Discover field kept no draft of its own —
+ *  there is nothing to migrate here; this is a new persistence, matching the mobile control.) */
 export function addPaperDraftKey(pid: string): string {
   return `rc.draft.v1:${pid}:discover:specific-paper`;
+}
+
+/** Compare titles the way a reader would: case, punctuation and spacing are not a difference. */
+function comparableTitle(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+/** Should we offer the source's title for this paper? Adding by arXiv id or link records a
+ *  placeholder (`arXiv 2405.17057`) because nothing knows the real title yet; retrieval then
+ *  learns it. The rename is the reader's call — the server never renames on its own — so the
+ *  offer is made once, until they rule either way. */
+export function shouldSuggestCanonicalTitle(
+  paper: { title: string; title_confirmed?: boolean } | null,
+  found: string | null | undefined,
+): found is string {
+  return !!paper
+    && !paper.title_confirmed
+    && !!found
+    && comparableTitle(found) !== comparableTitle(paper.title);
 }
