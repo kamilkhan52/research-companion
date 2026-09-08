@@ -11,8 +11,13 @@
 // The iPhone behaviour it echoes is the scroll indicator: present while you are moving, out
 // of the way while you are reading. It DIMS rather than disappearing — a control that vanishes
 // completely can only be recalled by scrolling, and not scrolling is the entire point of this
-// feature. At rest it is a faint outline over the prose; touching it or moving the thread
+// feature. At rest it is a faint outline over the prose; touching it, or a deliberate seek,
 // brings it back to full strength.
+//
+// DR-151 — what brings it back is no longer "moving the thread". Waking on every scroll frame
+// meant narration follow held it at full strength over the prose for the length of a track,
+// which is what Kamil was looking at when he asked for it to be quieter. `wake()` is now
+// called only for a press or a seek (see `lib/seekGesture`), and rest is fainter than it was.
 //
 // `elevatedGlass` (not `elevated`) is the fill: this pill sits permanently over running text,
 // so the transcript stays visible through it in every palette.
@@ -26,8 +31,10 @@ import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
 import { Icon } from '@/ui';
 
-/** Resting strength: legible enough to aim at, faint enough to read through. */
-export const RAIL_RESTING_OPACITY = 0.3;
+/** Resting strength: legible enough to aim at, faint enough to read through. Lowered from 0.3
+ *  for DR-151 — this is the state the rail is now in almost all of the time, since the app's
+ *  own scrolling no longer lifts it out of it. One constant if Kamil wants it quieter still. */
+export const RAIL_RESTING_OPACITY = 0.2;
 /** Quiet time before the rail settles back. Long enough to survive a pause between two
  *  presses, short enough that it is not sitting at full strength over a page of prose. */
 export const RAIL_IDLE_MS = 2400;

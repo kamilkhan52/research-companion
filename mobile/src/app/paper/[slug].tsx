@@ -158,6 +158,7 @@ import {
   narrationBoundaryKey,
   startNarrationLanding,
 } from '@/lib/narrationDiscussionScroll';
+import { createSeekDetector } from '@/lib/seekGesture';
 import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
@@ -2079,9 +2080,13 @@ function DiscussionThread({
   }
   const viewability = viewabilityRef.current;
 
-  // The rail behaves like the iOS scroll indicator: any movement of the thread brings it back
-  // to full strength. DR-089's `away` tracking already receives every scroll event, so this
-  // rides along rather than adding a second listener.
+  // DR-151 — the rail wakes for a SEEK, not for movement. It used to wake here unconditionally,
+  // so narration follow, the streaming pin and every navigator landing held it at full strength
+  // over the prose: "don't activate it on auto scroll… only when we know the user is actually
+  // seeking a different part". `seekGesture` holds that judgement; this only reports frames to
+  // it. DR-089's `away` tracking already receives every scroll event, so both ride along rather
+  // than adding a second listener.
+  const seek = useRef(createSeekDetector()).current;
   const onListScroll = useCallback(
     (event: Parameters<typeof readerPin.onScroll>[0]) => {
       const y = event?.contentOffset?.y ?? event?.nativeEvent?.contentOffset?.y;
@@ -2090,9 +2095,11 @@ function DiscussionThread({
       // DR-115 — the navigator only records the offset, to tell a landing that clamped at the
       // live edge from one that did not. Same event shape as DR-089's.
       chatNav.onScroll(event);
-      railRef.current?.wake();
+      const height = event?.layoutMeasurement?.height
+        ?? event?.nativeEvent?.layoutMeasurement?.height;
+      if (typeof y === 'number' && seek.scroll(y, height)) railRef.current?.wake();
     },
-    [chatNav.onScroll, readerPin.onScroll],
+    [chatNav.onScroll, readerPin.onScroll, seek],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -2811,7 +2818,14 @@ function DiscussionThread({
           followPausedUntil.current = Date.now() + 4000;
           narrationLandingCancel.current?.();
           chatNav.onScrollBeginDrag();
+          // DR-151 — the only door into the rail's wake path. A gesture measures from here.
+          seek.beginDrag(listOffset.current);
         },
+        onScrollEndDrag: () => seek.endDrag(),
+        // A flick does most of its travelling after the finger has gone, so the gesture is not
+        // over until its momentum is.
+        onMomentumScrollBegin: () => seek.momentumBegin(),
+        onMomentumScrollEnd: () => seek.momentumEnd(),
         // DR-115 — `scrollToIndex` can only land on a row this list has measured, and it
         // deliberately renders a tiny window (see initialNumToRender below).
         onScrollToIndexFailed: chatNav.onScrollToIndexFailed,

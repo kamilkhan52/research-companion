@@ -27,9 +27,16 @@ import { createContext, useCallback, useContext, useState } from 'react';
  *  "following" and the reveal runs; beyond it they are reading history and it holds. */
 export const PIN_FOLLOW_THRESHOLD = 200;
 
+/** Either shape the list can hand us: reanimated's flattened payload on the JS thread, or a
+ *  plain RN synthetic event. `layoutMeasurement` is the viewport, which DR-151 measures a seek
+ *  against; it is optional because neither shape guarantees it. */
 type ScrollLikeEvent = {
   contentOffset?: { y?: number };
-  nativeEvent?: { contentOffset?: { y?: number } };
+  layoutMeasurement?: { height?: number };
+  nativeEvent?: {
+    contentOffset?: { y?: number };
+    layoutMeasurement?: { height?: number };
+  };
 };
 
 /** True while the streamed reveal should hold still (reader away from the live edge during

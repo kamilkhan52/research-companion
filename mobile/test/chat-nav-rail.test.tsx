@@ -81,9 +81,10 @@ test('settles back to a see-through resting state after a quiet moment', () => {
 
 test('the resting state is see-through, not invisible', () => {
   // Vanishing entirely would only be recallable by scrolling — and not scrolling is the whole
-  // point of this rail.
+  // point of this rail. DR-151 made rest quieter, not absent: it is now the state the rail is
+  // in almost all the time, since the app's own scrolling no longer lifts it out of it.
   expect(RAIL_RESTING_OPACITY).toBeGreaterThan(0);
-  expect(RAIL_RESTING_OPACITY).toBeLessThan(1);
+  expect(RAIL_RESTING_OPACITY).toBeLessThanOrEqual(0.2);
 });
 
 test('waking brings it back to full strength and restarts the countdown', () => {
