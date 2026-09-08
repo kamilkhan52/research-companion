@@ -267,10 +267,39 @@ describe('Discussion source-title offer', () => {
     ));
   });
 
+  it('asks again on re-entry when the reader left without answering', async () => {
+    // The paper is already fetched, so nothing raises the offer from a live retrieval; without
+    // the re-entry read, the placeholder the add recorded would stand for good.
+    api.getSession.mockResolvedValue(session('arxiv-2405-17057', 'arXiv 2405.17057', {
+      paper: paper({ retrieved: true }),
+    }));
+    api.getLatestRetrievalJob.mockResolvedValue({ job: retrieved });
+
+    render(<Discussion slug="arxiv-2405-17057" onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('Use the source title?')).toBeInTheDocument();
+    expect(api.startRetrievalJob).not.toHaveBeenCalled();
+  });
+
+  it('asks during a discussion that was started before the title was settled', async () => {
+    api.getSession.mockResolvedValue(session('arxiv-2405-17057', 'arXiv 2405.17057', {
+      paper: paper({ retrieved: true }),
+      state: 'in_discussion',
+      transcript: [{ role: 'user', text: 'Question' }, { role: 'assistant', canonical: 'Answer.' }],
+    }));
+    api.getLatestRetrievalJob.mockResolvedValue({ job: retrieved });
+
+    render(<Discussion slug="arxiv-2405-17057" onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('Use the source title?')).toBeInTheDocument();
+  });
+
   it('does not re-offer a title a person already ruled on', async () => {
     api.getSession.mockResolvedValue(session('arxiv-2405-17057', 'arXiv 2405.17057', {
       paper: paper({ title_confirmed: true }),
     }));
+
+    api.getLatestRetrievalJob.mockResolvedValue({ job: retrieved });
 
     render(<Discussion slug="arxiv-2405-17057" source="2405.17057" onNavigate={vi.fn()} />);
 

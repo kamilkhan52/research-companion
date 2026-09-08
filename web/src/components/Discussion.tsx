@@ -142,6 +142,9 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   const [pdfUrl, setPdfUrl] = useState('');
   const [suggestedTitle, setSuggestedTitle] = useState<string | null>(null);
   const [decidingTitle, setDecidingTitle] = useState(false);
+  // The title as the server last described it. State rather than a ref because re-entry has to
+  // re-ask; `paperRef` stays for the retrieval effect, which must not re-run on a rename.
+  const [titleState, setTitleState] = useState<{ title: string; confirmed: boolean } | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const { playText } = useAudio();
   // Update during render rather than waiting for an effect: an A request that resolves during
@@ -196,6 +199,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     // A ruling settles the offer for good; keep it from reappearing on the next refresh.
     if (session.paper.title_confirmed) setSuggestedTitle(null);
     paperRef.current = session.paper;
+    setTitleState({ title: session.paper.title, confirmed: !!session.paper.title_confirmed });
     setPaperYear(session.paper.year ?? null);
     setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
     setSessionState(session.state as SessionState);
@@ -241,6 +245,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
     setRelated(null);
     setSuggestedTitle(null);
     paperRef.current = null;
+    setTitleState(null);
     const named = source ? parseKnownPaper(source) : null;
     setArxivId(named?.arxivId ?? '');
     setPdfUrl(named?.pdfUrl ?? '');
@@ -336,6 +341,22 @@ export function Discussion({ slug, source, onNavigate }: Props) {
       });
     }
   }, [loadDraft, retrievalWatch.job]);
+
+  // Re-entry. The effect above raises the offer the moment a fetch resolves, but a reader who
+  // leaves the paper before answering would never be asked again — and the placeholder the add
+  // recorded would stand in the reading list, the map and the notes for good.
+  useEffect(() => {
+    const pid = activePid;
+    if (!pid || !titleState || titleState.confirmed || suggestedTitle) return;
+    let cancelled = false;
+    void getLatestRetrievalJob(pid, slug).then(({ job }) => {
+      if (cancelled || routeRef.current.pid !== pid || routeRef.current.slug !== slug) return;
+      const found = job?.retrieved ? job.matched_title?.trim() || null : null;
+      const paper = { title: titleState.title, title_confirmed: titleState.confirmed };
+      if (shouldSuggestCanonicalTitle(paper, found)) setSuggestedTitle(found);
+    }).catch(() => { /* the offer is optional; a failed snapshot must not break the screen */ });
+    return () => { cancelled = true; };
+  }, [activePid, slug, suggestedTitle, titleState]);
 
   useEffect(() => {
     if (retrievalWatch.missingVersion === 0 || !activePid) return;
@@ -460,6 +481,20 @@ export function Discussion({ slug, source, onNavigate }: Props) {
 
   const lastIsUser = turns.length > 0 && turns[turns.length - 1]?.role === 'user';
   const delivery = { delivery_mode: deliveryMode, model: model || null } as const;
+  const titleOffer = suggestedTitle ? (
+    <section className="title-offer" aria-label="Use the source title?">
+      <h4>Use the source title?</h4>
+      <p className="muted">You added</p>
+      <p className="title-offer-current">{paperTitle}</p>
+      <p className="muted">The source reports</p>
+      <p className="title-offer-found">{suggestedTitle}</p>
+      <p className="muted title-offer-note">Updating the title keeps the same paper identity, notes, and discussion.</p>
+      <div className="title-offer-actions">
+        <button className="btn primary" onClick={() => void decideTitle(true)} disabled={decidingTitle}>Use this title</button>
+        <button className="btn ghost" onClick={() => void decideTitle(false)} disabled={decidingTitle}>Keep mine</button>
+      </div>
+    </section>
+  ) : null;
 
   if (view === 'start') {
     const retrievalRunning = retrievalWatch.job?.status === 'running';
@@ -522,20 +557,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
   if (view === 'compose' && draft) {
     return (
       <div className="discussion">
-        {suggestedTitle && (
-          <section className="title-offer" aria-label="Use the source title?">
-            <h4>Use the source title?</h4>
-            <p className="muted">You added</p>
-            <p className="title-offer-current">{paperTitle}</p>
-            <p className="muted">The source reports</p>
-            <p className="title-offer-found">{suggestedTitle}</p>
-            <p className="muted title-offer-note">Updating the title keeps the same paper identity, notes, and discussion.</p>
-            <div className="title-offer-actions">
-              <button className="btn primary" onClick={() => void decideTitle(true)} disabled={decidingTitle}>Use this title</button>
-              <button className="btn ghost" onClick={() => void decideTitle(false)} disabled={decidingTitle}>Keep mine</button>
-            </div>
-          </section>
-        )}
+        {titleOffer}
         <div className="compose-panel">
         <h3>{draft.title ? `Start — ${draft.title}` : 'Start reading'}</h3>
         <p className="muted">Choose how the analyst should meet you, then edit the opening prompt if needed.</p>
@@ -560,6 +582,7 @@ export function Discussion({ slug, source, onNavigate }: Props) {
         <button className="btn ghost" onClick={() => void showRelated()}>Related works</button>
       </header>
       {related && <RelatedPanel related={related} onNavigate={onNavigate} onClose={() => setRelated(null)} />}
+      {titleOffer}
       {sessionState === 'committed' && <div className="discussion-state-banner"><span>This reading is complete.</span><button className="btn primary" onClick={() => void handleContinueCommitted()}>Continue discussion</button></div>}
       <div className="chat-scroll" ref={chatRef}>
         {turns.length === 0 && !working
