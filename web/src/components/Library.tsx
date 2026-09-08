@@ -3,6 +3,7 @@ import { createProject, getRecentSessions, removePaper } from '@/api/endpoints';
 import type { Paper, RecentSession } from '@/api/types';
 import { useLibrary } from '@/hooks/useLibrary';
 import { AddPaperSheet } from '@/components/AddPaper';
+import { PaperCover } from '@/components/PaperCover';
 import { paperHash } from '@/routes';
 import './Library.css';
 
@@ -230,6 +231,7 @@ export function Library({ onNavigate }: Props) {
       ) : visiblePapers.length === 0 ? <p className="lc-empty muted">No papers match this filter.</p> : <div className="paper-list">
         {visiblePapers.map((paper) => <article key={paper.slug} className="paper-card">
           <button className="paper-open" onClick={() => onNavigate(`paper/${encodeURIComponent(paper.slug)}`)}>
+            <PaperCover pid={activePid} slug={paper.slug} title={paper.title} />
             <div className="paper-card-body"><div className="paper-card-meta"><StatusBadge paper={paper} />{paper.year ? <span className="muted paper-year">{paper.year}</span> : null}</div><div className="paper-card-title">{paper.title}</div></div>
             <span className="paper-action">{bucket(paper) === 'done' ? 'Open' : bucket(paper) === 'toread' ? 'Read' : 'Resume'} ›</span>
           </button>

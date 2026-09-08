@@ -498,3 +498,16 @@
   gap: var(--space-sm);
   align-items: flex-start;
 }
+
+/* The cover reserves no space and is removed entirely when there is none, so a library does not
+   rearrange itself as thumbnails arrive. */
+.paper-cover {
+  flex: none;
+  width: 44px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+  align-self: center;
+}

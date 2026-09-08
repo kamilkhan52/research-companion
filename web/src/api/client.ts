@@ -104,3 +104,13 @@ export async function apiForm<T>(path: string, body: FormData): Promise<T> {
   if (!res.ok) throw await parseError(res);
   return res.json() as Promise<T>;
 }
+
+/** Fetch a byte payload behind auth. `<img src>` cannot carry an Authorization header, so
+ *  anything the app must authenticate to read has to come through here and be handed to the DOM
+ *  as an object URL — which the CALLER owns and must revoke, or every image leaks for the life
+ *  of the page. `useAuthenticatedImage` does that bookkeeping; prefer it to calling this. */
+export async function apiBlob(path: string): Promise<Blob> {
+  const res = await fetch(BASE_URL + path, { headers: authHeaders() });
+  if (!res.ok) throw await parseError(res);
+  return res.blob();
+}
