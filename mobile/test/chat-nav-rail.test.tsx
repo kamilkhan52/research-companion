@@ -86,6 +86,13 @@ test('the resting state is see-through, not invisible', () => {
   expect(RAIL_RESTING_OPACITY).toBeLessThan(1);
 });
 
+test('rest is quiet enough to read through, since it is now where the rail lives', () => {
+  // DR-151 — the app's own scrolling no longer lifts the rail out of rest, so this is the
+  // state it is in almost all the time and it has to be readable through. A retune Kamil asks
+  // for is welcome; drifting back towards the old 0.3 by accident is not.
+  expect(RAIL_RESTING_OPACITY).toBeLessThanOrEqual(0.22);
+});
+
 test('waking brings it back to full strength and restarts the countdown', () => {
   const { ref } = setup();
   act(() => void jest.advanceTimersByTime(RAIL_IDLE_MS + 1));
