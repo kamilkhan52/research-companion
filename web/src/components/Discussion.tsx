@@ -21,6 +21,7 @@ import {
   setSessionMode,
   startJob,
   startRetrievalJob,
+  updatePaper,
 } from '@/api/endpoints';
 import type { ChatJob, RelatedWork, RetrievalJob } from '@/api/endpoints';
 import type { FavoriteModel, ReadingMode, SessionState } from '@/api/types';
@@ -29,9 +30,18 @@ import { ApiError } from '@/api/client';
 import { useActivePid, useProjectDefaults } from '@/hooks/useLibrary';
 import { useAudio } from '@/audio/AudioProvider';
 import { RichMarkdown } from '@/components/RichMarkdown';
+import { parseKnownPaper, shouldSuggestCanonicalTitle } from '@/lib/paper-reference';
+import { forgetRouteSource } from '@/routes';
 import './Discussion.css';
 
-interface Props { slug: string; onNavigate: (hash: string) => void; }
+interface Props {
+  slug: string;
+  /** What the reader named when they added this paper — an arXiv id or a direct PDF link.
+   *  Prefills the fetch form, and starts the fetch itself when nothing has been tried yet, so
+   *  adding a known paper is one gesture rather than "add, then paste the same link again". */
+  source?: string;
+  onNavigate: (hash: string) => void;
+}
 type View = 'compose' | 'chat' | 'review' | 'start';
 interface WatchableJob { id: string; status: 'running' | 'done' | 'error'; }
 
@@ -105,7 +115,7 @@ function useJobWatcher<T extends WatchableJob>(
   return { job, missingVersion, start, accept, clear };
 }
 
-export function Discussion({ slug, onNavigate }: Props) {
+export function Discussion({ slug, source, onNavigate }: Props) {
   const [activePid] = useActivePid();
   const defaults = useProjectDefaults();
   const [view, setView] = useState<View>('compose');
@@ -130,12 +140,30 @@ export function Discussion({ slug, onNavigate }: Props) {
   const [candidates, setCandidates] = useState<RetrievalJob['candidates']>([]);
   const [arxivId, setArxivId] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
+  const [suggestedTitle, setSuggestedTitle] = useState<string | null>(null);
+  const [decidingTitle, setDecidingTitle] = useState(false);
+  // The title as the server last described it. State rather than a ref because re-entry has to
+  // re-ask; `paperRef` stays for the retrieval effect, which must not re-run on a rename.
+  const [titleState, setTitleState] = useState<{ title: string; confirmed: boolean } | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const { playText } = useAudio();
   // Update during render rather than waiting for an effect: an A request that resolves during
   // B's render must never write A's transcript/review/draft into B's screen.
   const routeRef = useRef({ pid: activePid, slug });
+  // The source is a one-shot hand-off, not part of this paper's identity, and it only ever
+  // arrives WITH a new paper. Holding it in a ref keyed to the (project, paper) pair keeps it
+  // out of initialization's inputs — otherwise an unrelated re-render that happens to drop it
+  // (opening Settings does exactly that) re-runs initialization and throws away whatever
+  // un-submitted work is on the screen, including edits to a notes proposal.
+  const sourceRef = useRef(source);
+  if (routeRef.current.pid !== activePid || routeRef.current.slug !== slug) sourceRef.current = source;
   routeRef.current = { pid: activePid, slug };
+  // The title decision needs the paper as the server last described it, read from a retrieval
+  // callback that must not re-run every time the title changes. It can lag `titleState` between
+  // a ruling and the canonical session that follows it; its only consumer is the retrieval-job
+  // effect, which cannot fire in that window (the watcher stops at a terminal snapshot and
+  // nothing restarts retrieval from compose or chat). Check that still holds before adding one.
+  const paperRef = useRef<{ title: string; title_confirmed?: boolean } | null>(null);
 
   const chatWatch = useJobWatcher<ChatJob>(activePid, getChatJob);
   const retrievalWatch = useJobWatcher<RetrievalJob>(activePid, getRetrievalJob);
@@ -178,6 +206,10 @@ export function Discussion({ slug, onNavigate }: Props) {
 
   const applySession = useCallback((session: Session) => {
     setPaperTitle(session.paper.title);
+    // A ruling settles the offer for good; keep it from reappearing on the next refresh.
+    if (session.paper.title_confirmed) setSuggestedTitle(null);
+    paperRef.current = session.paper;
+    setTitleState({ title: session.paper.title, confirmed: !!session.paper.title_confirmed });
     setPaperYear(session.paper.year ?? null);
     setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
     setSessionState(session.state as SessionState);
@@ -221,9 +253,19 @@ export function Discussion({ slug, onNavigate }: Props) {
     setRetrievalError(null);
     setCandidates([]);
     setRelated(null);
+    setSuggestedTitle(null);
+    paperRef.current = null;
+    setTitleState(null);
+    const named = sourceRef.current ? parseKnownPaper(sourceRef.current) : null;
+    setArxivId(named?.arxivId ?? '');
+    setPdfUrl(named?.pdfUrl ?? '');
 
     const initialize = async () => {
       if (!activePid) return;
+      // Spend the source only once this run can actually act on it. Everything below already
+      // holds the value; leaving it in the URL would re-arm the automatic fetch on every
+      // reload of this tab, and the guard against that is server memory a restart clears.
+      if (named) forgetRouteSource(slug);
       try {
         let session = await getSession(activePid, slug);
         if (cancelled) return;
@@ -249,7 +291,15 @@ export function Discussion({ slug, onNavigate }: Props) {
         if (!session.paper.retrieved) {
           setView('start');
           const { job } = await getLatestRetrievalJob(activePid, slug);
-          if (!cancelled && job) retrievalWatch.accept(job);
+          if (cancelled) return;
+          if (job) { retrievalWatch.accept(job); return; }
+          // Nothing has been tried for this paper yet and the reader named a concrete source,
+          // so fetch it. Gated on there being no prior job: a fetch that already failed must
+          // surface its error and wait for a decision, not silently retry on every re-entry.
+          // The start is server-deduped by slug, so a repeated effect joins rather than doubles.
+          const concrete = named?.arxivId || named?.pdfUrl;
+          if (!concrete) return;
+          await beginRetrieval({ arxiv_id: named?.arxivId, pdf_url: named?.pdfUrl });
           return;
         }
         await loadDraft();
@@ -295,11 +345,29 @@ export function Discussion({ slug, onNavigate }: Props) {
     } else if (job.candidates.length > 0) {
       setCandidates(job.candidates);
     } else if (job.retrieved) {
+      const found = job.matched_title?.trim() || null;
+      if (shouldSuggestCanonicalTitle(paperRef.current, found)) setSuggestedTitle(found);
       void loadDraft().catch((caught) => {
         setRetrievalError(caught instanceof Error ? caught.message : String(caught));
       });
     }
   }, [loadDraft, retrievalWatch.job]);
+
+  // Re-entry. The effect above raises the offer the moment a fetch resolves, but a reader who
+  // leaves the paper before answering would never be asked again — and the placeholder the add
+  // recorded would stand in the reading list, the map and the notes for good.
+  useEffect(() => {
+    const pid = activePid;
+    if (!pid || !titleState || titleState.confirmed || suggestedTitle) return;
+    let cancelled = false;
+    void getLatestRetrievalJob(pid, slug).then(({ job }) => {
+      if (cancelled || routeRef.current.pid !== pid || routeRef.current.slug !== slug) return;
+      const found = job?.retrieved ? job.matched_title?.trim() || null : null;
+      const paper = { title: titleState.title, title_confirmed: titleState.confirmed };
+      if (shouldSuggestCanonicalTitle(paper, found)) setSuggestedTitle(found);
+    }).catch(() => { /* the offer is optional; a failed snapshot must not break the screen */ });
+    return () => { cancelled = true; };
+  }, [activePid, slug, suggestedTitle, titleState]);
 
   useEffect(() => {
     if (retrievalWatch.missingVersion === 0 || !activePid) return;
@@ -323,6 +391,30 @@ export function Discussion({ slug, onNavigate }: Props) {
     } catch (caught) {
       setWorking(false);
       setRetrievalError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  // The server never renames a paper on its own; adding by identifier alone therefore leaves a
+  // placeholder ("arXiv 2405.17057") standing in until a person rules. Either answer is a
+  // ruling, so the offer is made once.
+  async function decideTitle(useSuggested: boolean) {
+    const pid = activePid;
+    if (!pid || !suggestedTitle || decidingTitle) return;
+    setDecidingTitle(true);
+    try {
+      await updatePaper(pid, slug, useSuggested ? suggestedTitle : undefined, true);
+      setSuggestedTitle(null);
+      // Record the ruling before awaiting the canonical session: the re-entry read is an
+      // in-memory registry lookup and lands first, so a still-unconfirmed `titleState` would
+      // pop the panel straight back up for the moment in between.
+      setTitleState((previous) => (previous ? { ...previous, confirmed: true } : previous));
+      // The reading-list entry moved; the opening draft was built from the old title.
+      await fetchCanonicalSession();
+      await loadDraft();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setDecidingTitle(false);
     }
   }
 
@@ -404,6 +496,20 @@ export function Discussion({ slug, onNavigate }: Props) {
 
   const lastIsUser = turns.length > 0 && turns[turns.length - 1]?.role === 'user';
   const delivery = { delivery_mode: deliveryMode, model: model || null } as const;
+  const titleOffer = suggestedTitle ? (
+    <section className="title-offer" aria-label="Use the source title?">
+      <h4>Use the source title?</h4>
+      <p className="muted">You added</p>
+      <p className="title-offer-current">{paperTitle}</p>
+      <p className="muted">The source reports</p>
+      <p className="title-offer-found">{suggestedTitle}</p>
+      <p className="muted title-offer-note">Updating the title keeps the same paper identity, notes, and discussion.</p>
+      <div className="title-offer-actions">
+        <button className="btn primary" onClick={() => void decideTitle(true)} disabled={decidingTitle}>Use this title</button>
+        <button className="btn ghost" onClick={() => void decideTitle(false)} disabled={decidingTitle}>Keep mine</button>
+      </div>
+    </section>
+  ) : null;
 
   if (view === 'start') {
     const retrievalRunning = retrievalWatch.job?.status === 'running';
@@ -465,7 +571,9 @@ export function Discussion({ slug, onNavigate }: Props) {
 
   if (view === 'compose' && draft) {
     return (
-      <div className="discussion"><div className="compose-panel">
+      <div className="discussion">
+        {titleOffer}
+        <div className="compose-panel">
         <h3>{draft.title ? `Start — ${draft.title}` : 'Start reading'}</h3>
         <p className="muted">Choose how the analyst should meet you, then edit the opening prompt if needed.</p>
         <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
@@ -475,7 +583,8 @@ export function Discussion({ slug, onNavigate }: Props) {
           setView('chat');
           void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, mode: readingMode, ...delivery }));
         }} disabled={working}>Generate paper summary</button></div>
-      </div></div>
+        </div>
+      </div>
     );
   }
 
@@ -488,6 +597,7 @@ export function Discussion({ slug, onNavigate }: Props) {
         <button className="btn ghost" onClick={() => void showRelated()}>Related works</button>
       </header>
       {related && <RelatedPanel related={related} onNavigate={onNavigate} onClose={() => setRelated(null)} />}
+      {titleOffer}
       {sessionState === 'committed' && <div className="discussion-state-banner"><span>This reading is complete.</span><button className="btn primary" onClick={() => void handleContinueCommitted()}>Continue discussion</button></div>}
       <div className="chat-scroll" ref={chatRef}>
         {turns.length === 0 && !working

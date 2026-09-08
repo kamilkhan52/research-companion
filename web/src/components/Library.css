@@ -358,3 +358,104 @@
     transform: rotate(360deg);
   }
 }
+
+/* ---- add a paper (DR-149) ---- */
+
+.add-paper-btn {
+  width: 38px;
+  height: 38px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* `.btn-row` carries no styles of its own anywhere in this app, so the row has to lay itself
+   out or the two pills render flush against each other. */
+.lc-empty-actions {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.add-paper-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(2, 3, 8, 0.62);
+  display: grid;
+  place-items: end center;
+  backdrop-filter: blur(3px);
+}
+
+.add-paper-sheet {
+  width: 100%;
+  max-width: 600px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: linear-gradient(180deg, #12141f, #0b0d16);
+  border: 1px solid var(--line2);
+  border-radius: 20px 20px 0 0;
+  padding: 18px 17px max(env(safe-area-inset-bottom), 20px);
+  box-shadow: 0 -20px 60px -30px rgba(52, 231, 224, 0.4);
+}
+
+.add-paper-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.add-paper-head h2 {
+  margin: 2px 0 10px;
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.add-paper-hint {
+  margin: 0 0 var(--space-md);
+  font-size: 13px;
+}
+
+.add-paper-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: stretch;
+}
+
+.add-paper-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.add-paper-input:focus {
+  outline: none;
+  border-color: rgba(52, 231, 224, 0.5);
+  box-shadow: 0 0 0 1px rgba(52, 231, 224, 0.45), 0 0 18px -2px rgba(52, 231, 224, 0.55);
+}
+
+.add-paper-matches {
+  margin: var(--space-sm) 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.add-paper-explore {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}

@@ -14,6 +14,9 @@ export interface SessionPaper {
   title: string;
   retrieved: boolean;
   list_status: string;
+  /** A human has ruled on this title — either accepting the source's or keeping their own.
+   *  Absent/false means an added-by-identifier placeholder may still be standing in for it. */
+  title_confirmed?: boolean;
   /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
   year?: number | null;
 }

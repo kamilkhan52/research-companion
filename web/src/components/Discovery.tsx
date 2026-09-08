@@ -23,8 +23,6 @@ export function Discovery({ onNavigate }: Props) {
   const { isInProject } = useProjectMembership();
   const { refetch } = useLibrary();
   const [addingId, setAddingId] = useState<string | null>(null);
-  const [specificTitle, setSpecificTitle] = useState('');
-  const [specificArxiv, setSpecificArxiv] = useState('');
   const scopeRef = useRef({ pid: activePid });
   scopeRef.current = { pid: activePid };
   const goalsKey = activePid ? `rc.draft.v1:${activePid}:discovery:goals` : '';
@@ -160,17 +158,12 @@ export function Discovery({ onNavigate }: Props) {
         </section>
       )}
 
-      <section className="discovery-section">
-        <h3>Bring a specific paper</h3>
-        <input className="discovery-input" placeholder="Paper title…" value={specificTitle} onChange={(event) => setSpecificTitle(event.target.value)} />
-        <input className="discovery-input" placeholder="arXiv ID (e.g. 2309.06180)" value={specificArxiv} onChange={(event) => setSpecificArxiv(event.target.value)} />
-        <button className="btn ghost" disabled={!specificTitle.trim() || addingId === specificTitle.trim()} onClick={() => {
-          const title = specificTitle.trim();
-          if (!title) return;
-          void add(title, specificArxiv.trim() || undefined);
-          setSpecificTitle('');
-          setSpecificArxiv('');
-        }}>Add to reading list</button>
+      {/* DR-149: adding a paper you already know is a Library action now, not something to
+          find at the bottom of a Discover result list. Point at it rather than duplicating it. */}
+      <section className="discovery-section discovery-known">
+        <h3>Already know the paper?</h3>
+        <p className="muted">Add it straight to your reading list from the Library.</p>
+        <button className="btn ghost" onClick={() => onNavigate('library')}>Go to Library</button>
       </section>
       {added.size > 0 && <button className="btn primary discovery-library-link" onClick={() => onNavigate('library')}>Go to library · {added.size} added</button>}
     </div>

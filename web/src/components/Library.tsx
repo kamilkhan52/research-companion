@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect } from 'react';
 import { createProject, getRecentSessions, removePaper } from '@/api/endpoints';
 import type { Paper, RecentSession } from '@/api/types';
 import { useLibrary } from '@/hooks/useLibrary';
+import { AddPaperSheet } from '@/components/AddPaper';
+import { paperHash } from '@/routes';
 import './Library.css';
 
 interface Props {
@@ -48,6 +50,7 @@ export function Library({ onNavigate }: Props) {
   const { projects, activePid, setActivePid, state, loading, error, refetch } = useLibrary();
   const [newName, setNewName] = useState('');
   const [showNew, setShowNew] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [recent, setRecent] = useState<RecentSession[]>([]);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -67,6 +70,11 @@ export function Library({ onNavigate }: Props) {
   }, [papers]);
   const visiblePapers = filter === 'all' ? papers : papers.filter((paper) => bucket(paper) === filter);
   const continueSession = recent.find((session) => session.kind === 'paper' && session.state !== 'committed');
+
+  function leaveAddSheet() {
+    setShowAdd(false);
+    refetch();
+  }
 
   async function confirmRemove(paper: Paper) {
     if (!activePid || !window.confirm(`Remove “${paper.title}” from this project? Its notes will be kept and marked as removed.`)) return;
@@ -145,7 +153,24 @@ export function Library({ onNavigate }: Props) {
         activePid={activePid}
         onSelect={setActivePid}
         onNew={() => setShowNew(true)}
+        onAdd={() => setShowAdd(true)}
       />
+
+      {showAdd && (
+        <AddPaperSheet
+          pid={activePid}
+          // EVERY exit refetches, not only the hand-off. An add that landed after the reader
+          // left is on the reading list, and nothing else reloads it — the provider refetches
+          // on a project change, never on a view change. A stale list would let Discover offer
+          // to add the same paper again and then answer its own duplicate refusal.
+          onClose={leaveAddSheet}
+          onAdded={(slug, source) => {
+            leaveAddSheet();
+            onNavigate(paperHash(slug, source));
+          }}
+          onExplore={() => { leaveAddSheet(); onNavigate('discover'); }}
+        />
+      )}
 
       {showNew && (
         <NewProjectForm
@@ -187,11 +212,17 @@ export function Library({ onNavigate }: Props) {
         <div className="lc-empty">
           <h3>Start this project</h3>
           <p className="muted">
-            Describe your research goals to discover foundational readings from arXiv.
+            Add a paper you already have in mind, or describe your research goals and let
+            Discover find foundational readings.
           </p>
-          <button className="btn primary" onClick={() => onNavigate('discover')}>
-            Find papers
-          </button>
+          <div className="btn-row lc-empty-actions">
+            <button className="btn primary" onClick={() => setShowAdd(true)}>
+              Add a paper
+            </button>
+            <button className="btn ghost" onClick={() => onNavigate('discover')}>
+              Explore with Discover
+            </button>
+          </div>
         </div>
       ) : visiblePapers.length === 0 ? <p className="lc-empty muted">No papers match this filter.</p> : <div className="paper-list">
         {visiblePapers.map((paper) => <article key={paper.slug} className="paper-card">
@@ -211,11 +242,14 @@ function ProjectBar({
   activePid,
   onSelect,
   onNew,
+  onAdd,
 }: {
   projects: { id: string; name: string; paper_count: number; read_count: number }[];
   activePid: string;
   onSelect: (pid: string) => void;
   onNew: () => void;
+  /** Absent while the library is in its error state, where there may be no project to add to. */
+  onAdd?: () => void;
 }) {
   return (
     <div className="project-bar">
@@ -231,8 +265,13 @@ function ProjectBar({
           </option>
         ))}
       </select>
+      {onAdd && (
+        <button className="icon-btn add-paper-btn" onClick={onAdd} aria-label="Add a paper" title="Add a paper">
+          +
+        </button>
+      )}
       <button className="btn ghost" onClick={onNew} aria-label="New project">
-        + New
+        New project
       </button>
 
     </div>

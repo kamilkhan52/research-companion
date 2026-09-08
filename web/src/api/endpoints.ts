@@ -1,5 +1,5 @@
-import { apiDelete, apiGet, apiPost } from '@/api/client';
-import type { FavoriteModel, ModelOption, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
+import { apiDelete, apiGet, apiPatch, apiPost } from '@/api/client';
+import type { FavoriteModel, ModelOption, Paper, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
 import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
 import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
 
@@ -142,6 +142,9 @@ export interface RetrievalJob {
   items: { kind: 'tool'; name: string; detail: string }[];
   candidates: { arxiv_id: string; title: string; score: number }[];
   retrieved: boolean;
+  /** The title the source reports, once resolved. Differs from the reading-list entry when the
+   *  paper was added by identifier alone, which is what the title offer exists to settle. */
+  matched_title?: string | null;
   error: string | null;
 }
 
@@ -189,7 +192,41 @@ export function startDiscovery(pid: string, goals: string) {
 
 export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string, year?: number | null) {
   // year dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
-  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined, year: year ?? undefined });
+  return apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined, year: year ?? undefined });
+}
+
+/** One reading-list location a candidate already occupies, as returned inside the add's
+ *  `paper_exists_elsewhere` 409. Only the fields an add surface needs to name it are typed. */
+export interface PaperLocation {
+  slug: string;
+  title: string;
+  project_id: string;
+  project_name: string;
+  has_notes: boolean;
+  has_discussion: boolean;
+  retrieved: boolean;
+}
+
+/** The structured half of the cross-project duplicate refusal. */
+export interface PaperExistsElsewhere {
+  code: 'paper_exists_elsewhere';
+  message: string;
+  matches: PaperLocation[];
+}
+
+export function isPaperExistsElsewhere(detail: unknown): detail is PaperExistsElsewhere {
+  return !!detail && typeof detail === 'object'
+    && (detail as { code?: unknown }).code === 'paper_exists_elsewhere'
+    && Array.isArray((detail as { matches?: unknown }).matches);
+}
+
+/** Apply a human-confirmed title decision. `title` renames; `titleConfirmed` records that a
+ *  person has ruled, so the offer stops being made. The backend git-commits either way. */
+export function updatePaper(pid: string, slug: string, title?: string, titleConfirmed = false) {
+  return apiPatch<{ paper: Paper }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`, {
+    ...(title === undefined ? {} : { title }),
+    ...(titleConfirmed ? { title_confirmed: true } : {}),
+  });
 }
 
 export function removePaper(pid: string, slug: string) {
