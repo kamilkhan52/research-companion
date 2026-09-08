@@ -115,8 +115,10 @@ export function Discovery({ onNavigate }: Props) {
   // A run is minutes of paid model work. Stopping is cooperative — the worker finishes the
   // stage it is inside, so the button stays "Stopping…" until the snapshot turns terminal.
   async function stopDiscovery() {
-    // `stopping` also disables the button, which is what actually stops a second click; this
-    // guard is for a programmatic caller and is deliberately unreachable from the UI.
+    // The disabled button is what actually prevents a second click — this reads `stopping` from
+    // the render closure, so both halves of a genuine double-click see `false` and it would not
+    // catch one either. Kept anyway: an idempotent guard in front of a paid job registry is
+    // cheap. It is not the protection, and nothing here should be written as though it were.
     if (!activePid || stopping) return;
     setStopping(true);
     setError(null);

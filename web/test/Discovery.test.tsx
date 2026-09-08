@@ -162,8 +162,9 @@ describe('Discovery run control', () => {
   });
 
   it('disables the stop button while the first cancel is in flight', async () => {
-    // The disabled attribute is what actually prevents a second cancel; the guard inside
-    // stopDiscovery is belt-and-braces for a programmatic caller and unreachable from here.
+    // The disabled attribute is the whole protection: stopDiscovery's own `stopping` check
+    // reads the render closure, so it cannot catch a double-click either. Assert the thing
+    // that actually holds rather than the thing that looks like it does.
     const user = userEvent.setup();
     api.cancelDiscovery.mockReturnValue(new Promise(() => {}));
     render(<Discovery onNavigate={vi.fn()} />);
