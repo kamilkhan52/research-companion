@@ -186,6 +186,21 @@ def note_spend(nanousd: int) -> None:
 _PROVIDER = {"speech_synthesis": "openai"}
 
 
+#: `usage.UNATTRIBUTED`, spelled out because `usage` imports THIS module. Some paid work has no
+#: initiating project — an audio job started without one bills that sentinel ledger, and
+#: `audio_jobs` binds it as the ACTIVE project around the narration call so `usage.record` finds
+#: it. It is not a row in `rc_projects`, though, so reserving against it makes `quotas.reserve`
+#: refuse the hold with "The project is no longer available." A reservation belonging to no
+#: project is exactly what `project_id=None` already means, so normalise rather than refuse.
+_UNATTRIBUTED = "__unattributed__"
+
+
+def _reservable_project() -> str | None:
+    """The active project as the LEDGER understands it: a real project, or nothing."""
+    project_id = config.active_project_id()
+    return None if project_id == _UNATTRIBUTED else project_id
+
+
 def hold(operation: str, job_id: str, *, model: str | None = None,
          provider: str | None = None, lease_seconds_override: int | None = None,
          maximum_nanousd: int | None = None) -> _Held | None:
@@ -205,7 +220,7 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
     maximum = maximum_nanousd or spend_limits.max_cost_nanousd(operation)
     reservation = quotas.reserve(
         user_id=user_id,
-        project_id=config.active_project_id(),
+        project_id=_reservable_project(),
         # Unique per admission. The key is an idempotency handle, and `reserve` refuses to reuse
         # one whose reservation is no longer `reserved` — so a key derived from the job id alone
         # breaks permanently for any job whose id is stable across runs. `graph_jobs` uses the

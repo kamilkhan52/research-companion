@@ -160,9 +160,9 @@ def get_job(job_id: str) -> AudioJob | None:
 
 def cancel_job(job_id: str) -> AudioJob | None:
     """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
-    its next checkpoint — before the narration call and between TTS segments — so at most one
-    in-flight upstream call completes after this returns. Segments already synthesized stay in the
-    cache, so a re-request resumes rather than restarting from zero.
+    its next checkpoint — before and between the narration call's sections, and between TTS
+    segments — so at most one in-flight upstream call completes after this returns. Segments
+    already synthesized stay in the cache, so a re-request resumes rather than restarting from zero.
 
     Dedup joins only within one user's scope, so cancelling can no longer stop a preparation
     somebody else is waiting on. That used to be documented as acceptable for a single-household
@@ -189,7 +189,6 @@ def start_job(text: str, billing_project: str | None = None,
     project that initiated this uncached narration. A cache hit does no LLM work and so costs
     nothing (no one is billed), matching the intended policy. `billing_project` must already be
     validated by the caller. narrate_fn/synth_fn are injectable for tests."""
-    narrate_fn = narrate_fn or agent.narrate
     synth_fn = synth_fn or tts.openai_speech
     jid = job_id_for(text)
 
@@ -219,6 +218,13 @@ def start_job(text: str, billing_project: str | None = None,
 
         if cancelled():
             return
+        # The job's id names this narration's sections to the spend ledger: a long response is
+        # narrated in several paid calls (DR-153) and each holds for itself, because this job's
+        # admission ticket reserved exactly ONE narration lease
+        # (`spend_limits.speech_hold_nanousd`) and N calls under it would be a ceiling that does
+        # not bound. Bound here rather than at the default above because only `work` has the job.
+        narrate = narrate_fn or (lambda body: agent.narrate(
+            body, unit_id=job.id, should_stop=cancelled))
         narration = sessions.get_cached_narration(text)
         if narration is None:
             # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
@@ -227,7 +233,16 @@ def start_job(text: str, billing_project: str | None = None,
             # initiating project, bill the explicit unattributed ledger rather than dropping it.
             token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
             try:
-                narration = narrate_fn(text)
+                narration = narrate(text)
+            except Exception:
+                # A cancel raises out of the sectioned narration (see `agent.narrate`). The
+                # terminal state would be right without this — `jobs._run` lets `cancelled`
+                # win over a failure — but the raise still reaches the registry's WARNING as
+                # `error audio job=…`, and a reader tapping Cancel is not an error. Exit the
+                # way this worker's other checkpoints do instead.
+                if cancelled():
+                    return
+                raise
             finally:
                 config.reset_active_project(token)
             sessions.cache_narration(text, narration)

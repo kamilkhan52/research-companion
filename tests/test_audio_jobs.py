@@ -164,9 +164,12 @@ def test_synthesis_failure_surfaces_as_an_error_job():
 
 # ---- narration cost attribution (audio is app-global, but spend bills the initiating project) ----
 
-def _billing_narrate(text: str) -> str:
+def _billing_narrate(text: str, **_) -> str:
     """Stand-in for agent.narrate: records usage against the ACTIVE project, exactly as
-    llm.complete does, so the test sees whether the worker bound the right project."""
+    llm.complete does, so the test sees whether the worker bound the right project.
+
+    Takes `**_` because it also stands in for the real `agent.narrate`, which the worker calls
+    with the job id (`unit_id=`) so a sectioned narration's holds carry it (DR-153)."""
     from app import usage
     usage.record("narration", "narr-model", {"prompt_tokens": 5, "cost": 0.02})
     return f"narrated: {text}"
@@ -424,3 +427,34 @@ def test_late_cancel_of_old_attempt_never_hits_the_retry():
     settled = _wait_until_settled(retry.id)
     assert settled.status == "done"
     assert settled.url
+
+
+def test_a_cancel_during_narration_ends_the_job_without_an_error(temp_project):
+    """A sectioned narration raises out of `agent.narrate` when the reader cancels (DR-153).
+
+    This pins the terminal state a reader sees, not the early return that produces it: `_run`
+    already lets `cancelled` win over a failure, so the assertions below hold with or without
+    that block. It is here because the cancel path through narration had no test at all — every
+    existing one cancels during TTS — and this is the contract, whichever layer keeps it.
+    """
+    from app import agent, sessions
+
+    started = threading.Event()
+    ids: list[str] = []
+
+    def slow_narrate(text: str, **_) -> str:
+        started.set()
+        time.sleep(0.05)
+        # What `narrate` itself raises once `should_stop()` goes true mid-pass.
+        raise agent.AgentError("Narration was cancelled.")
+
+    job = audio_jobs.start_job("Cancel me mid-narration.", narrate_fn=slow_narrate,
+                               synth_fn=fake_synth)
+    ids.append(job.id)
+    assert started.wait(2)
+    audio_jobs.cancel_job(job.id)
+
+    settled = _wait_until_settled(job.id)
+    assert settled.status == "cancelled"
+    assert not settled.error
+    assert sessions.get_cached_narration("Cancel me mid-narration.") is None
