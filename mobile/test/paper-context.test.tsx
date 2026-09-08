@@ -77,12 +77,17 @@ test('names the abstract, and says plainly when there is not one yet', async () 
   expect(screen.getByTestId('paper-abstract-missing')).toBeTruthy();
 });
 
-test('a paper whose text is here is not promised an abstract that is not coming', async () => {
-  // "it arrives with the paper's text" is only true while the text is still on its way.
+test('the missing line says the abstract is absent, never that it is on its way', async () => {
+  // Nothing in the app writes an abstract on retrieval — it is the reading-list entry's own
+  // paragraph, put there by whatever added the paper or by the backfill script, and fetching
+  // the full text does not touch it. So a paper whose text has already arrived says exactly
+  // the same thing as one whose has not, because the same thing is true of both.
   await renderAsync(<PaperContext paper={paper({ year: 2023, retrieved: true })} />);
-  expect(screen.queryByTestId('paper-abstract-missing')).toBeNull();
-  expect(screen.queryByText('Abstract')).toBeNull();
-  expect(screen.getByText('2023')).toBeTruthy();
+  const missing = screen.getByTestId('paper-abstract-missing');
+  expect(missing).toBeTruthy();
+  const said = JSON.stringify(missing.props.children);
+  expect(said).not.toMatch(/arrives|coming|yet|soon|fetch/i);
+  expect(screen.getByText('Abstract')).toBeTruthy();
 });
 
 test('an abstract that IS here is named too, so the card offers it rather than just showing it', async () => {

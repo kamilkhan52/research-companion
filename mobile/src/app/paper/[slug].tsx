@@ -4396,7 +4396,14 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
   // Only where the card is already saying things: a paper nobody knows anything about still
   // renders NOTHING, because a row of blanks reads as the app failing rather than as the fact
   // not being known yet (the decision this component was built around, and still right).
-  const showsAbstractSlot = !!abstract || (facts.length > 0 && !paper.retrieved);
+  //
+  // Retrieval is NOT the condition. `abstract` is the reading-list entry's own `Abstract:`
+  // paragraph — written by whatever added the paper (Discover supplies one) or by
+  // `scripts/backfill_abstracts.py`, and by nothing else: fetching the full text writes
+  // `corpus/<slug>.md` and never touches it. So an absent abstract is absent, not late, and
+  // the line below must not forecast an arrival the code has no mechanism to produce
+  // (Opus review of #509).
+  const showsAbstractSlot = !!abstract || facts.length > 0;
   if (!facts.length && !abstract) return null;
 
   return (
@@ -4417,7 +4424,7 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
         </Pressable>
       ) : showsAbstractSlot ? (
         <Text variant="body" color={t.muted} testID="paper-abstract-missing">
-          Not here yet — it arrives with the paper&apos;s text.
+          Not recorded for this paper.
         </Text>
       ) : null}
     </View>
