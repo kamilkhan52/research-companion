@@ -2,19 +2,19 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AddPaperSheet } from '@/components/AddPaper';
-import { addPaperDraftKey, parseKnownPaper, shouldSuggestCanonicalTitle } from '@/lib/paper-reference';
+import { addPaperDraftKey, parseKnownPaper, shouldSuggestCanonicalTitle, titleFromPdfName } from '@/lib/paper-reference';
 import { ApiError } from '@/api/client';
 
 const api = vi.hoisted(() => ({
   addPaper: vi.fn(),
-  isPaperExistsElsewhere: vi.fn(),
+  uploadPaper: vi.fn(),
 }));
 
 vi.mock('@/api/endpoints', async () => {
-  // Keep the real predicate: a test that stubs it cannot tell whether the component reads the
-  // payload the server actually sends.
+  // Keep the real predicate and the real size ceiling: a test that stubs them cannot tell
+  // whether the component reads what the server actually sends or enforces.
   const actual = await vi.importActual<typeof import('@/api/endpoints')>('@/api/endpoints');
-  return { ...actual, addPaper: api.addPaper };
+  return { ...actual, addPaper: api.addPaper, uploadPaper: api.uploadPaper };
 });
 
 function renderSheet(overrides: Partial<Parameters<typeof AddPaperSheet>[0]> = {}) {
@@ -28,9 +28,16 @@ function renderSheet(overrides: Partial<Parameters<typeof AddPaperSheet>[0]> = {
   return { props, ...render(<AddPaperSheet {...props} />) };
 }
 
+function pdf(name: string, size = 1_000): File {
+  const file = new File(['%PDF-1.4'], name, { type: 'application/pdf' });
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.addPaper.mockResolvedValue({ paper: { slug: 'added-paper', title: 'Added' } });
+  api.uploadPaper.mockResolvedValue({ job: { id: 'retrieval-1' } });
 });
 
 afterEach(() => localStorage.clear());
@@ -61,6 +68,22 @@ describe('parseKnownPaper', () => {
 
   it('does not mistake a year-like number inside a title for an arXiv id', () => {
     expect(parseKnownPaper('Scaling laws 2020 revisited').arxivId).toBeUndefined();
+  });
+});
+
+describe('titleFromPdfName', () => {
+  it('reads a filename as a provisional title', () => {
+    expect(titleFromPdfName('deep_residual-learning.pdf')).toBe('deep residual learning');
+    expect(titleFromPdfName('Attention%20Is%20All%20You%20Need.PDF')).toBe('Attention Is All You Need');
+  });
+
+  it('keeps a filename whose escapes are malformed rather than refusing the add', () => {
+    expect(titleFromPdfName('100%-coverage.pdf')).toBe('100% coverage');
+  });
+
+  it('never returns an empty title', () => {
+    expect(titleFromPdfName('.pdf')).toBe('Uploaded paper');
+    expect(titleFromPdfName('___.pdf')).toBe('Uploaded paper');
   });
 });
 
@@ -292,5 +315,75 @@ describe('AddPaperSheet', () => {
     const { props } = renderSheet();
     await user.keyboard('{Escape}');
     expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it('creates the entry from the filename, then sends the bytes, then opens it', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('deep_residual-learning.pdf'));
+
+    await waitFor(() => expect(props.onAdded).toHaveBeenCalledWith('added-paper', null));
+    expect(api.addPaper).toHaveBeenCalledWith('project-1', 'deep residual learning');
+    const [pid, slug, file] = api.uploadPaper.mock.calls[0];
+    expect([pid, slug]).toEqual(['project-1', 'added-paper']);
+    expect((file as File).name).toBe('deep_residual-learning.pdf');
+  });
+
+  it('refuses a PDF over the server ceiling without adding anything', async () => {
+    const user = userEvent.setup();
+    renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('huge.pdf', 41_000_000));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The limit is 40 MB');
+    expect(api.addPaper).not.toHaveBeenCalled();
+  });
+
+  it('points a failed upload at the paper it already created, not at a second add', async () => {
+    // The reading-list entry exists by then. Inviting another add from here would duplicate it.
+    const user = userEvent.setup();
+    api.uploadPaper.mockRejectedValue(new ApiError(413, 'PDF is larger than the 40 MB limit.'));
+    const { props } = renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('paper.pdf'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('larger than the 40 MB limit');
+    expect(props.onAdded).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /open it to try again/i }));
+    expect(props.onAdded).toHaveBeenCalledWith('added-paper', null);
+  });
+
+  it('reports a cross-project duplicate from the upload path the same way', async () => {
+    const user = userEvent.setup();
+    api.addPaper.mockRejectedValue(new ApiError(409, 'This paper already exists in another project.', {
+      code: 'paper_exists_elsewhere',
+      message: 'This paper already exists in another project.',
+      matches: [{
+        slug: 'resnet', title: 'Deep Residual Learning', project_id: 'other',
+        project_name: 'Vision', has_notes: false, has_discussion: false, retrieved: true,
+      }],
+    }));
+    renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('deep_residual-learning.pdf'));
+
+    expect(await screen.findByText(/in Vision/)).toBeInTheDocument();
+    expect(api.uploadPaper).not.toHaveBeenCalled();
+  });
+
+  it('does not open a PDF the reader walked away from', async () => {
+    const user = userEvent.setup();
+    let land!: (value: unknown) => void;
+    api.uploadPaper.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+    const { props } = renderSheet();
+
+    await user.upload(screen.getByLabelText('PDF file'), pdf('paper.pdf'));
+    await screen.findByRole('button', { name: 'Uploading…' });
+    await user.keyboard('{Escape}');
+
+    land({ job: { id: 'retrieval-1' } });
+    await waitFor(() => expect(api.uploadPaper).toHaveBeenCalled());
+    expect(props.onAdded).not.toHaveBeenCalled();
   });
 });

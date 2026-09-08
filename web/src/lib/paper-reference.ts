@@ -30,6 +30,22 @@ export function parseKnownPaper(value: string): {
   return { title: text, source: null };
 }
 
+/** A local PDF carries no bibliographic identifier, so its filename is the only title there is.
+ *  Provisional: the source-title offer replaces it once extraction reports something better. */
+export function titleFromPdfName(name: string): string {
+  let decoded = name;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    // A malformed percent escape is still a usable filename; keep it rather than blocking the add.
+  }
+  return decoded
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'Uploaded paper';
+}
+
 /** Named for the field's old home at the bottom of Discover, so the key stays the same one
  *  mobile persists this draft under. (Web's removed Discover field kept no draft of its own —
  *  there is nothing to migrate here; this is a new persistence, matching the mobile control.) */

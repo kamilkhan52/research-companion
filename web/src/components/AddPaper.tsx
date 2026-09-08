@@ -4,8 +4,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
-import { addPaper, isPaperExistsElsewhere, type PaperLocation } from '@/api/endpoints';
-import { addPaperDraftKey, parseKnownPaper } from '@/lib/paper-reference';
+import { addPaper, isPaperExistsElsewhere, uploadPaper, MAX_UPLOAD_BYTES, type PaperLocation } from '@/api/endpoints';
+import { addPaperDraftKey, parseKnownPaper, titleFromPdfName } from '@/lib/paper-reference';
 
 interface Props {
   pid: string;
@@ -19,9 +19,15 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
   const draftKey = addPaperDraftKey(pid);
   const [text, setText] = useState(() => localStorage.getItem(draftKey) ?? '');
   const [adding, setAdding] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elsewhere, setElsewhere] = useState<PaperLocation[] | null>(null);
+  // An upload that failed AFTER the reading-list entry was created. The entry exists, so the
+  // way forward is that paper's own setup screen (which has the same upload action), not a
+  // second add from here — mobile learned the same thing.
+  const [stranded, setStranded] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
@@ -47,15 +53,61 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
     // list left under a different title reads as if it described the new one.
     setError(null);
     setElsewhere(null);
+    setStranded(null);
     if (value) localStorage.setItem(draftKey, value); else localStorage.removeItem(draftKey);
+  }
+
+  /** Both add paths hit the same two refusals, and the cross-project one is a choice the reader
+   *  can act on rather than a failure — so name where the paper already is, instead of the
+   *  payload that carries the answer. */
+  function reportAddFailure(caught: unknown) {
+    if (caught instanceof ApiError && isPaperExistsElsewhere(caught.detail)) {
+      setElsewhere(caught.detail.matches);
+      setError(caught.detail.message);
+    } else {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function upload(file: File) {
+    if (adding || uploading) return;
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(`That PDF is ${Math.round(file.size / 1_000_000)} MB. The limit is 40 MB.`);
+      return;
+    }
+    setUploading(true);
+    setError(null);
+    setElsewhere(null);
+    setStranded(null);
+    try {
+      // A local PDF has no identifier, so its filename is the provisional title; extraction
+      // then offers the real one on the paper screen.
+      const { paper } = await addPaper(pid, titleFromPdfName(file.name));
+      try {
+        await uploadPaper(pid, paper.slug, file);
+      } catch (caught) {
+        if (closed.current) return;
+        setStranded(paper.slug);
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+      if (closed.current) return;
+      onAdded(paper.slug, null);
+    } catch (caught) {
+      if (closed.current) return;
+      reportAddFailure(caught);
+    } finally {
+      setUploading(false);
+    }
   }
 
   async function submit() {
     const parsed = parseKnownPaper(text);
-    if (!parsed.title || adding) return;
+    if (!parsed.title || adding || uploading) return;
     setAdding(true);
     setError(null);
     setElsewhere(null);
+    setStranded(null);
     try {
       const { paper } = await addPaper(pid, parsed.title, parsed.arxivId);
       localStorage.removeItem(draftKey);
@@ -64,14 +116,7 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
       onAdded(paper.slug, parsed.source);
     } catch (caught) {
       if (closed.current) return;
-      // The cross-project duplicate is a refusal the reader can act on, not a failure: name
-      // where the paper already is instead of rendering the payload that carries the answer.
-      if (caught instanceof ApiError && isPaperExistsElsewhere(caught.detail)) {
-        setElsewhere(caught.detail.matches);
-        setError(caught.detail.message);
-      } else {
-        setError(caught instanceof Error ? caught.message : String(caught));
-      }
+      reportAddFailure(caught);
     } finally {
       setAdding(false);
     }
@@ -98,11 +143,39 @@ export function AddPaperSheet({ pid, onClose, onAdded, onExplore }: Props) {
             autoComplete="off"
             spellCheck={false}
           />
-          <button className="btn primary" onClick={() => void submit()} disabled={!text.trim() || adding}>
+          <button className="btn primary" onClick={() => void submit()} disabled={!text.trim() || adding || uploading}>
             {adding ? 'Adding…' : 'Add'}
           </button>
         </div>
+        <div className="add-paper-or"><span className="muted">or</span></div>
+        <input
+          ref={fileRef}
+          className="add-paper-file"
+          type="file"
+          accept="application/pdf,.pdf"
+          aria-label="PDF file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            // Clear the input so choosing the SAME file again still fires a change event —
+            // which is exactly what a reader does after a failed upload.
+            event.target.value = '';
+            if (file) void upload(file);
+          }}
+        />
+        <button className="btn ghost add-paper-upload" onClick={() => fileRef.current?.click()}
+          disabled={adding || uploading}>
+          {uploading ? 'Uploading…' : 'Upload a PDF'}
+        </button>
+        <p className="muted add-paper-hint">For a paper that is on no public index. Up to 40 MB.</p>
         {error && <p className="build-progress-error" role="alert">{error}</p>}
+        {stranded && (
+          <div className="add-paper-stranded">
+            <p className="muted">The paper is on your reading list; only the upload did not start.</p>
+            <button className="btn primary" onClick={() => { closed.current = true; onAdded(stranded, null); }}>
+              Open it to try again
+            </button>
+          </div>
+        )}
         {elsewhere && elsewhere.length > 0 && (
           <ul className="add-paper-matches">
             {elsewhere.map((match) => (

@@ -28,6 +28,7 @@ directly from `main`.
 | 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Merged |
 | 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 | 9 | `opus/web-parity-overnight` | [#511](https://github.com/kamilkhan52/research-companion/pull/511) | Add-a-paper front door (DR-149 parity) + source-title offer |
+| 10 | `opus/web-parity-overnight` | [#512](https://github.com/kamilkhan52/research-companion/pull/512) | Upload a PDF — DR-149's third entry path |
 
 ## Parity backlog (2026-09-08)
 
@@ -42,7 +43,6 @@ are the mobile client, so a web PR must never claim one.
 
 | Gap | Mobile has | Notes |
 |---|---|---|
-| Upload a PDF from the add sheet | `uploadPaper` | Needs a multipart path in `api/client.ts`; the sheet already has the slot for it. Mobile's third DR-149 entry path. |
 | Per-paper reference graph | `getPaperGraph` (DR-093) | The server lays the ego view out, and `web/src/graph/engine.ts` can render it as-is. Probably the best value-per-line left. |
 | Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | Needs header-authenticated image loading (blob URLs), which paper covers also need. |
 | Paper covers in the Library | `getPaperCover`, `paperCoverImageSource` | Same authenticated-media problem; do it with figures. |
