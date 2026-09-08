@@ -6,6 +6,7 @@ import {
   hideSuggestion,
   startDiscovery,
   unhideSuggestion,
+  type DiscoveryFind,
   type DiscoveryJob,
   type DiscoverySuggestion,
   type HiddenRecommendation,
@@ -14,6 +15,14 @@ import { useActivePid, useLibrary, useProjectMembership } from '@/hooks/useLibra
 import './Discovery.css';
 
 interface Props { onNavigate: (hash: string) => void; }
+
+/** How a suggestion is identified on this screen — for React keys, for the added/in-library
+ *  checks, and for removing one from the list. One definition so they cannot drift, and stable
+ *  across reloads: every poll rebuilds these objects, so anything keyed on object identity
+ *  silently stops matching the moment a response lands. */
+export function suggestionKey(suggestion: DiscoverySuggestion): string {
+  return suggestion.arxiv_id || suggestion.title;
+}
 
 export function Discovery({ onNavigate }: Props) {
   const [activePid] = useActivePid();
@@ -106,6 +115,8 @@ export function Discovery({ onNavigate }: Props) {
   // A run is minutes of paid model work. Stopping is cooperative — the worker finishes the
   // stage it is inside, so the button stays "Stopping…" until the snapshot turns terminal.
   async function stopDiscovery() {
+    // `stopping` also disables the button, which is what actually stops a second click; this
+    // guard is for a programmatic caller and is deliberately unreachable from the UI.
     if (!activePid || stopping) return;
     setStopping(true);
     setError(null);
@@ -124,7 +135,10 @@ export function Discovery({ onNavigate }: Props) {
     setError(null);
     // Drop it from the list first: the server is authoritative, but a card that lingers after
     // "Not this one" reads as a failure. `load` puts it back if the write is refused.
-    setSuggestions((previous) => previous.filter((item) => item !== suggestion));
+    // Keyed, not by object identity: a poll that lands between render and click replaces every
+    // object, and an identity filter would then match nothing and leave the card sitting there.
+    const key = suggestionKey(suggestion);
+    setSuggestions((previous) => previous.filter((item) => suggestionKey(item) !== key));
     try {
       const { hidden: entry } = await hideSuggestion(pid, suggestion);
       if (scopeRef.current.pid === pid) setHidden((previous) => [...previous, entry]);
@@ -188,8 +202,29 @@ export function Discovery({ onNavigate }: Props) {
         </button>
       </div>}
       {job?.status === 'cancelled' && <p className="muted discovery-stopped">
-        Discovery stopped. Anything it had already found is below; start again to go further.
+        Discovery stopped — nothing more will be charged for this run.
       </p>}
+      {/* THIS run's finds. Kept separate from the suggestion list below, which is the last
+          COMPLETED run's persisted result: after a stop those are a different run's papers, and
+          presenting them as what the stopped run found would be a lie the reader cannot check. */}
+      {job && job.status !== 'error' && (job.finds?.length ?? 0) > 0 && (
+        <section className="discovery-section discovery-finds">
+          <h3>{job.status === 'running' ? 'Turning up so far' : 'What this run reached before it stopped'}</h3>
+          <p className="muted">
+            {job.finds_stage === 'ranked'
+              ? 'Ranked, but this run did not finish — start again for the full set.'
+              : 'Early finds, chosen on provenance before anything judged them. Some will not survive.'}
+          </p>
+          <ul className="discovery-find-list">
+            {job.finds!.map((find: DiscoveryFind) => (
+              <li key={`${find.title}|${find.year ?? ''}`}>
+                <span className="discovery-find-title">{find.title}</span>
+                {find.reason ? <span className="muted discovery-find-reason">{find.reason}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {error && <p className="build-progress-error">{error}</p>}
 
       {suggestions.length > 0 && (
@@ -197,7 +232,7 @@ export function Discovery({ onNavigate }: Props) {
           <h3>Suggestions ({suggestions.length})</h3>
           <div className="suggestion-list">
             {visibleSuggestions.map((suggestion) => {
-              const id = suggestion.arxiv_id || suggestion.title;
+              const id = suggestionKey(suggestion);
               const inLibrary = added.has(id) || isInProject({ arxivId: suggestion.arxiv_id, title: suggestion.title });
               return <div key={id} className="suggestion-card">
                 <div className="suggestion-body">

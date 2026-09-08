@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Discovery } from '@/components/Discovery';
+import { Discovery, suggestionKey } from '@/components/Discovery';
 
 const active = vi.hoisted(() => ({ pid: 'project-1' as string | null }));
 const api = vi.hoisted(() => ({
@@ -97,6 +97,119 @@ describe('Discovery run control', () => {
     expect(api.getDiscovery).toHaveBeenCalledTimes(polls);
   });
 
+  it('does not claim the stopped run found what an EARLIER run found', async () => {
+    // `GET /discover` returns the last COMPLETED run's persisted result. After stopping a second
+    // run, those papers are a different run's, and attributing them here would be unverifiable.
+    api.getDiscovery.mockResolvedValue({
+      goals: '', job: { status: 'cancelled', phase: 'ranking', error: null },
+      result: { goals: 'older run', suggestions: [{
+        title: 'Paper One', authors: ['Ada'], year: 2025, arxiv_id: '2501.00001',
+        relevance_score: 0.9, citation_count: 3, abstract: 'A useful paper.',
+      }] },
+    });
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    await screen.findByText(/Discovery stopped/);
+    expect(screen.queryByText(/already found is below/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/What this run reached/)).not.toBeInTheDocument();
+  });
+
+  it('shows what the stopped run itself had reached', async () => {
+    api.getDiscovery.mockResolvedValue({
+      goals: '', result: null,
+      job: {
+        status: 'cancelled', phase: 'triage', error: null, finds_stage: 'grounded',
+        finds: [{
+          title: 'A Partial Find', year: 2024, citation_count: 7,
+          channels: ['cites'], reason: 'Cited by two papers you have read', provisional: true,
+        }],
+      },
+    });
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('A Partial Find')).toBeInTheDocument();
+    expect(screen.getByText('Cited by two papers you have read')).toBeInTheDocument();
+    // Finds carry no arXiv id, so adding one would retrieve the wrong paper.
+    expect(screen.queryByRole('button', { name: '+ Add' })).not.toBeInTheDocument();
+  });
+
+  it('shows finds while the run is still going, and says they are provisional', async () => {
+    api.getDiscovery.mockResolvedValue({
+      goals: '', result: null,
+      job: {
+        status: 'running', phase: 'triage', error: null, finds_stage: 'grounded',
+        finds: [{ title: 'An Early Find', year: null, citation_count: null, channels: [], reason: '', provisional: true }],
+      },
+    });
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText('An Early Find')).toBeInTheDocument();
+    expect(screen.getByText(/before anything judged them/)).toBeInTheDocument();
+  });
+
+  it('says ranked finds are ranked, not provisional', async () => {
+    api.getDiscovery.mockResolvedValue({
+      goals: '', result: null,
+      job: {
+        status: 'cancelled', phase: 'scoring', error: null, finds_stage: 'ranked',
+        finds: [{ title: 'A Ranked Find', year: 2024, citation_count: 1, channels: [], reason: '', provisional: false }],
+      },
+    });
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    await screen.findByText('A Ranked Find');
+    expect(screen.getByText(/Ranked, but this run did not finish/)).toBeInTheDocument();
+  });
+
+  it('disables the stop button while the first cancel is in flight', async () => {
+    // The disabled attribute is what actually prevents a second cancel; the guard inside
+    // stopDiscovery is belt-and-braces for a programmatic caller and unreachable from here.
+    const user = userEvent.setup();
+    api.cancelDiscovery.mockReturnValue(new Promise(() => {}));
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Stop' }));
+
+    expect(await screen.findByRole('button', { name: 'Stopping…' })).toBeDisabled();
+    expect(api.cancelDiscovery).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a usable Stop on a new run after the last one was stopped', async () => {
+    const user = userEvent.setup();
+    // `stopping` is never reset on a successful stop, so it is genuinely still true here —
+    // otherwise the reset under test would be a no-op and the assertion would prove nothing.
+    api.startDiscovery.mockResolvedValue({ job: running });
+    render(<Discovery onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Stop' }));
+    await screen.findByText(/Discovery stopped/);
+
+    await user.type(screen.getByPlaceholderText(/transformer attention/i), 'new goals');
+    await user.click(screen.getByRole('button', { name: 'Start discovery' }));
+
+    // Without the reset the new run's button comes up already saying "Stopping…", and disabled.
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeEnabled();
+  });
+
+  it('does not write a stopped job onto a project the reader switched to', async () => {
+    const user = userEvent.setup();
+    let settle!: (value: unknown) => void;
+    api.cancelDiscovery.mockReturnValue(new Promise((resolve) => { settle = resolve; }));
+    const { rerender } = render(<Discovery onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Stop' }));
+
+    // The reader switches projects while the cancel is still in flight.
+    active.pid = 'project-2';
+    api.getDiscovery.mockResolvedValue({ goals: '', job: null, result: null });
+    rerender(<Discovery onNavigate={vi.fn()} />);
+    settle({ job: { status: 'cancelled', phase: 'ranking', error: null } });
+
+    await waitFor(() => expect(api.getDiscovery).toHaveBeenCalledWith('project-2'));
+    // project-1's cancelled snapshot must not describe project-2's screen.
+    expect(screen.queryByText(/Discovery stopped/)).not.toBeInTheDocument();
+  });
+
   it('reports a refused stop and lets the reader try again', async () => {
     const user = userEvent.setup();
     api.cancelDiscovery.mockRejectedValue(new Error('No discovery run to stop'));
@@ -159,5 +272,23 @@ describe('Discovery hidden recommendations', () => {
     render(<Discovery onNavigate={vi.fn()} />);
     await screen.findByText('Paper One');
     expect(screen.queryByText(/told Discover to skip/)).not.toBeInTheDocument();
+  });
+});
+
+describe('suggestionKey', () => {
+  const suggestion = {
+    title: 'Paper One', authors: ['Ada'], year: 2025, arxiv_id: '2501.00001',
+    relevance_score: 0.9, citation_count: 3, abstract: 'A useful paper.',
+  };
+
+  it('is stable across the fresh objects every poll builds', () => {
+    // This is what makes removing a hidden card survive a response landing mid-interaction;
+    // an identity comparison silently matches nothing once the array has been replaced.
+    expect(suggestionKey({ ...suggestion })).toBe(suggestionKey(suggestion));
+  });
+
+  it('prefers the arXiv id, and falls back to the title when there is none', () => {
+    expect(suggestionKey(suggestion)).toBe('2501.00001');
+    expect(suggestionKey({ ...suggestion, arxiv_id: '' })).toBe('Paper One');
   });
 });

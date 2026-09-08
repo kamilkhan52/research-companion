@@ -185,6 +185,20 @@ export interface DiscoverySuggestion {
   abstract: string;
 }
 
+/** One find a run has surfaced while it is still narrowing. Deliberately NOT a suggestion:
+ *  the server trims these to what a card renders because they ride on every poll, so there is
+ *  no arXiv id and no abstract — they can be READ, not added. `provisional` marks a find chosen
+ *  on provenance alone before any model judged it, which the screen has to say, or a paper
+ *  shown early and absent from the results looks like a bug rather than the funnel working. */
+export interface DiscoveryFind {
+  title: string;
+  year: number | null;
+  citation_count: number | null;
+  channels: string[];
+  reason: string;
+  provisional: boolean;
+}
+
 export interface DiscoveryJob {
   /** `cancelled` is set the moment a stop is accepted; the worker runs on to its next stage
    *  boundary before it actually exits, so this is a terminal status the screen must handle,
@@ -192,6 +206,12 @@ export interface DiscoveryJob {
   status: 'running' | 'done' | 'error' | 'cancelled';
   phase: string;
   error: string | null;
+  /** What THIS run has found so far. The persisted `result` beside it is the last COMPLETED
+   *  run's, which is a different thing entirely — after a stop, only `finds` describes the run
+   *  that was stopped. */
+  finds?: DiscoveryFind[];
+  /** `grounded` = provisional, chosen on provenance; `ranked` = the model has judged them. */
+  finds_stage?: string;
 }
 
 export interface DiscoveryResult {
