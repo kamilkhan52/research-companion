@@ -1,12 +1,28 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GraphEngine } from '@/graph/engine';
 
-/** jsdom has no 2D context, which is why nothing in this suite has ever touched the engine. A
- *  no-op proxy is enough for the one thing tested here — the engine's listener bookkeeping —
- *  without pretending anything is being drawn. */
+/** jsdom has no 2D context, which is why nothing in this suite has ever touched the engine.
+ *
+ *  This stub covers ONLY what constructing and destroying an engine needs, and THROWS for
+ *  anything else — deliberately, because a proxy that answers everything can never fail. A whole
+ *  `render()` pass would run against a permissive one without drawing and without complaining,
+ *  and a later assertion about what was drawn would pass vacuously: the same "green against a
+ *  broken implementation" shape we keep finding, relocated into a fixture.
+ *
+ *  So widening this is a deliberate edit with a failing test in front of it. If you are here
+ *  because something threw: decide whether you actually want to assert on drawing, which needs a
+ *  real canvas stub or a headless runner (see `docs/web-rebuild-plan.md`), not one more entry. */
+const STUBBED_CONTEXT_METHODS = new Set(['setTransform']);
+
 function stubCanvasContext() {
   const ctx = new Proxy({}, {
-    get: () => () => ({ width: 0 }),
+    get: (_target, prop) => {
+      const name = String(prop);
+      if (!STUBBED_CONTEXT_METHODS.has(name)) {
+        throw new Error(`canvas stub: 2D context "${name}" is not stubbed — see the note above.`);
+      }
+      return () => ({ width: 0 });
+    },
     set: () => true,
   });
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
