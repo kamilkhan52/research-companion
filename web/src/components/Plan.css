@@ -1,0 +1,69 @@
+.plan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(2, 3, 8, 0.62);
+  display: grid;
+  place-items: end center;
+  backdrop-filter: blur(3px);
+}
+
+.plan-sheet {
+  width: 100%;
+  max-width: 600px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: linear-gradient(180deg, #12141f, #0b0d16);
+  border: 1px solid var(--line2);
+  border-radius: 20px 20px 0 0;
+  padding: 18px 17px max(env(safe-area-inset-bottom), 20px);
+}
+
+.plan-head { display: flex; align-items: center; justify-content: space-between; }
+.plan-head h2 { margin: 2px 0 14px; font-family: var(--font-display); font-size: 18px; }
+
+.plan-bar-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.plan-percent { font-family: var(--font-display); font-size: 26px; }
+
+/* Violet is usage. Exhaustion stays violet rather than danger-red: it is a planned boundary,
+   not data loss. */
+.plan-bar {
+  margin-top: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(155, 123, 255, 0.16);
+  overflow: hidden;
+}
+
+.plan-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #9b7bff;
+  transition: width 250ms ease-out;
+}
+
+.plan-reset { margin: 10px 0 0; font-size: 13px; }
+.plan-unavailable { margin: 14px 0 0; font-size: 13px; }
+
+.plan-note {
+  margin-top: var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line2);
+  padding: var(--space-md);
+}
+
+.plan-note h3 { margin: 0 0 6px; font-family: var(--font-display); font-size: 14px; }
+.plan-note p { margin: 0; font-size: 13px; }
+
+/* Amber is transient/in-flight, and is used for nothing else on this surface. */
+.plan-note-held { border-color: rgba(228, 184, 92, 0.4); background: rgba(228, 184, 92, 0.07); }
+.plan-note-approaching { border-color: rgba(155, 123, 255, 0.4); background: rgba(155, 123, 255, 0.07); }
+
+.plan-card {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--line);
+}
+
+.plan-card-name { font-family: var(--font-display); font-size: 15px; margin-bottom: 4px; }
+.plan-card p { margin: 0; font-size: 13px; }

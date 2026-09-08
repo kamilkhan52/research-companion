@@ -20,6 +20,41 @@ export function getRecentSessions(limit = 20) {
 }
 
 export function getModels() { return apiGet<{ models: ModelOption[] }>('/api/models'); }
+
+/** The account's plan and where it stands this period. ONE call by design: a client combining two
+ *  responses eventually renders a mismatched pair. See `docs/plan-usage-surface-spec.md` — the
+ *  field comments here are load-bearing, not description. */
+export interface Plan {
+  plan: { name: string; summary: string; monthly_credits: number };
+  limit_nanousd: number;
+  spent_nanousd: number;
+  /** Budget set aside for work running RIGHT NOW, released as each job settles. Never added to
+   *  spend for display: that is the false "nearly out" alarm the two fields exist to prevent. */
+  held_nanousd: number;
+  /** Subtracts holds as well as spend, so it is NOT a display value — using it as "month left"
+   *  recreates exactly that false alarm. The bar derives its own figure from limit and spend. */
+  remaining_nanousd: number;
+  /** Durable month-to-date spend, 0..1, unrounded so a real small charge is distinguishable from
+   *  zero and a hair under the limit from the limit. Drives the bar and the approaching card. */
+  spent_fraction: number;
+  /** Reservation pressure — spend PLUS holds — so it can fire before admission refuses. NOT "the
+   *  month is nearly gone", and never grounds for a client to refuse or to open a refusal modal;
+   *  those are selected from an actual 402/429. Deliberately not rendered on this surface. */
+  warn: boolean;
+  warn_at_fraction: number;
+  /** Nothing more can start right now. About live work, not about the month. */
+  at_capacity: boolean;
+  /** ISO timestamp. Render as a local calendar date, never raw and never as "days left". */
+  period_ends: string;
+  /** False with no database or nobody signed in — then say NOTHING about allowances rather than
+   *  showing a confident zero. */
+  enforced: boolean;
+  /** The ceiling can be live while this particular read failed. `enforced && !usage_available`
+   *  is the pair that must never render as a full balance. */
+  usage_available: boolean;
+}
+
+export function getPlan() { return apiGet<Plan>('/api/plan'); }
 export function getFavoriteModels() { return apiGet<{ models: FavoriteModel[] }>('/api/favorite_models'); }
 
 export function getGraph(pid: string): Promise<GraphResponse> {
