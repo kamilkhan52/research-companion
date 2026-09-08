@@ -28,7 +28,7 @@ directly from `main`.
 | 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Merged |
 | 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 | 9 | `opus/web-parity-overnight` | [#511](https://github.com/kamilkhan52/research-companion/pull/511) | Add-a-paper front door (DR-149 parity) + source-title offer |
-| 10 | `opus/web-parity-overnight` | [#512](https://github.com/kamilkhan52/research-companion/pull/512) | Upload a PDF — DR-149's third entry path |
+| 10 | `opus/web-parity-overnight` | [#513](https://github.com/kamilkhan52/research-companion/pull/513) | Upload a PDF — DR-149's third entry path |
 
 ## Parity backlog (2026-09-08)
 
