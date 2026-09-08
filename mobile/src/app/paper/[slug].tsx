@@ -3428,9 +3428,6 @@ export function ComposeFirst({
           <Chip label={isRetrieved ? 'Paper ready' : 'Unread paper'} dot={false} />
           <Text variant="editorial">{title}</Text>
           <PaperContext paper={paper} />
-          <Text variant="body" color={t.muted}>
-            Choose how the analyst should open the discussion.
-          </Text>
         </Card>
 
         {/* The first turn has no transcript yet, so its failure cannot use the discussion
@@ -4392,13 +4389,30 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
   }
 
   const abstract = (paper.abstract ?? '').trim();
+  // DR-152 — the abstract is now NAMED, and its absence is said out loud. Kamil met this card on
+  // a paper with neither: what was under the title was "Choose how the analyst should open the
+  // discussion", which the READING MODES section three lines below already said. Removing that
+  // sentence leaves a card that has to be honest about what it does and does not know instead.
+  // Only where the card is already saying things: a paper nobody knows anything about still
+  // renders NOTHING, because a row of blanks reads as the app failing rather than as the fact
+  // not being known yet (the decision this component was built around, and still right).
+  //
+  // Retrieval is NOT a condition on any of this. `abstract` is the reading-list entry's own
+  // `Abstract:` paragraph, and `store._abstract_paragraph` — the only thing that writes one —
+  // is reached from exactly two places: adding the paper, and `scripts/backfill_abstracts.py`
+  // run by hand. Fetching the full text writes `corpus/<slug>.md` and calls `annotate_entry`,
+  // which has no abstract to pass. So an absent abstract is absent, not late, and the line
+  // below must not forecast an arrival the code cannot produce (Opus review of #509).
   if (!facts.length && !abstract) return null;
+  // Past that guard the card is saying SOMETHING, so the abstract always gets its slot —
+  // named when it is here, and named as missing when it is not.
 
   return (
     <View style={{ gap: space.xs }}>
       {facts.length ? (
         <Text variant="caption" color={t.muted}>{facts.join('  ·  ')}</Text>
       ) : null}
+      <Text variant="overline">Abstract</Text>
       {abstract ? (
         <Pressable
           onPress={() => setExpanded((value) => !value)}
@@ -4409,7 +4423,11 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
             {abstract}
           </Text>
         </Pressable>
-      ) : null}
+      ) : (
+        <Text variant="body" color={t.muted} testID="paper-abstract-missing">
+          Not recorded for this paper.
+        </Text>
+      )}
     </View>
   );
 }
