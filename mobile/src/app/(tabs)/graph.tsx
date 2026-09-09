@@ -2,7 +2,7 @@
 // other and which external works they lean on, with a recommendation ranking for what to
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -99,16 +99,18 @@ export default function GraphScreen() {
   // controls) in favour of "Build map". Latch the first-run surface for this focused visit;
   // leaving Map or switching projects clears it, so the next entry gets the normal graph state.
   const [discoverEntryPid, setDiscoverEntryPid] = useState<string | null>(null);
+  const isFocused = useIsFocused();
   useEffect(() => {
     setDiscoverEntryPid((current) => {
+      // Bottom tabs blur without unmounting. Clearing while blurred and re-arming on focus is
+      // what makes "this visit" real even if the reader checks another tab during a long run.
+      if (!isFocused) return null;
       if (isEmptyProject) return activePid;
       return current === activePid ? current : null;
     });
-  }, [activePid, isEmptyProject]);
-  useFocusEffect(
-    useCallback(() => () => setDiscoverEntryPid(null), []),
-  );
-  const showFirstRunDiscover = isEmptyProject || discoverEntryPid === activePid;
+  }, [activePid, isEmptyProject, isFocused]);
+  const showFirstRunDiscover = isEmptyProject
+    || Boolean(activePid && discoverEntryPid === activePid);
   const showAllFilter = allowAllFilter || graph?.stage === 'skeleton';
   const filters = useMemo(
     () => (showAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')),

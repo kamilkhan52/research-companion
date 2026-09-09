@@ -6,7 +6,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEventAsync, waitFor } from '@testing-library/react-native';
-import { Slot, useRouter } from 'expo-router';
+import { router, Slot, Tabs, useRouter } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 
 import GraphScreen from '@/app/(tabs)/graph';
@@ -52,6 +52,22 @@ function TestLayout() {
         <GraphSettingsProvider>
           <ReadingSettingsProvider>
             <Slot />
+          </ReadingSettingsProvider>
+        </GraphSettingsProvider>
+      </ProjectProvider>
+    </QueryClientProvider>
+  );
+}
+
+// Unlike Slot, a bottom-tab navigator keeps visited screens mounted and sends focus/blur events.
+// That is the production lifecycle which exposed the second review finding.
+function TabsTestLayout() {
+  return (
+    <QueryClientProvider client={client}>
+      <ProjectProvider>
+        <GraphSettingsProvider>
+          <ReadingSettingsProvider>
+            <Tabs screenOptions={{ headerShown: false }} />
           </ReadingSettingsProvider>
         </GraphSettingsProvider>
       </ProjectProvider>
@@ -170,9 +186,10 @@ test('adding the first result keeps the rest of the paid search visible for this
     session_state: null,
     arxiv_id: '',
   };
-  jest.mocked(api.getProjectState)
-    .mockResolvedValueOnce(projectState([]) as never)
-    .mockResolvedValue(projectState([addedPaper]) as never);
+  let currentPapers: unknown[] = [];
+  jest.mocked(api.getProjectState).mockImplementation(
+    async () => projectState(currentPapers) as never,
+  );
   jest.mocked(api.getGraph).mockResolvedValue(emptyGraph(0) as never);
   jest.mocked(api.getDiscovery).mockResolvedValue({
     job: null,
@@ -191,14 +208,26 @@ test('adding the first result keeps the rest of the paid search visible for this
       generated_at: '2026-09-09T00:00:00Z',
     },
   } as never);
-  jest.mocked(api.addPaper).mockResolvedValue({ paper: addedPaper } as never);
+  jest.mocked(api.addPaper).mockImplementation(async () => {
+    currentPapers = [addedPaper];
+    return { paper: addedPaper } as never;
+  });
   const rendered = renderRouter(
-    { _layout: TestLayout, index: ReturnToMap, graph: GraphScreen },
+    { _layout: TabsTestLayout, index: ReturnToMap, graph: GraphScreen },
     { initialUrl: '/graph' },
   );
 
-  const addFirst = await screen.findByLabelText('Add First Result to library');
+  await screen.findByLabelText('Add First Result to library');
   expect(screen.getByText('Second Result')).toBeTruthy();
+
+  // Real bottom tabs blur but retain GraphScreen. The second review found that the first latch
+  // was cleared here and never re-armed because neither pid nor emptiness changed on return.
+  await act(async () => { router.navigate('/'); });
+  await waitFor(() => expect(rendered.getPathname()).toBe('/'));
+  await fireEventAsync.press(screen.getByText('Return to Map'));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
+
+  const addFirst = await screen.findByLabelText('Add First Result to library');
   await fireEventAsync.press(addFirst);
 
   await waitFor(() => expect(api.addPaper).toHaveBeenCalled());
