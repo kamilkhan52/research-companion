@@ -499,15 +499,24 @@
   align-items: flex-start;
 }
 
-/* The cover reserves no space and is removed entirely when there is none, so a library does not
-   rearrange itself as thumbnails arrive. */
+/* The image fills its reserved frame, so rows do not rearrange as thumbnails arrive. */
 .paper-cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Reserved, not collapsed. `display: contents` would generate no box, and an IntersectionObserver
+   cannot see an element that has none — no cover would ever load. Holding the slot is also what
+   keeps the row from moving when the image arrives. Left faint when empty so a paper with no
+   cover reads as "no preview" rather than as a broken frame. */
+.paper-cover-frame {
   flex: none;
   width: 44px;
   height: 60px;
-  object-fit: cover;
   border-radius: 6px;
-  border: 1px solid var(--line);
   background: var(--panel2);
   align-self: center;
+  overflow: hidden;
 }
