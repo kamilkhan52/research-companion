@@ -210,6 +210,10 @@ no other step leaves the tab half-merged.
    "Discover papers" CTA (`index.tsx:503` → `router.push('/discover')`), and the Map tab's
    zero-paper state is "No map yet" with a **Build map** button. Removing Discover's tab first
    would point every new project's CTA at a dead end.
+
+   **Implemented in [#521](https://github.com/kamilkhan52/research-companion/pull/521) (DR-157).**
+   The CTA now enters Map, where a confirmed zero-paper project renders the shared Discover
+   query/job/results content. The standalone tab remains until the later surface steps ship.
 3. **The list moves under the graph** in the Map tab, with the query box. Discover's tab is
    removed; its route and `index.tsx`'s `onDiscover` both land on the query box. Touches
    `_layout.tsx`'s `TAB_META` (4 slots → 3) and `nowPlayingVisibility.ts`'s hardcoded
