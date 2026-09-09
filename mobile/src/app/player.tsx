@@ -47,7 +47,22 @@ export default function PlayerScreen() {
   const [scrubbing, setScrubbing] = useState<number | null>(null);
   const [advancing, setAdvancing] = useState(false);
 
-  const narration = audio.currentId ? audio.narrationById[audio.currentId] : undefined;
+  // DR-156 — playback identity and transcript identity must be one atomic value. `currentId`
+  // is maintained by AudioProvider's separate PlaybackActiveTrackChanged subscriber, so a
+  // native skip may update this hook before (or without) that React state update. Reading the
+  // old id here paired the next response's audio with the previous response's words. Every
+  // narration track carries its transcript; the id-keyed cache is only a legacy/restoration
+  // fallback for a track whose custom metadata was not retained by the native player.
+  const narrationTrack = track as typeof track & {
+    slotId?: unknown;
+    narration?: unknown;
+  };
+  const narrationTrackId = narrationTrack?.slotId ?? narrationTrack?.id;
+  const narration = typeof narrationTrack?.narration === 'string' && narrationTrack.narration
+    ? narrationTrack.narration
+    : narrationTrackId != null
+      ? audio.narrationById[String(narrationTrackId)]
+      : undefined;
   const buffering = state === State.Buffering || state === State.Loading;
   const value = scrubbing ?? position;
 
