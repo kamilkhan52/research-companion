@@ -269,6 +269,30 @@ def test_collect_candidates_raises_when_nothing_found():
         _collect([{"query": "q"}], lambda q, n: [])
 
 
+def test_collect_candidates_skip_keeps_partial_results_and_stops_more_queries():
+    calls: list[str] = []
+    skip = False
+
+    def search(query: str, limit: int):
+        calls.append(query)
+        return [{"title": f"Result for {query}", "arxiv_id": f"id-{query}"}]
+
+    events = discovery.collect_candidates(
+        [
+            {"query": "first", "phase": "broad", "rationale": ""},
+            {"query": "second", "phase": "broad", "rationale": ""},
+        ],
+        search,
+        should_skip=lambda: skip,
+    )
+    assert next(events)["type"] == "search"
+    skip = True
+    final = next(events)
+    assert final["type"] == "candidates"
+    assert [item["title"] for item in final["candidates"]] == ["Result for first"]
+    assert calls == ["first"]
+
+
 # ---------- citation enrichment ----------
 
 def test_add_citation_counts_maps_counts_onto_candidates():
@@ -377,6 +401,51 @@ def test_cancel_after_a_progress_event_does_not_start_the_next_provider_stage():
     with pytest.raises(StopIteration):
         next(events)
     assert searches == []
+
+
+def test_skip_citations_continues_to_the_next_stage_and_is_one_shot():
+    requested = False
+    citation_calls = 0
+    evidence_calls = 0
+
+    def consume_skip() -> bool:
+        nonlocal requested
+        if not requested:
+            return False
+        requested = False
+        return True
+
+    def annotate_citations(candidates, cache):
+        nonlocal citation_calls
+        citation_calls += 1
+
+    def annotate_evidence(candidates):
+        nonlocal evidence_calls
+        evidence_calls += 1
+
+    events = discovery.run_discovery(
+        "goals",
+        model="m",
+        search_fn=lambda query, n: [_cand("7777.00001")],
+        llm_fn=fake_llm(),
+        cheap_llm_fn=fake_cheap_llm({}),
+        library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=annotate_citations,
+        authorships_fn=annotate_evidence,
+        should_skip=consume_skip,
+    )
+    seen: list[str] = []
+    for event in events:
+        seen.append(event["type"])
+        if event["type"] == "citations":
+            requested = True
+
+    assert citation_calls == 0
+    assert evidence_calls == 1
+    assert [event for event in seen if event != "finds"][-3:] == [
+        "scoring", "evidence", "done",
+    ]
 
 
 def test_cancellation_inside_wide_recall_does_not_checkpoint_a_partial_stage(temp_project):

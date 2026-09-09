@@ -39,6 +39,10 @@ class DiscoveryJob(Job):
     finds: list = field(default_factory=list)
     finds_stage: str = ""     # "grounded" (provisional) | "ranked"
     result: dict | None = None
+    # DR-067: a one-shot cooperative request, consumed by the next skippable pipeline stage.
+    # `skips` lets a polling client distinguish a completed skip from a lost POST response.
+    skip_requested: bool = False
+    skips: int = 0
 
     def to_dict(self) -> dict:
         d = super().to_dict()
@@ -90,6 +94,32 @@ def cancel_discovery(pid: str) -> DiscoveryJob | None:
     return _registry.cancel(job.id, project_id=pid) if job else None
 
 
+def skip_discovery(pid: str) -> DiscoveryJob | None:
+    """Arm one cooperative stage skip for this scope's active discovery run.
+
+    Repeated presses are idempotent until the worker consumes the request. Cancellation and
+    completion win under the same registry lock, so a late Skip can never revive terminal work.
+    """
+    job = _registry.active_for(_job_key(pid), project_id=pid)
+    if not job:
+        return None
+    with _registry.lock:
+        if job.status != "running":
+            return None
+        job.skip_requested = True
+        return job
+
+
+def _consume_skip(job: DiscoveryJob) -> bool:
+    """Atomically consume this attempt's pending skip, at most once per request."""
+    with _registry.lock:
+        if job.status != "running" or not job.skip_requested:
+            return False
+        job.skip_requested = False
+        job.skips += 1
+        return True
+
+
 def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discovery,
                     **run_kwargs) -> DiscoveryJob:
     """Start a run for `pid` in a background thread, or join the one already running for it.
@@ -102,6 +132,7 @@ def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discover
             job.goals,
             **run_kwargs,
             should_cancel=lambda: _registry.is_cancelled(job),
+            should_skip=lambda: _consume_skip(job),
         ))
         try:
             for event in events:
@@ -131,6 +162,10 @@ def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discover
             close = getattr(events, "close", None)
             if close is not None:
                 close()
+            # No later stage can consume an arrival after the final boundary. Never publish a
+            # terminal snapshot that still claims a skip is waiting.
+            with _registry.lock:
+                job.skip_requested = False
 
     # Pass project_id explicitly (not the ambient default): the worker must bind THIS pid's
     # project even if a caller's ambient context is absent or different (scheduler/test/batch).

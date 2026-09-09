@@ -6,7 +6,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { cancelDiscovery, getDiscovery, startDiscovery } from '@/api/endpoints';
+import { cancelDiscovery, getDiscovery, skipDiscovery, startDiscovery } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { DiscoveryJob, DiscoveryResponse } from '@/api/types';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
@@ -16,11 +16,14 @@ const POLL_INTERVAL_MS = 1500;
 export interface DiscoveryRunState {
   running: boolean;
   cancelling: boolean;
+  skipping: boolean;
   job: DiscoveryJob | null;
   error: string | null;
   run: (goals: string) => Promise<boolean>;
   /** Stop the current server-side run at its next provider/stage boundary. */
   cancel: () => Promise<boolean>;
+  /** Continue with partial output from the current/next skippable provider stage. */
+  skip: () => Promise<boolean>;
   /** Re-attach to a running job, or restore a cancelled snapshot so its partial-state
    *  explanation survives leaving and reopening Discover. */
   resume: (job: DiscoveryJob | null | undefined) => void;
@@ -31,6 +34,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   const qc = useQueryClient();
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [skipping, setSkipping] = useState(false);
   const [job, setJob] = useState<DiscoveryJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Guards a start against a fast double-tap in the same tick (before `running` re-renders).
@@ -46,6 +50,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     startingRef.current = false;
     setRunning(false);
     setCancelling(false);
+    setSkipping(false);
     setJob(null);
     setError(null);
   }, [pid]);
@@ -55,16 +60,19 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
       if (!next) {
         setRunning(false);
         setCancelling(false);
+        setSkipping(false);
         return;
       }
       setJob(next);
       if (next.status === 'running') {
         setRunning(true);
         setCancelling(false);
+        setSkipping(Boolean(next.skip_requested));
         return;
       }
       setRunning(false);
       setCancelling(false);
+      setSkipping(false);
       if (next.status === 'error' && !presentSpendJobRefusal(next.refusal, { operation: 'other' })) {
         setError(next.error ?? 'Discovery failed.');
       }
@@ -175,6 +183,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
         setJob(next);
         setRunning(false);
         setCancelling(false);
+        setSkipping(false);
       }
     },
     [applyJob],
@@ -217,7 +226,45 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     }
   }, [pid, running, cancelling, job?.status, applyJob]);
 
+  const skip = useCallback(async () => {
+    if (!pid || !running || cancelling || skipping || job?.status !== 'running') return false;
+    const requestPid = pid;
+    const beforeSkips = job.skips ?? 0;
+    // Reject a poll that read the pre-Skip snapshot but resolves after this request.
+    const generation = ++startGenerationRef.current;
+    startingRef.current = false;
+    setSkipping(true);
+    setError(null);
+    try {
+      const { job: skipped } = await skipDiscovery(requestPid);
+      if (generation !== startGenerationRef.current) return false;
+      applyJob(skipped);
+      return true;
+    } catch (e) {
+      if (generation !== startGenerationRef.current) return false;
+      // The response may be lost after the server arms or consumes the request. The monotonic
+      // counter distinguishes that success from an ordinary running snapshot.
+      try {
+        const { job: snap } = await getDiscovery(requestPid);
+        if (generation !== startGenerationRef.current) return false;
+        if (snap && (
+          snap.status !== 'running'
+          || Boolean(snap.skip_requested)
+          || (snap.skips ?? 0) > beforeSkips
+        )) {
+          applyJob(snap);
+          return true;
+        }
+      } catch {
+        // Status is unreachable too; keep the run visible and surface the original failure.
+      }
+      setError((e as Error).message ?? 'Could not skip this discovery step.');
+      setSkipping(false);
+      return false;
+    }
+  }, [pid, running, cancelling, skipping, job, applyJob]);
+
   const clearError = useCallback(() => setError(null), []);
 
-  return { running, cancelling, job, error, run, cancel, resume, clearError };
+  return { running, cancelling, skipping, job, error, run, cancel, skip, resume, clearError };
 }

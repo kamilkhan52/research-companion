@@ -83,6 +83,26 @@ def test_discovery_authorships_adds_grounded_institutions_and_aborts_on_outage()
     assert calls["n"] == 1
 
 
+def test_discovery_authorships_cooperative_stop_keeps_partial_enrichment(monkeypatch):
+    monkeypatch.setattr(openalex, "concurrency", lambda: 1)
+    candidates = [
+        {"title": "First", "doi": "10.1145/first", "authors": []},
+        {"title": "Second", "doi": "10.1145/second", "authors": []},
+    ]
+    client = FakeClient({"10.1145/first": _work(AWQ_SHIPS)})
+
+    openalex.annotate_discovery_authorships(
+        candidates,
+        client=client,
+        sleep=lambda *_: None,
+        should_stop=lambda: len(client.calls) >= 1,
+    )
+
+    assert len(client.calls) == 1
+    assert candidates[0]["authors"] == ["Ji Lin", "Song Han"]
+    assert candidates[1]["authors"] == []
+
+
 def _project_node(node_id: str, arxiv_id: str | None):
     return {"id": node_id, "kind": "project", "arxiv_id": arxiv_id, "authors": []}
 

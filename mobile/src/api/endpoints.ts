@@ -672,6 +672,9 @@ export const getDiscovery = (pid: string) =>
  *  the returned cancelled snapshot retains any live finds already gathered. */
 export const cancelDiscovery = (pid: string) =>
   apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {}).then(noting((r) => scopedJob(`discovery:${pid}`, r.job)));
+/** Skip the next skippable Discover stage at its next provider boundary, preserving partial work. */
+export const skipDiscovery = (pid: string) =>
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/skip`, {}).then(noting((r) => scopedJob(`discovery:${pid}`, r.job)));
 /** Hide one recommended paper from every recommendation surface (R12.3). Send the rendered
  *  suggestion; the server derives all its identities (arXiv/DOI/S2/title). */
 export const hideSuggestion = (pid: string, candidate: object) =>

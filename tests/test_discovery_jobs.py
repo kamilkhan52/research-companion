@@ -310,6 +310,51 @@ def test_same_project_id_is_deduped_and_cancelled_per_user(temp_project):
     assert jobs.any_running_for_project(temp_project) is None
 
 
+def test_same_project_id_is_skipped_per_user(temp_project):
+    """A Skip for Bob's ``default`` must not arm Alice's identically named project."""
+    entered = {"alice": threading.Event(), "bob": threading.Event()}
+    releases = {"alice": threading.Event(), "bob": threading.Event()}
+
+    def blocked(label: str):
+        def run(goals: str, **kwargs):
+            yield {"type": "queries", "focus": label, "queries": []}
+            entered[label].set()
+            assert releases[label].wait(5)
+            kwargs["should_skip"]()
+            yield {"type": "done", "result": {
+                "goals": goals, "suggestions": [], "candidate_count": 0, "top_n": 5,
+            }}
+        return run
+
+    alice_token = config.set_active_user("alice")
+    try:
+        alice = discovery_jobs.start_discovery(
+            temp_project, "alice goals", run_fn=blocked("alice"))
+    finally:
+        config.reset_active_user(alice_token)
+    bob_token = config.set_active_user("bob")
+    try:
+        bob = discovery_jobs.start_discovery(
+            temp_project, "bob goals", run_fn=blocked("bob"))
+        assert entered["bob"].wait(5)
+        assert discovery_jobs.skip_discovery(temp_project) is bob
+    finally:
+        config.reset_active_user(bob_token)
+
+    assert entered["alice"].wait(5)
+    assert bob.skip_requested is True
+    assert alice.skip_requested is False
+    releases["alice"].set()
+    releases["bob"].set()
+
+    deadline = time.monotonic() + 5
+    while alice.finished_at is None or bob.finished_at is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert alice.skips == 0
+    assert bob.skips == 1
+
+
 def test_cancel_route_returns_snapshot_and_404s_without_a_run(temp_project):
     job = discovery_jobs.start_discovery(temp_project, "goals", run_fn=fake_run(delay=0.1))
     response = discovery_routes.cancel_discovery(temp_project)
@@ -325,3 +370,66 @@ def test_cancel_route_returns_snapshot_and_404s_without_a_run(temp_project):
     with pytest.raises(HTTPException) as exc:
         discovery_routes.cancel_discovery(temp_project)
     assert exc.value.status_code == 404
+
+
+def test_skip_route_is_one_shot_idempotent_and_404s_without_a_running_job(temp_project):
+    at_search_boundary = threading.Event()
+    release = threading.Event()
+    observed: list[bool] = []
+
+    def run(goals: str, **kwargs):
+        yield {"type": "queries", "focus": "f", "queries": []}
+        at_search_boundary.set()
+        assert release.wait(5)
+        observed.append(kwargs["should_skip"]())
+        yield {"type": "citations", "count": 0}
+        observed.append(kwargs["should_skip"]())
+        yield {"type": "done", "result": {
+            "goals": goals, "suggestions": [], "candidate_count": 0, "top_n": 5,
+        }}
+
+    discovery_jobs.start_discovery(temp_project, "goals", run_fn=run)
+    assert at_search_boundary.wait(5)
+    first = discovery_routes.skip_discovery(temp_project)["job"]
+    second = discovery_routes.skip_discovery(temp_project)["job"]
+    assert first["skip_requested"] is True
+    assert second["skip_requested"] is True
+    assert second["skips"] == 0
+
+    release.set()
+    finished = _wait_until_done(temp_project)
+    assert observed == [True, False]
+    assert finished.skips == 1
+    assert finished.skip_requested is False
+
+    with pytest.raises(HTTPException) as exc:
+        discovery_routes.skip_discovery(temp_project)
+    assert exc.value.status_code == 404
+
+
+def test_cancel_wins_over_an_armed_skip(temp_project):
+    at_boundary = threading.Event()
+    release = threading.Event()
+    observed: list[bool] = []
+
+    def run(goals: str, **kwargs):
+        yield {"type": "queries", "focus": "f", "queries": []}
+        at_boundary.set()
+        assert release.wait(5)
+        observed.append(kwargs["should_skip"]())
+        yield {"type": "done", "result": {
+            "goals": goals, "suggestions": [], "candidate_count": 0, "top_n": 5,
+        }}
+
+    discovery_jobs.start_discovery(temp_project, "goals", run_fn=run)
+    assert at_boundary.wait(5)
+    assert discovery_jobs.skip_discovery(temp_project) is not None
+    assert discovery_jobs.cancel_discovery(temp_project).status == "cancelled"
+    release.set()
+
+    deadline = time.monotonic() + 5
+    while jobs.any_running_for_project(temp_project):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert observed == [False]
+    assert discovery_jobs.get_job(temp_project).skips == 0

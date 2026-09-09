@@ -39,6 +39,7 @@ afterEach(() => {
   jest.mocked(api.getGraphBuildStatus).mockReset();
   jest.mocked(api.startDiscovery).mockReset();
   jest.mocked(api.cancelDiscovery).mockReset();
+  jest.mocked(api.skipDiscovery).mockReset();
   jest.mocked(api.getDiscovery).mockReset();
 });
 
@@ -258,6 +259,60 @@ test('a lost Stop response reconciles against the cancelled backend job', async 
   expect(hook.result.current.error).toBeNull();
   expect(hook.result.current.running).toBe(false);
   expect(hook.result.current.job?.status).toBe('cancelled');
+  await hook.unmountAsync();
+});
+
+test('discover Skip ignores a stale pre-skip poll and keeps the armed state', async () => {
+  const running = {
+    status: 'running', phase: 'searching', finds: [], skip_requested: false, skips: 0,
+  } as unknown as DiscoveryJob;
+  const armed = { ...running, skip_requested: true } as DiscoveryJob;
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: running });
+  let resolvePoll: (value: { job: DiscoveryJob | null }) => void = () => undefined;
+  jest.mocked(api.getDiscovery).mockReturnValue(
+    new Promise((resolve) => {
+      resolvePoll = resolve;
+    }) as never,
+  );
+  jest.mocked(api.skipDiscovery).mockResolvedValue({ job: armed });
+
+  const hook = await renderHookAsync(() => useDiscoveryRun('proj'), { wrapper });
+  await act(async () => hook.result.current.run('memory systems'));
+  await act(async () => Promise.resolve());
+
+  await act(async () => hook.result.current.skip());
+  expect(hook.result.current.skipping).toBe(true);
+  expect(hook.result.current.job?.skip_requested).toBe(true);
+
+  await act(async () => resolvePoll({ job: running }));
+  expect(hook.result.current.skipping).toBe(true);
+  expect(hook.result.current.job?.skip_requested).toBe(true);
+  await hook.unmountAsync();
+});
+
+test('a lost Skip response reconciles against the consumed skip counter', async () => {
+  const running = {
+    status: 'running', phase: 'searching', finds: [], skip_requested: false, skips: 0,
+  } as unknown as DiscoveryJob;
+  const consumed = { ...running, phase: 'library', skips: 1 } as DiscoveryJob;
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: running });
+  jest.mocked(api.skipDiscovery).mockRejectedValue(new Error('tunnel timeout'));
+  jest.mocked(api.getDiscovery)
+    .mockResolvedValueOnce({ job: running } as never)
+    .mockResolvedValueOnce({ job: consumed } as never);
+
+  const hook = await renderHookAsync(() => useDiscoveryRun('proj'), { wrapper });
+  await act(async () => hook.result.current.run('memory systems'));
+  await act(async () => Promise.resolve());
+
+  let skipped = false;
+  await act(async () => {
+    skipped = await hook.result.current.skip();
+  });
+  expect(skipped).toBe(true);
+  expect(hook.result.current.error).toBeNull();
+  expect(hook.result.current.skipping).toBe(false);
+  expect(hook.result.current.job?.skips).toBe(1);
   await hook.unmountAsync();
 });
 

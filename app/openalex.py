@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Callable
 from urllib.parse import quote
 
 import httpx
@@ -195,7 +196,10 @@ def concurrency() -> int:
     return max(1, min(12, n))
 
 
-def _annotate_discovery_parallel(candidates: list[dict], *, client: httpx.Client) -> None:
+def _annotate_discovery_parallel(
+    candidates: list[dict], *, client: httpx.Client,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
     """The same lookup, fanned out. These are single-work-by-id calls, which OpenAlex prices at
     zero, so the only cost of doing them one at a time was wall-clock — 83s for 60 candidates on
     a real run, against a funnel whose other stages had already been parallelised down to tens of
@@ -206,14 +210,19 @@ def _annotate_discovery_parallel(candidates: list[dict], *, client: httpx.Client
                if c.get("arxiv_id") or c.get("doi")]
     if not targets:
         return
+    stopped = should_stop or (lambda: False)
 
     def one(candidate: dict):
+        if stopped():
+            return None
         return work_authorships_for(arxiv_id=candidate.get("arxiv_id"),
                                     doi=candidate.get("doi"), client=client)
 
     # The first lookup is a serial PROBE, which preserves the property the serial loop had: a
     # transport outage aborts the pass after ONE request instead of paying a timeout per paper.
     # Fanning out blindly would turn an outage into `len(targets)/workers` rounds of timeouts.
+    if stopped():
+        return
     try:
         first = one(targets[0])
     except httpx.HTTPError:
@@ -237,6 +246,7 @@ def annotate_discovery_authorships(
     *,
     client: httpx.Client | None = None,
     sleep=time.sleep,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Best-effort author/institution metadata for a bounded discovery candidate set.
 
@@ -246,12 +256,15 @@ def annotate_discovery_authorships(
     own = client is None
     client = client or make_client(timeout=TIMEOUT_S)
     if concurrency() > 1:
-        _annotate_discovery_parallel(candidates, client=client)
+        _annotate_discovery_parallel(
+            candidates, client=client, should_stop=should_stop)
         if own:
             client.close()
         return
     try:
         for candidate in candidates:
+            if should_stop and should_stop():
+                break
             if not candidate.get("arxiv_id") and not candidate.get("doi"):
                 continue
             try:
@@ -270,7 +283,8 @@ def annotate_discovery_authorships(
                 candidate["affiliations"] = list(dict.fromkeys(
                     ship["affiliation"] for ship in ships if ship.get("affiliation")
                 ))
-            sleep(_PACE_S)
+            if not should_stop or not should_stop():
+                sleep(_PACE_S)
     except Exception:
         pass
     finally:

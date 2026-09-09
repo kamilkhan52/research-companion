@@ -77,6 +77,26 @@ def test_title_match_paced_and_stops_on_429():
     assert _key("t3", sig=1) not in cache      # not recorded -> retried on a future build
 
 
+def test_cooperative_stop_keeps_resolved_counts_and_starts_no_later_lookup():
+    nodes = [_node("t1", sig=3), _node("t2", sig=2), _node("t3", sig=1)]
+    cache: dict = {}
+    client = FakeClient(get_resps=[
+        _resp(200, {"data": [{"title": "A sufficiently long paper title",
+                               "citationCount": 512}]}),
+        _resp(200, {"data": [{"title": "A sufficiently long paper title",
+                               "citationCount": 7}]}),
+    ])
+
+    real_fetch_missing(
+        nodes, cache, client, sleep=lambda _s: None,
+        should_stop=lambda: client.get_calls >= 1,
+    )
+
+    assert client.get_calls == 1
+    assert cache[_key("t1", sig=3)] == 512
+    assert _key("t2", sig=2) not in cache
+
+
 def test_annotate_applies_cache_and_never_raises():
     nodes = [_node("a", arxiv="2205.14135"), _node("b")]
     cache = {_key("a", arxiv="2205.14135"): 4626}
