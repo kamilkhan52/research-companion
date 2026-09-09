@@ -103,6 +103,25 @@ def test_discovery_authorships_cooperative_stop_keeps_partial_enrichment(monkeyp
     assert candidates[1]["authors"] == []
 
 
+def test_parallel_discovery_authorships_starts_no_work_after_stop(monkeypatch):
+    monkeypatch.setattr(openalex, "concurrency", lambda: 8)
+    candidates = [
+        {"title": f"Paper {i}", "doi": f"10.1145/paper-{i}", "authors": []}
+        for i in range(4)
+    ]
+    client = FakeClient({"10.1145/paper-0": _work(AWQ_SHIPS)})
+
+    openalex.annotate_discovery_authorships(
+        candidates,
+        client=client,
+        should_stop=lambda: len(client.calls) >= 1,
+    )
+
+    assert len(client.calls) == 1
+    assert candidates[0]["authors"] == ["Ji Lin", "Song Han"]
+    assert all(candidate["authors"] == [] for candidate in candidates[1:])
+
+
 def _project_node(node_id: str, arxiv_id: str | None):
     return {"id": node_id, "kind": "project", "arxiv_id": arxiv_id, "authors": []}
 

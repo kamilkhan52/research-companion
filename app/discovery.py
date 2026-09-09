@@ -578,8 +578,12 @@ def collect_candidates(
     seen: dict[str, dict] = {}
     identity_owner: dict[str, str] = {}
     errors: set[str] = set()
+    issued_request = False
     for i, q in enumerate(queries):
-        if skip():
+        # A request armed during query planning means "skip the remaining search", not "never
+        # search". Guarantee one provider call so a fresh project does not fail with an empty,
+        # unexplained lane after already paying to plan it.
+        if issued_request and skip():
             break
         providers: list[tuple[str, str, SearchFn]] = [
             ("arxiv", q["query"], search_fn),
@@ -591,9 +595,10 @@ def collect_candidates(
                 semantic_search_fn,
             ))
         for provider, provider_query, provider_search in providers:
-            if skip():
+            if issued_request and skip():
                 break
             try:
+                issued_request = True
                 results = provider_search(provider_query, PER_QUERY_RESULTS)
             except (retriever.RetrievalError, semantic_scholar.SemanticScholarError):
                 errors.add(provider)
@@ -1305,8 +1310,8 @@ def run_discovery(
     def stage_skip() -> Callable[[], bool]:
         """Latch a one-shot registry request for the lifetime of one skippable stage.
 
-        Provider workers may ask concurrently. Only the first call reaches the registry; once
-        observed, every later boundary in this stage sees True without consuming a future skip.
+        Provider workers may ask concurrently. Once one call observes the request, every later
+        boundary in this stage sees True without consuming a future skip.
         """
         observed = False
         lock = threading.Lock()

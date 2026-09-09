@@ -264,6 +264,35 @@ def test_cancel_racing_final_persistence_observes_completed_result(temp_project,
     assert discovery.load_result()["goals"] == "goals"
 
 
+def test_skip_racing_final_persistence_is_rejected(temp_project, monkeypatch):
+    """Once result persistence owns the lifecycle lock, there is no later stage to skip."""
+    saving = threading.Event()
+    release_save = threading.Event()
+    real_save = discovery.save_result
+
+    def gated_save(result: dict):
+        saving.set()
+        assert release_save.wait(5)
+        real_save(result)
+
+    monkeypatch.setattr(discovery, "save_result", gated_save)
+    discovery_jobs.start_discovery(temp_project, "goals", run_fn=fake_run())
+    assert saving.wait(5)
+
+    skipped: list[discovery_jobs.DiscoveryJob | None] = []
+    skip_thread = threading.Thread(
+        target=lambda: skipped.append(discovery_jobs.skip_discovery(temp_project)))
+    skip_thread.start()
+    time.sleep(0.02)
+    assert skip_thread.is_alive()
+
+    release_save.set()
+    skip_thread.join(5)
+    assert not skip_thread.is_alive()
+    assert skipped == [None]
+    assert _wait_until_done(temp_project).skip_requested is False
+
+
 def test_same_project_id_is_deduped_and_cancelled_per_user(temp_project):
     """The scope key is (user, project), never pid alone. Give both users the SAME pid—the only
     setup that can prove one user's Stop does not cancel or join the other's run."""

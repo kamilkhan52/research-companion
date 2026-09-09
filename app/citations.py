@@ -110,13 +110,10 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
     # `OPENALEX_MAX_LOOKUPS` searches exhausts (see `openalex.make_client`).
     openalex = openalex_mod.make_client(timeout=TIMEOUT_S)
     try:
-        if should_stop is None:
-            _fetch_missing(nodes, cache, client, sleep, openalex_client=openalex)
-        else:
-            _fetch_missing(
-                nodes, cache, client, sleep, openalex_client=openalex,
-                should_stop=should_stop,
-            )
+        _fetch_missing(
+            nodes, cache, client, sleep, openalex_client=openalex,
+            should_stop=should_stop,
+        )
     except Exception as e:  # noqa: BLE001 — enrichment must never fail the build
         # Logged, not just swallowed. A build that quietly resolved NOTHING is
         # indistinguishable from one that was never asked to, and that is exactly how a graph
@@ -435,7 +432,10 @@ def _fetch_missing(
     ]
     deadline = time.monotonic() + OPENALEX_BUDGET_S
     for n in still_missing[:OPENALEX_MAX_LOOKUPS]:
-        if stopped() or time.monotonic() >= deadline:
+        if stopped():
+            log.info("openalex fallback stopped by discovery skip")
+            break
+        if time.monotonic() >= deadline:
             log.info("openalex fallback stopped at its time budget")
             break
         # Each request gets only what is left of the budget, recomputed per request rather than

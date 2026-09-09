@@ -293,6 +293,27 @@ def test_collect_candidates_skip_keeps_partial_results_and_stops_more_queries():
     assert calls == ["first"]
 
 
+def test_collect_candidates_prearmed_skip_still_runs_one_provider_request():
+    calls: list[str] = []
+
+    def search(query: str, limit: int):
+        calls.append(query)
+        return [{"title": "First useful result", "arxiv_id": "7777.00001"}]
+
+    events = list(discovery.collect_candidates(
+        [
+            {"query": "first", "phase": "broad", "rationale": ""},
+            {"query": "second", "phase": "broad", "rationale": ""},
+        ],
+        search,
+        should_skip=lambda: True,
+    ))
+
+    assert calls == ["first"]
+    assert events[0]["type"] == "search"
+    assert [item["title"] for item in events[-1]["candidates"]] == ["First useful result"]
+
+
 # ---------- citation enrichment ----------
 
 def test_add_citation_counts_maps_counts_onto_candidates():
@@ -446,6 +467,29 @@ def test_skip_citations_continues_to_the_next_stage_and_is_one_shot():
     assert [event for event in seen if event != "finds"][-3:] == [
         "scoring", "evidence", "done",
     ]
+
+
+def test_run_wires_the_skip_callback_into_default_citation_enrichment(monkeypatch):
+    received: list[object] = []
+
+    def capture(nodes, cache, *, should_stop=None):
+        received.append(should_stop)
+
+    monkeypatch.setattr(discovery.citations, "annotate_nodes", capture)
+    list(discovery.run_discovery(
+        "goals",
+        model="m",
+        search_fn=lambda query, n: [_cand("7777.00001")],
+        llm_fn=fake_llm(),
+        cheap_llm_fn=fake_cheap_llm({}),
+        library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        authorships_fn=lambda candidates: None,
+        should_skip=lambda: False,
+    ))
+
+    assert len(received) == 1
+    assert callable(received[0])
 
 
 def test_cancellation_inside_wide_recall_does_not_checkpoint_a_partial_stage(temp_project):
