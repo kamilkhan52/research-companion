@@ -186,6 +186,7 @@ const WIRED: WiredRow[] = [
   row('startDiscovery', () => api.startDiscovery('p', 'g'), () => ({ job: freshScopedJob() })),
   row('getDiscovery', () => api.getDiscovery('p'), () => ({ job: freshScopedJob(), result: null, goals: '' })),
   row('cancelDiscovery', () => api.cancelDiscovery('p'), () => ({ job: freshScopedJob() })),
+  row('skipDiscovery', () => api.skipDiscovery('p'), () => ({ job: freshScopedJob() })),
   row('startLabsResearch', () => api.startLabsResearch('p'), () => ({ job: freshJob() })),
   row('getLabsResearchJob', () => api.getLabsResearchJob('p', 'id'), () => ({ job: freshJob() })),
   row('startAuthorProfile', () => api.startAuthorProfile('p', 'n'), () => ({ job: freshJob() })),
@@ -221,6 +222,6 @@ describe('endpoint wiring', () => {
   it('covers every job-returning endpoint exported today', () => {
     // If this number changed, a job-returning endpoint was added or removed — extend the
     // table (and the endpoint's `.then(noting(...))`) rather than editing the count blindly.
-    expect(WIRED).toHaveLength(32);
+    expect(WIRED).toHaveLength(33);
   });
 });

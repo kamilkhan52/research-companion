@@ -894,6 +894,10 @@ export interface DiscoveryJob {
   finds: DiscoveryFind[];
   /** `grounded` finds are chosen on provenance alone, before any model has judged them. */
   finds_stage: '' | 'searching' | 'grounded' | 'screened' | 'ranked';
+  /** A one-shot request waiting for the next skippable provider-stage boundary. */
+  skip_requested?: boolean;
+  /** Number of skip requests this run has consumed (used to reconcile a lost POST response). */
+  skips?: number;
   result: DiscoveryResult | null;
   error: string | null;
   /** Structured refusal when the failure was a spend/rate refusal (DR-049). */

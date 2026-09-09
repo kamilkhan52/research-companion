@@ -77,6 +77,7 @@ export const getLatestNotesJob = unexpected('getLatestNotesJob');
 export const discardNotesJob = unexpected('discardNotesJob');
 export const startDiscovery = unexpected('startDiscovery');
 export const cancelDiscovery = unexpected('cancelDiscovery');
+export const skipDiscovery = unexpected('skipDiscovery');
 export const getDiscovery = unexpected('getDiscovery');
 export const hideSuggestion = unexpected('hideSuggestion');
 export const unhideSuggestion = unexpected('unhideSuggestion');

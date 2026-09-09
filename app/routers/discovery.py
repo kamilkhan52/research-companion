@@ -69,6 +69,15 @@ def cancel_discovery(pid: str):
     return {"job": discovery_jobs.snapshot(pid)}
 
 
+@project_router.post("/discover/skip")
+def skip_discovery(pid: str):
+    """Continue the run with partial output from its next skippable stage."""
+    job = discovery_jobs.skip_discovery(pid)
+    if not job:
+        raise HTTPException(status_code=404, detail="No discovery run to skip")
+    return {"job": discovery_jobs.snapshot(pid)}
+
+
 class HideReq(BaseModel):
     candidate: dict
 

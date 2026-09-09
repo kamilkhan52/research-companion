@@ -571,12 +571,20 @@ def collect_candidates(
     queries: list[dict],
     search_fn: SearchFn,
     semantic_search_fn: SearchFn | None = None,
+    should_skip: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     """Fan each concept out across providers, merge identities, then source-balance the cap."""
+    skip = should_skip or (lambda: False)
     seen: dict[str, dict] = {}
     identity_owner: dict[str, str] = {}
     errors: set[str] = set()
+    issued_request = False
     for i, q in enumerate(queries):
+        # A request armed during query planning means "skip the remaining search", not "never
+        # search". Guarantee one provider call so a fresh project does not fail with an empty,
+        # unexplained lane after already paying to plan it.
+        if issued_request and skip():
+            break
         providers: list[tuple[str, str, SearchFn]] = [
             ("arxiv", q["query"], search_fn),
         ]
@@ -587,7 +595,10 @@ def collect_candidates(
                 semantic_search_fn,
             ))
         for provider, provider_query, provider_search in providers:
+            if issued_request and skip():
+                break
             try:
+                issued_request = True
                 results = provider_search(provider_query, PER_QUERY_RESULTS)
             except (retriever.RetrievalError, semantic_scholar.SemanticScholarError):
                 errors.add(provider)
@@ -705,7 +716,12 @@ def collect_candidates(
             "found": min(len(seen), MAX_CANDIDATES),
             "providers": [provider for provider, *_ in providers],
         }
+        if skip():
+            break
     if not seen:
+        if skip():
+            yield {"type": "candidates", "candidates": []}
+            return
         raise DiscoveryError(
             "No scholarly results for any query."
             + (
@@ -1260,6 +1276,7 @@ def run_discovery(
     recall_fn: RecallFn | None = None,
     wide_recall_fn: WideRecallFn | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    should_skip: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     """Run the multi-source pipeline, resuming the last complete stage after a process restart."""
     goals = (goals or "").strip()
@@ -1272,7 +1289,12 @@ def run_discovery(
     if semantic_search_fn is None and not injected_arxiv:
         semantic_search_fn = semantic_scholar.search_papers
     llm_fn = llm_fn or _default_llm
+    default_citations = citations_fn is None or citations_fn is citations.annotate_nodes
     citations_fn = citations_fn or citations.annotate_nodes
+    default_authorships = (
+        authorships_fn is openalex.annotate_discovery_authorships
+        or (authorships_fn is None and not injected_search)
+    )
     if authorships_fn is None:
         authorships_fn = (
             (lambda _candidates: None)
@@ -1283,6 +1305,25 @@ def run_discovery(
     cheap_llm = cheap_llm_fn or _cheap_llm
     papers = _reading_list(library_fn)
     cancelled = should_cancel or (lambda: False)
+    skip_requested = should_skip or (lambda: False)
+
+    def stage_skip() -> Callable[[], bool]:
+        """Latch a one-shot registry request for the lifetime of one skippable stage.
+
+        Provider workers may ask concurrently. Once one call observes the request, every later
+        boundary in this stage sees True without consuming a future skip.
+        """
+        observed = False
+        lock = threading.Lock()
+
+        def check() -> bool:
+            nonlocal observed
+            with lock:
+                if not observed:
+                    observed = skip_requested()
+                return observed
+
+        return check
     checkpoint_key = discovery_checkpoint.fingerprint(
         goals, papers, pipeline=CHECKPOINT_PIPELINE)
     checkpoint = discovery_checkpoint.load(checkpoint_key)
@@ -1331,8 +1372,10 @@ def run_discovery(
 
         lexical: list[dict] = []
         lexical_error = ""
+        skip_search = stage_skip()
         try:
-            for event in collect_candidates(queries, search_fn, semantic_search_fn):
+            for event in collect_candidates(
+                    queries, search_fn, semantic_search_fn, should_skip=skip_search):
                 if event["type"] == "candidates":
                     lexical = event["candidates"]
                 else:
@@ -1447,7 +1490,19 @@ def run_discovery(
     yield {"type": "citations", "count": len(triaged)}
     if cancelled():
         return
-    add_citation_counts(triaged, citations_fn)
+    skip_citations = stage_skip()
+    if not skip_citations():
+        if default_citations:
+            add_citation_counts(
+                triaged,
+                lambda nodes, cache: citations_fn(
+                    nodes, cache, should_stop=skip_citations),
+            )
+        else:
+            # Injected functions are intentionally kept on their established two-argument
+            # contract. They are one opaque provider boundary in tests/extensions.
+            add_citation_counts(triaged, citations_fn)
+        skip_citations()  # consume a request that arrived during the final in-flight call
 
     yield {"type": "scoring", "count": len(triaged)}
     if cancelled():
@@ -1519,7 +1574,13 @@ def run_discovery(
     yield {"type": "evidence", "count": len(scored)}
     if cancelled():
         return
-    authorships_fn(scored)
+    skip_evidence = stage_skip()
+    if not skip_evidence():
+        if default_authorships:
+            authorships_fn(scored, should_stop=skip_evidence)
+        else:
+            authorships_fn(scored)
+        skip_evidence()  # do not accidentally carry a late request into a future run/stage
 
     ranked = blend_and_rank(scored)
     discovery_ledger.apply_frontier_updates(ledger, frontier_updates)

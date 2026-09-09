@@ -82,7 +82,8 @@ def _offline_citations(monkeypatch):
         graph,
         semantic_scholar,
     )
-    monkeypatch.setattr(citations, "_fetch_missing", lambda nodes, cache, client, sleep: None)
+    monkeypatch.setattr(
+        citations, "_fetch_missing", lambda nodes, cache, client, sleep, **kwargs: None)
     monkeypatch.setattr(semantic_scholar, "api_key", lambda: "")
     # Figure-manifest enrichment (R.10): stub only its two network functions — the rest of
     # the pipeline runs for real; figure tests inject fetch fakes via derive_for_slug's

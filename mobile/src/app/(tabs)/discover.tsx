@@ -47,6 +47,13 @@ import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens
 
 export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
+export function discoverySkipLabel(phase: DiscoveryJob['phase']): string {
+  if (phase === 'searching') return 'Skip search';
+  if (phase === 'citations') return 'Skip citations';
+  if (phase === 'evidence') return 'Skip evidence';
+  return 'Skip next step';
+}
+
 /** First occurrence wins: the ranked order is the server's, and the later copy of a duplicate is
  *  the lower-ranked one. Rows with no candidate id at all are kept as-is — a missing id is not
  *  evidence of sameness. */
@@ -220,7 +227,9 @@ export default function DiscoverScreen() {
               <ProgressPanel
                 job={runState.job}
                 cancelling={runState.cancelling}
+                skipping={runState.skipping}
                 onCancel={runState.cancel}
+                onSkip={runState.skip}
               />
               {runState.running || runState.job.status === 'cancelled' ? (
                 <LiveFinds job={runState.job} cancelled={runState.job.status === 'cancelled'} />
@@ -349,11 +358,15 @@ export default function DiscoverScreen() {
 function ProgressPanel({
   job,
   cancelling,
+  skipping,
   onCancel,
+  onSkip,
 }: {
   job: DiscoveryJob;
   cancelling: boolean;
+  skipping: boolean;
   onCancel: () => Promise<boolean>;
+  onSkip: () => Promise<boolean>;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -386,15 +399,35 @@ function ProgressPanel({
         </Text>
       ) : null}
       {job.status === 'running' ? (
-        <Button
-          title={cancelling ? 'Stopping…' : 'Stop search'}
-          variant="ghost"
-          icon="x"
-          onPress={() => void onCancel()}
-          loading={cancelling}
-          accessibilityLabel="Stop discovery search"
-          style={styles.stopButton}
-        />
+        <>
+          {skipping || job.skip_requested ? (
+            <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>
+              Skipping at the next stage boundary…
+            </Text>
+          ) : null}
+          <View style={styles.runControls}>
+            <Button
+              title={skipping || job.skip_requested
+                ? 'Skip requested'
+                : discoverySkipLabel(job.phase)}
+              variant="ghost"
+              icon="skip-forward"
+              onPress={() => void onSkip()}
+              disabled={skipping || Boolean(job.skip_requested) || cancelling}
+              accessibilityLabel="Skip discovery step"
+              style={styles.runControl}
+            />
+            <Button
+              title={cancelling ? 'Stopping…' : 'Stop search'}
+              variant="ghost"
+              icon="x"
+              onPress={() => void onCancel()}
+              loading={cancelling}
+              accessibilityLabel="Stop discovery search"
+              style={styles.runControl}
+            />
+          </View>
+        </>
       ) : null}
     </Card>
   );
@@ -781,7 +814,8 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     lineHeight: 22,
   },
   progressPanel: { gap: space.md, marginTop: space.md, alignItems: 'center' },
-  stopButton: { alignSelf: 'stretch', height: 42 },
+  runControls: { alignSelf: 'stretch', flexDirection: 'row', gap: space.sm },
+  runControl: { flex: 1, height: 42 },
   stepsRow: {
     alignSelf: 'stretch',
     paddingHorizontal: space.sm,

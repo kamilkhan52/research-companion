@@ -14,11 +14,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Slot } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
-import { waitFor } from '@testing-library/react-native';
+import { fireEvent, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
-import { describeRunFocus } from '@/app/(tabs)/discover';
+import type { DiscoveryJob } from '@/api/types';
+import { describeRunFocus, discoverySkipLabel } from '@/app/(tabs)/discover';
 import DiscoverScreen from '@/app/(tabs)/discover';
 import { ProjectProvider } from '@/store/project';
 import { createTestQueryClient } from './queryClient';
@@ -50,6 +51,13 @@ describe('describeRunFocus', () => {
   });
 });
 
+test('Discover names skippable stages and arms the next one elsewhere', () => {
+  expect(discoverySkipLabel('searching')).toBe('Skip search');
+  expect(discoverySkipLabel('citations')).toBe('Skip citations');
+  expect(discoverySkipLabel('evidence')).toBe('Skip evidence');
+  expect(discoverySkipLabel('scoring')).toBe('Skip next step');
+});
+
 function TestLayout() {
   return (
     <QueryClientProvider client={createTestQueryClient()}>
@@ -60,7 +68,10 @@ function TestLayout() {
   );
 }
 
-async function renderDiscover(result: Partial<Record<string, unknown>>) {
+async function renderDiscover(
+  result: Partial<Record<string, unknown>>,
+  job: DiscoveryJob | null = null,
+) {
   await setBaseUrl('https://api.test');
   // The active project is persisted, not derived — nothing selects one for an empty store.
   await AsyncStorage.setItem('rc.activeProject', 'p1');
@@ -73,7 +84,7 @@ async function renderDiscover(result: Partial<Record<string, unknown>>) {
   // getNeighbourhood is deliberately left unmocked: its line renders null without data, and the
   // freshness row is not what this test is about.
   jest.mocked(api.getDiscovery).mockResolvedValue({
-    job: null,
+    job,
     goals: 'Find new and related papers',
     result: {
       goals: 'Find new and related papers',
@@ -112,4 +123,21 @@ test('Discover results no longer bury the known-paper entry below the result lis
   await waitFor(() => expect(screen.getByText(/60 papers across/)).toBeTruthy());
   expect(screen.queryByLabelText('Paper title, DOI, or arXiv link')).toBeNull();
   expect(screen.queryByText('OR ADD DIRECTLY')).toBeNull();
+});
+
+test('a running Discover exposes Skip beside Stop and arms it on tap', async () => {
+  const running = {
+    status: 'running', phase: 'searching', finds: [], skip_requested: false, skips: 0,
+  } as unknown as DiscoveryJob;
+  const armed = { ...running, skip_requested: true } as DiscoveryJob;
+  jest.mocked(api.skipDiscovery).mockResolvedValue({ job: armed });
+  await renderDiscover({}, running);
+
+  const skip = await screen.findByLabelText('Skip discovery step');
+  expect(screen.getByText('Skip search')).toBeTruthy();
+  expect(screen.getByLabelText('Stop discovery search')).toBeTruthy();
+  fireEvent.press(skip);
+
+  await waitFor(() => expect(api.skipDiscovery).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(screen.getByText('Skip requested')).toBeTruthy());
 });

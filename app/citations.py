@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from urllib.parse import quote
 
 import httpx
@@ -96,7 +97,7 @@ log = logging_config.get("citations")
 _UNCACHED = object()
 
 def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | None = None,
-                   sleep=time.sleep) -> None:
+                   sleep=time.sleep, should_stop: Callable[[], bool] | None = None) -> None:
     """Set node["citation_count"] (int, or None when unknown) on every node, fetching what the
     cache doesn't already have and updating `cache` (persisted by the caller via the graph
     store). Never raises: citation counts are an enrichment, not a build dependency."""
@@ -109,7 +110,10 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
     # `OPENALEX_MAX_LOOKUPS` searches exhausts (see `openalex.make_client`).
     openalex = openalex_mod.make_client(timeout=TIMEOUT_S)
     try:
-        _fetch_missing(nodes, cache, client, sleep, openalex_client=openalex)
+        _fetch_missing(
+            nodes, cache, client, sleep, openalex_client=openalex,
+            should_stop=should_stop,
+        )
     except Exception as e:  # noqa: BLE001 — enrichment must never fail the build
         # Logged, not just swallowed. A build that quietly resolved NOTHING is
         # indistinguishable from one that was never asked to, and that is exactly how a graph
@@ -139,7 +143,8 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         elif not isinstance(n.get("citation_count"), int):
             n["citation_count"] = None
     resolved = sum(1 for n in nodes if n.get("citation_count") is not None)
-    if nodes and not resolved:
+    intentionally_stopped = should_stop is not None and should_stop()
+    if nodes and not resolved and not intentionally_stopped:
         # The one outcome worth a warning on its own: the enrichment ran and produced nothing.
         log.warning("citation enrichment resolved 0 of %d nodes (cache %d -> %d)",
                     len(nodes), before, len(cache))
@@ -309,13 +314,17 @@ def _fetch_missing(
     *,
     pacer: semantic_scholar.RequestPacer | None = None,
     openalex_client: httpx.Client | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> None:
+    stopped = should_stop or (lambda: False)
     missing = [n for n in nodes if cache_key(n) not in cache]
 
     # 1) batch by external id — cheap, do every node that has one.
     with_ids = [(n, _external_id(n)) for n in missing]
     with_ids = [(n, eid) for n, eid in with_ids if eid]
     for start in range(0, len(with_ids), BATCH_CHUNK):
+        if stopped():
+            break
         chunk = with_ids[start:start + BATCH_CHUNK]
         ids = [eid for _, eid in chunk]
         resp = semantic_scholar.paced_request(
@@ -345,7 +354,7 @@ def _fetch_missing(
     budget = MAX_TITLE_LOOKUPS_WITH_KEY if _api_key() else MAX_TITLE_LOOKUPS
     stop = False
     for n in titled[:budget]:
-        if stop:
+        if stop or stopped():
             break
         # The stored title FIRST, then the annotation-stripped form. Order matters: a trailing
         # parenthetical can be part of the real title ("…A Reply to Ogburn et al. (2019)"), and
@@ -359,6 +368,9 @@ def _fetch_missing(
             attempts.append(cleaned)
 
         for title in attempts:
+            if stopped():
+                stop = True
+                break
             resp = semantic_scholar.paced_request(
                 lambda title=title: client.get(
                     S2_MATCH_URL,
@@ -420,6 +432,9 @@ def _fetch_missing(
     ]
     deadline = time.monotonic() + OPENALEX_BUDGET_S
     for n in still_missing[:OPENALEX_MAX_LOOKUPS]:
+        if stopped():
+            log.info("openalex fallback stopped by discovery skip")
+            break
         if time.monotonic() >= deadline:
             log.info("openalex fallback stopped at its time budget")
             break
@@ -439,7 +454,7 @@ def _fetch_missing(
         if _budget() <= 0:
             break
         count = _openalex_by_id(n, openalex_client, timeout=_budget())
-        if count is None and _budget() > 0:
+        if count is None and not stopped() and _budget() > 0:
             count = _openalex_citation_count(
                 lookup_title(n["title"]), openalex_client, timeout=_budget())
         if count is _THROTTLED:
@@ -447,4 +462,5 @@ def _fetch_missing(
             break
         if isinstance(count, int):
             cache[cache_key(n)] = count
-        sleep(OPENALEX_MIN_INTERVAL_S)
+        if not stopped():
+            sleep(OPENALEX_MIN_INTERVAL_S)
