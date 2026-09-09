@@ -26,6 +26,7 @@ import { AnimatedProgressBar, Button, Card, Icon, Screen, Text, ToneIcon, ToneSu
 import { Marquee } from '@/ui/Marquee';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { DiscoverContent } from './discover';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
 
@@ -87,6 +88,12 @@ export default function GraphScreen() {
   const graph = data?.graph ?? null;
   const recommendations = data?.recommendations ?? [];
   const status = data?.status ?? null;
+  // DR-052 staged surface merge: the empty project is the one state where the Map has nothing
+  // useful to filter or build. Put the real query-to-results experience here before the
+  // Discover tab is removed in a later release. Requiring loaded project data avoids briefly
+  // presenting a paid-search entry point while the paper list is still unknown.
+  const isEmptyProject = projectState.data !== undefined
+    && projectState.data.papers.length === 0;
   const showAllFilter = allowAllFilter || graph?.stage === 'skeleton';
   const filters = useMemo(
     () => (showAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')),
@@ -225,7 +232,7 @@ export default function GraphScreen() {
       <TabHeader
         title="Map"
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
-        actions={[
+        actions={isEmptyProject ? [] : [
           {
             name: 'search',
             onPress: () => {
@@ -304,6 +311,11 @@ export default function GraphScreen() {
 
       {!activePid ? (
         <Centered text="No active project selected." />
+      ) : isEmptyProject ? (
+        // A zero-paper project has no graph to recover. Its first-paper on-ramp must not depend
+        // on the unrelated graph read succeeding — a stale/offline graph cache cannot make a
+        // fresh project's Discover entry disappear.
+        <DiscoverContent />
       ) : graphQuery.isLoading ? (
         <Centered loading />
       ) : graphQuery.isLoadingError ? (
@@ -319,6 +331,8 @@ export default function GraphScreen() {
           text={readableError(graphQuery.error, 'Could not load the graph.')}
           action={<Button title="Retry" variant="ghost" onPress={() => graphQuery.refetch()} />}
         />
+      ) : !graph && projectState.isLoading ? (
+        <Centered loading />
       ) : !graph ? (
         <>
           {refreshFailed}

@@ -525,7 +525,10 @@ export default function LibraryScreen() {
         ) : papers.length === 0 ? (
           <EmptyProjectHub
             pid={activePid}
-            onDiscover={() => router.push('/discover')}
+            // DR-052: the empty Map now owns the actual first-paper discovery on-ramp. Route
+            // this CTA there before the standalone Discover tab is removed, so the staged
+            // navigation change can never leave a fresh project at a dead end.
+            onDiscover={() => router.push('/graph')}
           />
         ) : (
           // rowsReady with zero visible rows: the filter matched nothing.

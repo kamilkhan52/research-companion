@@ -95,6 +95,27 @@ export function describeRunFocus(
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  return (
+    <Screen edges={['top']}>
+      <TabHeader
+        title="Discover"
+        actions={[
+          { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
+        ]}
+      />
+      <DiscoverContent />
+    </Screen>
+  );
+}
+
+/** The complete query-to-ranked-results experience without its tab chrome.
+ *
+ * DR-052 stages the Map/Discover surface convergence without removing the Discover tab in the
+ * same release. Keeping one content component lets an empty Map become a genuine first-paper
+ * on-ramp now, while the existing tab continues to expose exactly the same job lifecycle,
+ * results, and add action until the later navigation step is ready. */
+export function DiscoverContent() {
+  const router = useRouter();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
@@ -158,14 +179,7 @@ export default function DiscoverScreen() {
   }
 
   return (
-    <Screen edges={['top']}>
-      <TabHeader
-        title="Discover"
-        actions={[
-          { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
-        ]}
-      />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {showEditor ? (
             <Card style={{ gap: space.sm }}>
@@ -344,8 +358,7 @@ export default function DiscoverScreen() {
             />
           </View>
         ) : null}
-      </KeyboardAvoidingView>
-    </Screen>
+    </KeyboardAvoidingView>
   );
 }
 
