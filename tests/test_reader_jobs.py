@@ -71,6 +71,23 @@ def _settled(job_id: str, timeout: float = 5.0) -> reader_jobs.ReaderJob:
     raise TimeoutError(job_id)
 
 
+def _finalized(job_id: str, timeout: float = 10.0) -> reader_jobs.ReaderJob:
+    """Waits for the WORKER to finish, not just for the status to leave `running`.
+
+    Stop is visible immediately — `cancel` flips the status while the worker is still unwinding
+    (`jobs.py`) — so a cancellation test that waits on the status alone reads the rows mid-pass
+    and sees whatever they happened to be. `finished_at` is the flag that means the fan-out and
+    its accounting are done.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = reader_jobs.get_job(job_id)
+        if job and job.finished_at:
+            return job
+        time.sleep(0.02)
+    raise TimeoutError(job_id)
+
+
 def _chat_settled(job_id: str, timeout: float = 5.0) -> chat_jobs.ChatJob:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -138,7 +155,10 @@ def test_the_pass_briefs_each_paper_then_chains_the_follow_up_on_the_briefs(temp
     assert [(t["slug"], t["status"]) for t in job.targets] == [
         ("h3", "done"), ("memexplorer", "done"),
     ]
-    assert seen == [("h3", "flint"), ("memexplorer", "flint")]
+    # Sorted: the assistants read concurrently now (DR-150), so which finishes first is not a
+    # property. WHAT each was given still is — the same account, the same current paper — and
+    # the order the analyst receives them in is asserted on the briefing record below.
+    assert sorted(seen) == [("h3", "flint"), ("memexplorer", "flint")]
     assert job.analysis_job_id and job.analysis_error is None
 
     # The hidden briefing turn carries the instruction plus every brief, framed as untrusted.
@@ -209,23 +229,38 @@ def test_a_pass_that_briefs_nothing_fails_and_records_no_turn(temp_project):
     assert len(chat_jobs._jobs) == started
 
 
-def test_a_budget_refusal_stops_the_pass_but_keeps_what_was_briefed(temp_project):
+def test_a_budget_refusal_stops_the_pass_but_keeps_what_was_briefed(temp_project, monkeypatch):
+    """A refusal is a fact about the ACCOUNT, so it closes the pass for papers nobody has
+    started — but not for one already in flight, whose hold was granted and whose work is
+    therefore paid for. Two workers and four papers makes both halves observable, and the
+    event makes it deterministic rather than a race the test would sometimes win."""
     slug = _project(temp_project)
-    add_paper(temp_project, "third", "Third", full_text="t")
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    refused = threading.Event()
+    read: list[str] = []
 
     def reader(target, account, current):
+        read.append(target)
         if target == "memexplorer":
+            refused.set()
             raise quotas.QuotaExceeded(used_nanousd=1, requested_nanousd=2, limit_nanousd=2)
+        # h3 is in flight when the refusal lands, which is the case being pinned.
+        assert refused.wait(timeout=5), "the refusing assistant never ran"
         return f"{target} brief"
 
     job = _settled(reader_jobs.start_reading(
-        slug, ["h3", "memexplorer", "third"], reader_fn=reader,
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
         turn_runner=_runner(FOLLOW_UP),
     ).id)
     assert job.status == "done"
     assert [(t["slug"], t["status"]) for t in job.targets] == [
-        ("h3", "done"), ("memexplorer", "skipped"), ("third", "skipped"),
+        ("h3", "done"), ("memexplorer", "skipped"), ("third", "skipped"), ("fourth", "skipped"),
     ]
+    # The two the refusal closed the pass for were never attempted, so never billed.
+    assert sorted(read) == ["h3", "memexplorer"]
+    # One reason and one refusal payload for the whole pass, not one per paper.
     assert job.stopped_reason and job.refusal and job.refusal["code"]
     assert job.analysis_job_id  # the one brief still reaches the analyst
     _chat_settled(job.analysis_job_id)
@@ -513,3 +548,189 @@ def test_the_routes_expose_candidates_and_the_job(temp_project):
     assert client.get(f"{base}/reader/jobs/nope").status_code == 404
     # An unknown thread is a 404 like /session, not a quiet empty answer for main.
     assert client.get(f"{base}/reader/candidates/{slug}?thread_id=nope").status_code == 404
+
+
+# ---------------------------------------------------------------- DR-150: reading in parallel
+#
+# Kamil: "When running multiple agents, please run them in parallel. I think that makes sense
+# since the agents should have the information they need at the initialization."
+
+
+def test_the_assistants_read_at_the_same_time(temp_project):
+    """The barrier IS the assertion: four readers that each wait for the other three can only
+    all return if all four are in flight together. Against the sequential loop the first wait
+    times out, every paper fails, and the pass errors."""
+    slug = _project(temp_project)
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    barrier = threading.Barrier(4, timeout=5)
+
+    def reader(target, account, current):
+        barrier.wait()
+        return f"{target} brief"
+
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
+        turn_runner=_runner(FOLLOW_UP),
+    ).id, timeout=10)
+    assert job.status == "done", job.error
+    assert [t["status"] for t in job.targets] == ["done"] * 4
+
+
+def test_no_more_than_the_bound_read_at_once(temp_project, monkeypatch):
+    """The bound is real, not decorative: it is what limits how many papers can be in flight —
+    and therefore already paid for — when a budget refusal arrives."""
+    slug = _project(temp_project)
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    # A barrier of exactly the bound, not a sleep: a sleep only says "they overlapped for 50ms
+    # on this machine", and on a loaded two-core CI runner the second thread may not be
+    # scheduled inside it at all. Two arrivals release the pair; a third would have to wait for
+    # one of them to finish, so a bound that had been ignored would let three through and the
+    # `live` ceiling below would catch it.
+    wave = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    live = 0
+    peak = 0
+
+    def reader(target, account, current):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        wave.wait()
+        with lock:
+            live -= 1
+        return f"{target} brief"
+
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
+        turn_runner=_runner(FOLLOW_UP),
+    ).id, timeout=10)
+    assert job.status == "done", job.error
+    assert peak == 2, peak
+    # Derived from the rows, so a finished assistant cannot blank it while others read — and
+    # nothing is left "reading" once the pass is over.
+    assert job.current is None
+
+
+def test_the_analyst_gets_the_briefs_in_the_offers_order_not_the_finishing_order(temp_project):
+    """The reader ticked these papers in a list and the response will discuss them; handing the
+    analyst whichever model answered first would reorder his own choice for no reason."""
+    slug = _project(temp_project)
+    first_done = threading.Event()
+
+    def reader(target, account, current):
+        # memexplorer, listed SECOND, finishes first.
+        if target == "memexplorer":
+            first_done.set()
+            return "memexplorer brief"
+        assert first_done.wait(timeout=5), "the second paper never finished"
+        return "h3 brief"
+
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3", "memexplorer"], reader_fn=reader, turn_runner=_runner(FOLLOW_UP),
+    ).id, timeout=10)
+    assert job.status == "done", job.error
+    assert [b["slug"] for b in job.briefs] == ["h3", "memexplorer"]
+    briefing = [r for r in sessions.read_records(slug) if r.get("kind") == sessions.BRIEFING_KIND]
+    assert [b["slug"] for b in briefing[0]["briefs"]] == ["h3", "memexplorer"]
+    # And in the framed text the analyst actually reads, not only in the structured field.
+    assert briefing[0]["text"].index("h3 brief") < briefing[0]["text"].index("memexplorer brief")
+
+
+def test_every_assistant_runs_bound_to_the_right_project_and_user(temp_project):
+    """Invariant 2. A pool thread inherits no contextvars, so an assistant that skipped the
+    rebind would read another project's corpus and meter its spend against nobody."""
+    slug = _project(temp_project)
+    add_paper(temp_project, "third", "Third", full_text="t")
+    user_token = config.set_active_user("user-under-test")
+    seen: list[tuple[str, str | None]] = []
+    lock = threading.Lock()
+
+    def reader(target, account, current):
+        with lock:
+            seen.append((config.active_project_id(), config.active_user_id()))
+        return f"{target} brief"
+
+    try:
+        job = _settled(reader_jobs.start_reading(
+            slug, ["h3", "memexplorer", "third"], reader_fn=reader,
+            turn_runner=_runner(FOLLOW_UP),
+        ).id, timeout=10)
+    finally:
+        config.reset_active_user(user_token)
+    assert job.status == "done", job.error
+    assert seen == [(temp_project, "user-under-test")] * 3
+
+
+def test_stop_leaves_the_papers_no_assistant_picked_up_alone(temp_project, monkeypatch):
+    """Cooperative Stop still means something with several readers going: the ones in flight
+    are already paid for and keep their briefs, and the rest are never attempted."""
+    slug = _project(temp_project)
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    # The barrier, not a sleep: Stop must land while BOTH first-wave assistants are provably
+    # running, or the test is measuring how fast the pool happened to start rather than what
+    # cancellation does. With the bound at two, that is also the whole first wave.
+    in_flight = threading.Barrier(2, timeout=5)
+    started = threading.Event()
+    may_finish = threading.Event()
+    read: list[str] = []
+    lock = threading.Lock()
+
+    def reader(target, account, current):
+        with lock:
+            read.append(target)
+        in_flight.wait()
+        started.set()
+        assert may_finish.wait(timeout=5)
+        return f"{target} brief"
+
+    job = reader_jobs.start_reading(
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
+        turn_runner=_runner(FOLLOW_UP),
+    )
+    assert started.wait(timeout=5)
+    reader_jobs.request_cancel(job.id)
+    may_finish.set()
+    settled = _finalized(job.id)
+    assert sorted(read) == ["h3", "memexplorer"], read
+    assert [t["status"] for t in settled.targets[2:]] == ["skipped", "skipped"]
+    # What the first wave paid for is kept, and still reaches the analyst.
+    assert [b["slug"] for b in settled.briefs] == ["h3", "memexplorer"]
+
+
+def test_a_paper_nobody_touched_is_not_blamed_for_another_papers_failure(temp_project,
+                                                                        monkeypatch):
+    """`skipped` means never attempted. Showing it the last failure that happened anywhere in
+    the pass told the reader "Skipped — The model returned an empty brief" about a paper no
+    model was ever asked about (Opus review of #516)."""
+    slug = _project(temp_project)
+    for extra in ("third", "fourth"):
+        add_paper(temp_project, extra, extra.title(), full_text="t")
+    monkeypatch.setattr(reader_jobs, "READER_CONCURRENCY", 2)
+    refused = threading.Event()
+
+    def reader(target, account, current):
+        if target == "memexplorer":
+            refused.set()
+            raise quotas.QuotaExceeded(used_nanousd=1, requested_nanousd=2, limit_nanousd=2)
+        assert refused.wait(timeout=5)
+        return ""  # a failure of its own: an empty brief
+
+    job = _settled(reader_jobs.start_reading(
+        slug, ["h3", "memexplorer", "third", "fourth"], reader_fn=reader,
+        turn_runner=_runner(FOLLOW_UP),
+    ).id, timeout=10)
+    rows = {t["slug"]: t for t in job.targets}
+    assert rows["h3"]["status"] == "error"
+    assert rows["h3"]["error"] == "The model returned an empty brief."
+    for untouched in ("third", "fourth"):
+        assert rows[untouched]["status"] == "skipped"
+        # The refusal's words, which are the true reason this paper was never read — never the
+        # other paper's failure.
+        assert rows[untouched]["error"] == job.stopped_reason
+        assert "brief" not in (rows[untouched]["error"] or "")
