@@ -2,7 +2,7 @@
 // other and which external works they lean on, with a recommendation ranking for what to
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -94,6 +94,21 @@ export default function GraphScreen() {
   // presenting a paid-search entry point while the paper list is still unknown.
   const isEmptyProject = projectState.data !== undefined
     && projectState.data.papers.length === 0;
+  // Adding the first result invalidates projectState immediately. If the surface followed that
+  // value forever, its own first Add would unmount the ranked list (and any live Stop/Skip
+  // controls) in favour of "Build map". Latch the first-run surface for this focused visit;
+  // leaving Map or switching projects clears it, so the next entry gets the normal graph state.
+  const [discoverEntryPid, setDiscoverEntryPid] = useState<string | null>(null);
+  useEffect(() => {
+    setDiscoverEntryPid((current) => {
+      if (isEmptyProject) return activePid;
+      return current === activePid ? current : null;
+    });
+  }, [activePid, isEmptyProject]);
+  useFocusEffect(
+    useCallback(() => () => setDiscoverEntryPid(null), []),
+  );
+  const showFirstRunDiscover = isEmptyProject || discoverEntryPid === activePid;
   const showAllFilter = allowAllFilter || graph?.stage === 'skeleton';
   const filters = useMemo(
     () => (showAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')),
@@ -232,7 +247,7 @@ export default function GraphScreen() {
       <TabHeader
         title="Map"
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
-        actions={isEmptyProject ? [] : [
+        actions={showFirstRunDiscover ? [] : [
           {
             name: 'search',
             onPress: () => {
@@ -311,7 +326,7 @@ export default function GraphScreen() {
 
       {!activePid ? (
         <Centered text="No active project selected." />
-      ) : isEmptyProject ? (
+      ) : showFirstRunDiscover ? (
         // A zero-paper project has no graph to recover. Its first-paper on-ramp must not depend
         // on the unrelated graph read succeeding — a stale/offline graph cache cannot make a
         // fresh project's Discover entry disappear.

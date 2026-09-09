@@ -5,24 +5,49 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { fireEventAsync, waitFor } from '@testing-library/react-native';
-import { Slot } from 'expo-router';
+import { act, fireEventAsync, waitFor } from '@testing-library/react-native';
+import { Slot, useRouter } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 
 import GraphScreen from '@/app/(tabs)/graph';
 import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
+import { keys } from '@/api/queries';
+import type { PaperSuggestion } from '@/api/types';
 import { GraphSettingsProvider } from '@/store/graphSettings';
 import { ProjectProvider } from '@/store/project';
 import { ReadingSettingsProvider } from '@/store/readingSettings';
+import { Button } from '@/ui';
 import { createTestQueryClient } from './queryClient';
 
 const PID = 'first-project';
+let client = createTestQueryClient();
+
+function suggestion(candidateId: string, title: string): PaperSuggestion {
+  return {
+    candidate_id: candidateId,
+    arxiv_id: null,
+    title,
+    abstract: 'A useful abstract.',
+    authors: ['A. Researcher'],
+    affiliations: [],
+    year: 2026,
+    category: 'cs.LG',
+    url: '',
+    pdf_url: '',
+    citation_count: 1,
+    sources: ['semantic_scholar'],
+    relevance: 9,
+    credibility: 3,
+    score: 9,
+    reasons: ['Strong fit'],
+  };
+}
 
 function TestLayout() {
   return (
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={client}>
       <ProjectProvider>
         <GraphSettingsProvider>
           <ReadingSettingsProvider>
@@ -32,6 +57,11 @@ function TestLayout() {
       </ProjectProvider>
     </QueryClientProvider>
   );
+}
+
+function ReturnToMap() {
+  const router = useRouter();
+  return <Button title="Return to Map" onPress={() => router.push('/graph')} />;
 }
 
 function projectState(papers: unknown[]) {
@@ -75,6 +105,8 @@ function emptyGraph(totalPapers: number) {
 }
 
 beforeEach(async () => {
+  client.clear();
+  client = createTestQueryClient();
   await setBaseUrl('https://api.test');
   await AsyncStorage.setItem('rc.activeProject', PID);
   jest.mocked(api.listProjects).mockResolvedValue({
@@ -124,4 +156,68 @@ test('a project with a paper but no derived graph still offers Build map', async
   expect(await screen.findByText('Build map')).toBeTruthy();
   expect(screen.getByText('No map yet')).toBeTruthy();
   expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+});
+
+test('adding the first result keeps the rest of the paid search visible for this Map visit', async () => {
+  const addedPaper = {
+    slug: 'first-result',
+    title: 'First Result',
+    group: 'Unsorted',
+    list_status: 'unread',
+    cites: [],
+    retrieved: false,
+    has_notes: false,
+    session_state: null,
+    arxiv_id: '',
+  };
+  jest.mocked(api.getProjectState)
+    .mockResolvedValueOnce(projectState([]) as never)
+    .mockResolvedValue(projectState([addedPaper]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(emptyGraph(0) as never);
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: null,
+    goals: 'Find useful work',
+    result: {
+      goals: 'Find useful work',
+      model: 'test-model',
+      queries: [],
+      candidate_count: 2,
+      top_n: 5,
+      suggestions: [
+        suggestion('first', 'First Result'),
+        suggestion('second', 'Second Result'),
+      ],
+      in_library: [],
+      generated_at: '2026-09-09T00:00:00Z',
+    },
+  } as never);
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: addedPaper } as never);
+  const rendered = renderRouter(
+    { _layout: TestLayout, index: ReturnToMap, graph: GraphScreen },
+    { initialUrl: '/graph' },
+  );
+
+  const addFirst = await screen.findByLabelText('Add First Result to library');
+  expect(screen.getByText('Second Result')).toBeTruthy();
+  await fireEventAsync.press(addFirst);
+
+  await waitFor(() => expect(api.addPaper).toHaveBeenCalled());
+  await waitFor(() => expect(jest.mocked(api.getProjectState).mock.calls.length).toBeGreaterThan(1));
+  await waitFor(() => {
+    expect(client.getQueryData<{ papers: unknown[] }>(keys.projectState(PID))?.papers)
+      .toHaveLength(1);
+  });
+  act(() => { jest.advanceTimersByTime(20); });
+  // Positive assertions after the paper-bearing state has landed: without the visit latch the
+  // entire subtree is now "No map yet / Build map", which loses result two and the footer.
+  expect(screen.getByText('Second Result')).toBeTruthy();
+  expect(screen.getByText('Go to library · 1 added')).toBeTruthy();
+  expect(screen.queryByText('Build map')).toBeNull();
+
+  await fireEventAsync.press(screen.getByText('Go to library · 1 added'));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/'));
+  await fireEventAsync.press(screen.getByText('Return to Map'));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
+  expect(await screen.findByText('Build map')).toBeTruthy();
+  expect(screen.queryByText('Second Result')).toBeNull();
 });
