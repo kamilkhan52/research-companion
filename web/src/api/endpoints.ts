@@ -359,6 +359,21 @@ export function updatePaper(pid: string, slug: string, title?: string, titleConf
   });
 }
 
+/** Render status for a paper's first-page cover. `pending` means a render job is running — poll
+ *  again; `unavailable` means there is no fetchable PDF or a render failed terminally and will
+ *  NOT be retried, so a client that keeps asking is hammering nothing. Cheap and idempotent. */
+export function getPaperCover(pid: string, slug: string) {
+  return apiGet<{ status: 'ready' | 'pending' | 'unavailable' }>(
+    `${P(pid)}/papers/${encodeURIComponent(slug)}/cover`,
+  );
+}
+
+/** Path to the cached PNG. Behind auth, so it cannot be an `<img src>` directly — read it with
+ *  `useAuthenticatedImage`. 404s until the status above says `ready`. */
+export function paperCoverPath(pid: string, slug: string): string {
+  return `${P(pid)}/papers/${encodeURIComponent(slug)}/cover.png`;
+}
+
 export function removePaper(pid: string, slug: string) {
   return apiDelete<{ removed: string; notes_kept: boolean }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`);
 }

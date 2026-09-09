@@ -32,6 +32,20 @@ directly from `main`.
 | 11 | `opus/web-parity-overnight` | [#514](https://github.com/kamilkhan52/research-companion/pull/514) | Stop a Discover run; hide/unhide a recommendation |
 | 12 | `opus/web-parity-overnight` | [#515](https://github.com/kamilkhan52/research-companion/pull/515) | Plan & usage surface |
 | 13 | `opus/web-parity-overnight` | [#517](https://github.com/kamilkhan52/research-companion/pull/517) | Per-paper reference graph (DR-093 ego view) |
+| 14 | `opus/web-parity-overnight` | [#518](https://github.com/kamilkhan52/research-companion/pull/518) | Authenticated image loading + paper covers |
+
+## One correction owed to another file (2026-09-08)
+
+`docs/device-review-ledger.md`'s **DR-155** row still reads *"`web/src/api/client.ts` still has
+the original hole and is left for the web-parity pass."* That pass happened:
+[#511](https://github.com/kamilkhan52/research-companion/pull/511) ported mobile's
+`describeDetail` in full, array branch included, so a 422 renders as its messages and stops
+echoing the payload back at the reader. The row wants one sentence saying so.
+
+It was deliberately not edited from the web branch: a concurrent session was writing that file
+all night and [#516](https://github.com/kamilkhan52/research-companion/pull/516) has changes in
+the same region, so touching it here would have handed that PR a conflict. Whoever next edits
+the ledger should fold this in.
 
 ## Parity backlog (2026-09-08)
 
@@ -46,9 +60,8 @@ are the mobile client, so a web PR must never claim one.
 
 | Gap | Mobile has | Notes |
 |---|---|---|
-| Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | Needs header-authenticated image loading (blob URLs), which paper covers also need. |
+| Figures in chat | `getPaperFigures`, `figureAssetSource` (R.10) | The authenticated-image problem is solved — `web/src/hooks/useAuthenticatedImage.ts` landed with covers in [#518](https://github.com/kamilkhan52/research-companion/pull/518) and this reuses it. What remains is the manifest and placing cards in the chat flow. |
 | A canvas the tests can draw on | — | jsdom has no 2D context, so `web/src/graph/engine.ts` is doubled wherever it is used and **its drawing is exercised by nothing**. `web/test/engine.test.ts` reaches it with a no-op proxy for listener bookkeeping only; anything about what appears on screen needs a canvas stub or a headless-browser runner. That is a decision about the whole `web/` suite, not about one view — and Figures and covers will want the same thing. Component tests pin what is HANDED to the engine, which is the right contract for them. |
-| Paper covers in the Library | `getPaperCover`, `paperCoverImageSource` | Same authenticated-media problem; do it with figures. |
 | Corpus neighbourhood line | `getNeighbourhood` (DR-052) | The shared Map/Discover freshness both screens show on mobile. |
 | Author board + lab research | `getGraphAuthors`, `startLabsResearch`, `startAuthorProfile` | A whole mobile route (`authors.tsx`) with no web equivalent. |
 | The 402/429 spend refusal modals | `SpendRefusalSheet` | The plan SCREEN landed in #515; the mid-flow modals did not. They must be driven by an actual refusal response, never by `warn`/`at_capacity` — see `docs/plan-usage-surface-spec.md`. Needs the refusal payload threaded through every job path. |
