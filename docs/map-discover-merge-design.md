@@ -220,27 +220,27 @@ no other step leaves the tab half-merged.
    `TAB_PATHS`.
 4. **Query ↔ graph highlighting.** Matching nodes light up; no new nodes.
 
-## Scope and unresolved mechanics
+## Scope and settled surface mechanics
 
 **Mobile only.** The web SPA has its own `discover` view and hash route (`web/src/App.tsx`) and
 its own `RecommendationsPanel` (`web/src/components/Graph.tsx`); it follows separately via
 `docs/web-rebuild-plan.md`.
 
-**The Map already has a text input, and it means something else.** `graph.tsx`'s `search` header
-action filters graph NODES locally and for free. The query box arriving in step 3 runs a metered
-background job. Two inputs on one screen with opposite semantics is not addressed here and needs
-deciding before step 3 — most likely by making one box do both: filter as you type, run on
-submit.
+**One search box has two deliberate phases.** While the reader types, it filters graph nodes
+locally and for free. Submitting the same text starts the metered Discover background job. The
+control must make the submit boundary legible; merely typing can never spend money.
 
 **Two long jobs can be live on one screen.** The graph build (`graph_jobs`, keyed on `pid`) and
 the Discover run (`discovery_jobs`, scoped `discovery:${pid}`) are separate registries and can
-run concurrently. The write race itself is closed by `graph_store` revisioning (#407), so this is
-a presentation question: what the tab shows when both are running.
+run concurrently. The write race itself is closed by `graph_store` revisioning (#407). Both jobs
+remain visible when concurrent, each with its own progress and Stop controls; neither replaces or
+conceals the other.
 
-## Open, and deliberately not decided here
+## Decisions confirmed 2026-09-13
 
-- **Ordering between lanes in one list.** A reference the corpus cites 6 times and a query hit
-  with a strong lexical match are not comparable on any scale that exists today. Needs a real
-  ranking pass, and probably his eye on a sample.
-- **What the Map tab is called in the tab bar** if the list becomes its main job. He chose "Map"
-  for now; worth revisiting once step 3 ships and he has used it.
+- **Ordering between lanes in one list.** With an active submitted query, Discover matches come
+  first in their existing query ranking, followed by graph-derived recommendations in their
+  existing project ranking. With no active query, use the existing project ranking. De-duplicate
+  across lanes and show provenance on every row; do not pretend the two incomparable score scales
+  form one numeric score.
+- **Tab name.** Keep **Map** for the first release and revisit it only after device use.
