@@ -378,6 +378,8 @@ def test_stale_notes_proposal_cannot_overwrite_a_newer_document(temp_project):
             ),
         )
     assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "notes_revision_conflict"
+    assert "notes changed" in exc.value.detail["message"]
     assert "Newer human edit" in notes_jobs.read(notes_jobs.WORKING)
     assert notes_jobs.latest_for(notes_jobs.WORKING) is finished
 

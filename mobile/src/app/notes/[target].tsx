@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
+import { ApiError } from '@/api/client';
 import { saveNotes } from '@/api/endpoints';
 import { keys, useNotes, useProjectState } from '@/api/queries';
 import type { StreamItem } from '@/api/types';
@@ -94,6 +95,7 @@ export default function NotesScreen() {
   const setInstruction = instructionDraft.setValue;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [conflictedJobId, setConflictedJobId] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
@@ -125,6 +127,7 @@ export default function NotesScreen() {
     setMode('view');
     setAsking(false);
     setSaveError(null);
+    setConflictedJobId(null);
   }, [pid, target]);
 
   // Reattach to an agent edit already in flight for this document (navigated away and back).
@@ -183,6 +186,7 @@ export default function NotesScreen() {
       // Only an edit-first/apply save sent a job id for the backend to discard. A separate
       // proposal that happened to finish while a manual draft was open must remain reviewable.
       if (proposal) {
+        setConflictedJobId(null);
         agent.proposalApplied();
         if (saved.next_job) await agent.resume();
         if (saved.next_error) {
@@ -190,7 +194,14 @@ export default function NotesScreen() {
         }
       }
     } catch (e) {
-      setSaveError((e as Error).message ?? 'Save failed.');
+      if (proposal && e instanceof ApiError && e.code === 'notes_revision_conflict') {
+        // The proposal remains retained on its job. Keep it visible against the freshly loaded
+        // document and replace the live commit action below; otherwise a correct revision guard
+        // looks like an inert button at the bottom of a long diff (DR-159).
+        setConflictedJobId(proposal.jobId);
+      } else {
+        setSaveError((e as Error).message ?? 'Save failed.');
+      }
       await qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
     } finally {
       setSaving(false);
@@ -233,6 +244,9 @@ export default function NotesScreen() {
   }
 
   const showProposal = agent.proposal !== null && mode === 'view';
+  const showProposalConflict = showProposal
+    && conflictedJobId !== null
+    && conflictedJobId === agent.job?.id;
   const relocationProgress =
     agent.job?.relocation_index && agent.job?.relocation_total
       ? `Paper ${agent.job.relocation_index} of ${agent.job.relocation_total}`
@@ -378,7 +392,41 @@ export default function NotesScreen() {
             {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
           </ScrollView>
 
-          {showProposal ? (
+          {showProposalConflict ? (
+            <View style={styles.reviewActions}>
+              <Card style={styles.conflictCard}>
+                <View style={styles.proposalHead}>
+                  <Icon name="alert-triangle" size={14} color={t.danger} />
+                  <Text variant="label" color={t.danger}>
+                    Proposal out of date
+                  </Text>
+                </View>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+                  Your newer committed notes are safe. The old proposal is still shown above for
+                  comparison and will not be applied unless you deliberately merge its changes.
+                </Text>
+              </Card>
+              <Button
+                title="Refresh comparison"
+                icon="refresh-cw"
+                onPress={() => void notes.refetch()}
+              />
+              <Button
+                title="Edit current notes"
+                variant="ghost"
+                onPress={() => {
+                  editDraft.setValue({ markdown, proposal: null });
+                  setMode('edit');
+                }}
+                style={styles.reviewSecondary}
+              />
+              <Button
+                title="Discard old proposal"
+                variant="ghost"
+                onPress={agent.dismissProposal}
+              />
+            </View>
+          ) : showProposal ? (
             <View style={styles.reviewActions}>
               <Button
                 title="Approve & commit"
@@ -545,6 +593,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     fontSize: 14,
   },
   proposalCard: { borderColor: t.violet, borderWidth: 1 },
+  conflictCard: { borderColor: t.danger, borderWidth: 1 },
   proposalHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   progressCard: { marginTop: space.sm },
   errorCard: { borderColor: t.danger, borderWidth: 1, marginTop: space.sm },

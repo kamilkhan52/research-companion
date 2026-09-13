@@ -151,10 +151,13 @@ def save_notes(target: str, req: NotesSaveReq):
             if req.base_revision is not None and req.base_revision != notes_jobs.revision(target):
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        "These notes changed after the AI proposal was prepared. Reload the "
-                        "document and generate or review a fresh proposal."
-                    ),
+                    detail={
+                        "code": "notes_revision_conflict",
+                        "message": (
+                            "These notes changed after the AI proposal was prepared. Reload the "
+                            "document and generate or review a fresh proposal."
+                        ),
+                    },
                 )
             result = notes_jobs.save(target, req.markdown, req.summary or "")
             if req.job_id:

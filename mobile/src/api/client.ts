@@ -134,10 +134,17 @@ async function parseError(res: Response): Promise<never> {
   } catch {
     // non-JSON error body; keep the generic message
   }
-  const code = body && typeof body === 'object'
-    && typeof (body as { code?: unknown }).code === 'string'
-    ? (body as { code: string }).code
+  const writtenBody = body && typeof body === 'object'
+    ? body as { code?: unknown; detail?: unknown }
     : null;
+  const writtenDetail = writtenBody?.detail && typeof writtenBody.detail === 'object'
+    ? writtenBody.detail as { code?: unknown }
+    : null;
+  const code = typeof writtenBody?.code === 'string'
+    ? writtenBody.code
+    : typeof writtenDetail?.code === 'string'
+      ? writtenDetail.code
+      : null;
   throw new ApiError(res.status, detail, {
     code,
     used_nanousd: numericField(body, 'used_nanousd'),
