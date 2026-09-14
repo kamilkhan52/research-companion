@@ -195,14 +195,13 @@ export default function NotesScreen() {
       }
     } catch (e) {
       if (proposal && e instanceof ApiError && e.code === 'notes_revision_conflict') {
-        // The proposal remains retained on its job. Keep it visible against the freshly loaded
-        // document and replace the live commit action below; otherwise a correct revision guard
-        // looks like an inert button at the bottom of a long diff (DR-159).
-        setConflictedJobId(proposal.jobId);
-        // The same guarded save is reachable from "Edit before committing". Return to the
-        // comparison so its recovery controls are visible, but leave the draft stored: choosing
-        // Edit current notes or cancelling back into it must not silently lose the reader's work.
-        setMode('view');
+        // Always retain a visible refusal. The fixed comparison recovery is only valid while
+        // this exact proposal is still mounted; edit-first saves stay in the editor with their
+        // draft intact, and a proposal that disappeared/advanced falls back to the error card.
+        setSaveError(e.message);
+        if (mode === 'view' && agent.proposal !== null && agent.job?.id === proposal.jobId) {
+          setConflictedJobId(proposal.jobId);
+        }
       } else {
         setSaveError((e as Error).message ?? 'Save failed.');
       }
@@ -393,7 +392,9 @@ export default function NotesScreen() {
 
             {agent.running ? <AgentProgress items={agent.job?.items ?? []} /> : null}
             {agent.error ? <ErrorCard text={agent.error} onDismiss={agent.clearError} /> : null}
-            {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
+            {saveError && !showProposalConflict
+              ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} />
+              : null}
           </ScrollView>
 
           {showProposalConflict ? (

@@ -104,7 +104,7 @@ test('a stale approval replaces the active commit action with conflict recovery'
   expect(screen.getByText('Discard old proposal')).toBeTruthy();
 });
 
-test('a stale edit-first save returns to visible conflict recovery', async () => {
+test('a stale edit-first save keeps its draft visible with the refusal', async () => {
   await renderConflictScreen();
 
   await fireEventAsync.press(screen.getByText('Edit before committing'));
@@ -114,12 +114,13 @@ test('a stale edit-first save returns to visible conflict recovery', async () =>
   );
   await fireEventAsync.press(screen.getByText('Save'));
 
-  await waitFor(() => expect(screen.getByText('Proposal out of date')).toBeTruthy());
-  expect(screen.queryByText('Save')).toBeNull();
-  expect(screen.queryByText('Approve & commit')).toBeNull();
-  expect(screen.getByText('Refresh comparison')).toBeTruthy();
-  expect(screen.getByText('Edit current notes')).toBeTruthy();
-  expect(screen.getByText('Discard old proposal')).toBeTruthy();
+  await waitFor(() => expect(screen.getByText(
+    'These notes changed after the AI proposal was prepared.',
+  )).toBeTruthy());
+  expect(screen.getByDisplayValue('## Notes\n\nReader-edited proposal with unique detail.')).toBeTruthy();
+  expect(screen.getByText('Save')).toBeTruthy();
+  expect(screen.getByText('Cancel')).toBeTruthy();
+  expect(screen.queryByText('Proposal out of date')).toBeNull();
   expect(api.discardNotesJob).not.toHaveBeenCalled();
 });
 
