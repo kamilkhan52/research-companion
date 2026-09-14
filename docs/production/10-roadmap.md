@@ -28,7 +28,26 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-31)
+## Current position (updated 2026-09-13)
+
+**Delta at 2026-09-13** (live repository audit at `5641bd4`):
+- `main` and `origin/main` are aligned, the server and device worktrees are deployed to the same
+  commit, and no PR, background job, or dispatch is active. PR #521 / DR-157 is the latest merge;
+  deployment is complete but physical-device acceptance remains open.
+- Five September 10 device entries are now the active implementation queue: DR-133's narration
+  follow refinements, DR-158's rail jump to the currently narrated sentence, and DR-159's stale
+  notes-proposal conflict. The two new-item entries become DR-158 and DR-159; the three DR-133
+  remarks remain on that existing row.
+- DR-052's remaining surface decisions are settled: one input filters graph nodes while typing and
+  starts paid Discover only on submit; concurrent Map/Discover jobs retain independent status and
+  Stop controls; query-ranked results lead graph-derived recommendations with provenance per row;
+  and the first combined release keeps the **Map** tab name. Kamil confirmed all four answers
+  directly in chat on 2026-09-13.
+- **M4 remains blocked only on H8's Google Payments merchant profile.** The live device ledger has
+  159 rows: 98 `implemented — verify`, 44 closed, 8 partial, 5 open, 2 planned, and 2 deferred.
+  Device acceptance remains the active bottleneck.
+
+## Position at 2026-08-31 (superseded by the block above)
 
 **Delta at 2026-08-31** (one bubble item, two PRs #463/#464; milestone position unchanged, M4
 still blocked only on H8's merchant account):
