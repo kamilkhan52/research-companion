@@ -236,7 +236,11 @@ run concurrently. The write race itself is closed by `graph_store` revisioning (
 remain visible when concurrent, each with its own progress and Stop controls; neither replaces or
 conceals the other.
 
-## Decisions confirmed 2026-09-13
+## Decisions confirmed by Kamil 2026-09-13
+
+Kamil answered each remaining surface question directly: **yes** to the one-box type/submit
+boundary, **yes** to simultaneous independent job controls, **yes** to query-first ordering with
+per-row provenance, and **keep Map for the first release** pending device use.
 
 - **Ordering between lanes in one list.** With an active submitted query, Discover matches come
   first in their existing query ranking, followed by graph-derived recommendations in their

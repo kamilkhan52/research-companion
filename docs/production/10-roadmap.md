@@ -41,7 +41,11 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 - DR-052's remaining surface decisions are settled: one input filters graph nodes while typing and
   starts paid Discover only on submit; concurrent Map/Discover jobs retain independent status and
   Stop controls; query-ranked results lead graph-derived recommendations with provenance per row;
-  and the first combined release keeps the **Map** tab name.
+  and the first combined release keeps the **Map** tab name. Kamil confirmed all four answers
+  directly in chat on 2026-09-13.
+- **M4 remains blocked only on H8's Google Payments merchant profile.** The live device ledger has
+  159 rows: 98 `implemented — verify`, 44 closed, 8 partial, 5 open, 2 planned, and 2 deferred.
+  Device acceptance remains the active bottleneck.
 
 ## Position at 2026-08-31 (superseded by the block above)
 
