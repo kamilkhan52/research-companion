@@ -199,6 +199,10 @@ export default function NotesScreen() {
         // document and replace the live commit action below; otherwise a correct revision guard
         // looks like an inert button at the bottom of a long diff (DR-159).
         setConflictedJobId(proposal.jobId);
+        // The same guarded save is reachable from "Edit before committing". Return to the
+        // comparison so its recovery controls are visible, but leave the draft stored: choosing
+        // Edit current notes or cancelling back into it must not silently lose the reader's work.
+        setMode('view');
       } else {
         setSaveError((e as Error).message ?? 'Save failed.');
       }
