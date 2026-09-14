@@ -1,4 +1,62 @@
-import { startNarrationLanding } from '@/lib/narrationDiscussionScroll';
+import {
+  narrationFollowOffset,
+  shouldLandNarrationPassively,
+  shouldShowLegacyScrollButton,
+  startNarrationLanding,
+} from '@/lib/narrationDiscussionScroll';
+
+describe('passive follow policy', () => {
+  test('never re-lands while playback is paused, including after Finish Reading rerenders', () => {
+    expect(shouldLandNarrationPassively(false, null)).toBe(false);
+    expect(shouldLandNarrationPassively(false, 4)).toBe(false);
+  });
+
+  test('follows only a passive boundary while playback is active', () => {
+    expect(shouldLandNarrationPassively(true, null)).toBe(true);
+    expect(shouldLandNarrationPassively(true, 4)).toBe(false);
+  });
+
+  test('the landmark rail replaces the legacy scroll-to-latest button', () => {
+    expect(shouldShowLegacyScrollButton(true)).toBe(false);
+    expect(shouldShowLegacyScrollButton(false)).toBe(true);
+  });
+});
+
+describe('gentle narration correction', () => {
+  const viewport = {
+    currentOffset: 900,
+    viewportHeight: 800,
+    topClearance: 100,
+    bottomClearance: 120,
+  };
+
+  test('keeps the page still while the sentence remains in the comfortable reading band', () => {
+    expect(narrationFollowOffset({ ...viewport, screenY: 360, sentenceHeight: 30 })).toBeNull();
+  });
+
+  test('moves an edge sentence to a contextual reading position', () => {
+    expect(narrationFollowOffset({ ...viewport, screenY: 650, sentenceHeight: 30 }))
+      .toBeCloseTo(681, 0);
+  });
+
+  test('a deliberate jump always centers the narrated sentence', () => {
+    expect(narrationFollowOffset({
+      ...viewport,
+      screenY: 360,
+      sentenceHeight: 30,
+      force: true,
+    })).toBeCloseTo(915, 0);
+  });
+
+  test('never asks the inverted list for a negative native offset', () => {
+    expect(narrationFollowOffset({
+      ...viewport,
+      currentOffset: 10,
+      screenY: 760,
+      sentenceHeight: 30,
+    })).toBe(0);
+  });
+});
 
 test('an unmounted sentence approaches its row, then corrects after measurement', () => {
   const approach = jest.fn();

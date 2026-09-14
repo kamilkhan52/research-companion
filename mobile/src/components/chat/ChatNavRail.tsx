@@ -4,8 +4,8 @@
 // landmarks… It should have some transparency if laid on top of text, and maybe some option
 // to auto hide and then reveal, maybe like the iPhone thing."
 //
-// Four controls, because a thread has exactly two extremes and one repeatable step in each
-// direction: oldest message · one landmark older · one landmark newer · live edge. What a
+// Five controls: the thread's two extremes and one repeatable step in each direction, plus
+// DR-158's current narrated sentence when playback has an aligned highlight. What a message
 // landmark IS lives in `@/lib/chatNavigation`.
 //
 // The iPhone behaviour it echoes is the scroll indicator: present while you are moving, out
@@ -29,7 +29,7 @@ import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-na
 import { useReduceMotion } from '@/hooks/useReduceMotion';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
-import { Icon } from '@/ui';
+import { Icon, type IconName } from '@/ui';
 
 /** Resting strength: legible enough to aim at, faint enough to read through. Lowered from 0.3
  *  for DR-151 — this is the state the rail is now in almost all of the time, since the app's
@@ -54,13 +54,24 @@ export interface ChatNavRailHandle {
 export const ChatNavRail = forwardRef<ChatNavRailHandle, {
   onOldest: () => void;
   onUp: () => void;
+  onCurrent: () => void;
+  currentEnabled: boolean;
   onDown: () => void;
   onLive: () => void;
-  /** Keeps the rail clear of the floating composer and the scroll-to-latest button. */
+  /** Keeps the rail clear of the floating composer. */
   bottomInset: number;
   /** Keeps the rail clear of the overlay header. */
   topInset: number;
-}>(function ChatNavRail({ onOldest, onUp, onDown, onLive, bottomInset, topInset }, ref) {
+}>(function ChatNavRail({
+  onOldest,
+  onUp,
+  onCurrent,
+  currentEnabled,
+  onDown,
+  onLive,
+  bottomInset,
+  topInset,
+}, ref) {
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const reduceMotion = useReduceMotion();
@@ -149,6 +160,16 @@ export const ChatNavRail = forwardRef<ChatNavRailHandle, {
         />
         <View style={styles.divider} />
         <RailButton
+          name="crosshair"
+          label="Jump to the sentence being narrated"
+          onPress={press(onCurrent)}
+          testID="chat-nav-current"
+          color={currentEnabled ? theme.mint : theme.muted}
+          disabled={!currentEnabled}
+          styles={styles}
+        />
+        <View style={styles.divider} />
+        <RailButton
           name="chevron-down"
           label="Next message"
           onPress={press(onDown)}
@@ -177,26 +198,34 @@ function RailButton({
   onPress,
   testID,
   color,
+  disabled = false,
   styles,
 }: {
-  name: 'chevrons-up' | 'chevron-up' | 'chevron-down' | 'chevrons-down';
+  name: IconName;
   label: string;
   onPress: () => void;
   testID: string;
   color: string;
+  disabled?: boolean;
   styles: ReturnType<typeof makeStyles>;
 }) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled }}
       testID={testID}
       // Horizontal only. The buttons are stacked flush, so a vertical hitSlop made each one
       // overlap its neighbour by 12px — and in that band the later sibling wins, so a near-miss
       // on "start of thread" fired "one message up" instead. Two very different journeys.
       hitSlop={{ left: 6, right: 6 }}
-      style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+      style={({ pressed }) => [
+        styles.button,
+        disabled && styles.disabled,
+        pressed && styles.pressed,
+      ]}>
       <Icon name={name} size={18} color={color} />
     </Pressable>
   );
@@ -234,6 +263,7 @@ const makeStyles = (t: ThemePalette) =>
       justifyContent: 'center',
     },
     pressed: { opacity: 0.55 },
+    disabled: { opacity: 0.42 },
     divider: {
       height: 1,
       marginVertical: space.xs / 2,

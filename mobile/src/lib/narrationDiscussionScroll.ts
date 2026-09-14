@@ -6,6 +6,59 @@ export interface NarrationBoundary {
   activeIndex: number;
 }
 
+/** Passive following belongs to playback, never merely to a mounted cursor. Finish Reading and
+ * other transcript updates can rerender while TrackPlayer is paused; those renders must not pull
+ * the reader back to the last spoken sentence. Explicit mini-player seeks use their own path. */
+export function shouldLandNarrationPassively(
+  playing: boolean,
+  explicitNonce: number | null,
+): boolean {
+  return playing && explicitNonce == null;
+}
+
+/** The landmark rail owns transcript navigation when enabled, so the library's older floating
+ * scroll-to-latest control must not sit underneath it. */
+export function shouldShowLegacyScrollButton(chatNavRail: boolean): boolean {
+  return !chatNavRail;
+}
+
+/** A passive boundary should not recenter the page sentence-by-sentence. Keep a broad reading
+ * band, then make one animated correction only when the sentence reaches its edge. Explicit
+ * jumps always land at the centre of the unobstructed viewport. Coordinates are window/list
+ * coordinates in the same convention used by the existing inverted-list correction. */
+export function narrationFollowOffset({
+  currentOffset,
+  screenY,
+  sentenceHeight,
+  viewportHeight,
+  topClearance,
+  bottomClearance,
+  force = false,
+}: {
+  currentOffset: number;
+  screenY: number;
+  sentenceHeight: number;
+  viewportHeight: number;
+  topClearance: number;
+  bottomClearance: number;
+  force?: boolean;
+}): number | null {
+  const margin = 12;
+  const usableTop = topClearance + margin;
+  const usableBottom = Math.max(usableTop, viewportHeight - bottomClearance - margin);
+  const usableHeight = usableBottom - usableTop;
+  const sentenceCenter = screenY + sentenceHeight / 2;
+  const bandTop = usableTop + usableHeight * 0.2;
+  const bandBottom = usableTop + usableHeight * 0.8;
+  if (!force && sentenceCenter >= bandTop && sentenceCenter <= bandBottom) return null;
+
+  // Passive reading resumes slightly below centre, leaving more of the just-read context above.
+  const desiredY = force
+    ? usableTop + usableHeight * 0.5
+    : usableTop + usableHeight * 0.6;
+  return Math.max(0, currentOffset + desiredY - sentenceCenter);
+}
+
 /** Keep the 10Hz playback clock inside its bridge; Discussion only updates on a sentence/track
  * boundary. */
 export function narrationBoundaryKey(boundary: NarrationBoundary): string | null {

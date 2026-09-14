@@ -26,16 +26,23 @@ jest.mock('react-native-reanimated', () => {
 
 const reanimated = jest.requireMock('react-native-reanimated') as { withTiming: jest.Mock };
 
-function setup() {
+function setup(currentEnabled = false) {
   const handlers = {
     onOldest: jest.fn(),
     onUp: jest.fn(),
+    onCurrent: jest.fn(),
     onDown: jest.fn(),
     onLive: jest.fn(),
   };
   const ref = createRef<ChatNavRailHandle>();
   const screen = render(
-    <ChatNavRail ref={ref} {...handlers} topInset={80} bottomInset={120} />,
+    <ChatNavRail
+      ref={ref}
+      {...handlers}
+      currentEnabled={currentEnabled}
+      topInset={80}
+      bottomInset={120}
+    />,
   );
   return { screen, handlers, ref };
 }
@@ -63,6 +70,19 @@ test('offers the two extremes and one step in each direction, each labelled for 
   expect(handlers.onUp).toHaveBeenCalledTimes(1);
   expect(handlers.onDown).toHaveBeenCalledTimes(1);
   expect(handlers.onLive).toHaveBeenCalledTimes(1);
+});
+
+test('offers the current narrated sentence only while active playback has a target', () => {
+  const disabled = setup();
+  const current = disabled.screen.getByLabelText('Jump to the sentence being narrated');
+  expect(current.props.accessibilityState).toEqual({ disabled: true });
+  fireEvent.press(current);
+  expect(disabled.handlers.onCurrent).not.toHaveBeenCalled();
+  disabled.screen.unmount();
+
+  const enabled = setup(true);
+  fireEvent.press(enabled.screen.getByLabelText('Jump to the sentence being narrated'));
+  expect(enabled.handlers.onCurrent).toHaveBeenCalledTimes(1);
 });
 
 test('lets touches through everywhere except the controls, so the transcript stays scrollable', () => {

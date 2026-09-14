@@ -30,6 +30,7 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View,
   type ViewabilityConfig,
   type ViewStyle,
@@ -155,7 +156,10 @@ import { useListeningMode } from '@/store/listening';
 import { useReadingSettings } from '@/store/readingSettings';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
 import {
+  narrationFollowOffset,
   narrationBoundaryKey,
+  shouldLandNarrationPassively,
+  shouldShowLegacyScrollButton,
   startNarrationLanding,
 } from '@/lib/narrationDiscussionScroll';
 import { createSeekDetector, type SeekDetector } from '@/lib/seekGesture';
@@ -1619,6 +1623,8 @@ function DiscussionThread({
   const styles = useThemedStyles(makeStyles);
   const isFocused = useIsFocused();
   const audio = useAudio();
+  const { playing } = useIsPlaying();
+  const { height: windowHeight } = useWindowDimensions();
   const { followNarrationInDiscussion } = useListeningMode();
   const [narrationCursor, setNarrationCursor] = useState<DiscussionNarrationCursor | null>(null);
   const [narrationHold, setNarrationHold] = useState<DiscussionNarrationHold | null>(null);
@@ -1965,11 +1971,13 @@ function DiscussionThread({
     narrationTarget ? {
       activeAnchorId: narrationTarget.anchorId,
       registerAnchor: registerNarrationAnchor,
+      reduceMotion,
     } : undefined,
-  [narrationTarget, registerNarrationAnchor]);
+  [narrationTarget, reduceMotion, registerNarrationAnchor]);
 
   const landNarrationTarget = useCallback((force: boolean) => {
-    if (!narrationTarget || !isFocused || (!force && Date.now() < followPausedUntil.current)) return;
+    if (!narrationTarget || !isFocused
+        || (!force && (!playing || Date.now() < followPausedUntil.current))) return;
     narrationLandingCancel.current?.();
     narrationLandingCancel.current = startNarrationLanding({
       approach: () => chatNav.goToIndex(narrationTarget.rowIndex),
@@ -1979,20 +1987,39 @@ function DiscussionThread({
         return measure(done);
       },
       correct: (screenY, height) => {
-        // Under the inverted list, decreasing native offset moves content toward the visual top.
-        const desiredY = chromeLayout.topClearance + space.md;
+        const offset = narrationFollowOffset({
+          currentOffset: listOffset.current,
+          screenY,
+          sentenceHeight: height,
+          viewportHeight: windowHeight,
+          topClearance: chromeLayout.topClearance,
+          bottomClearance: chromeLayout.scrollButtonBottom,
+          force,
+        });
+        if (offset == null) return;
         listRef.current?.scrollToOffset({
-          offset: Math.max(0, listOffset.current + desiredY - (screenY + height / 2)),
+          offset,
           animated: !reduceMotion,
         });
       },
     });
-  }, [chatNav.goToIndex, chromeLayout.topClearance, isFocused, narrationTarget, reduceMotion]);
+  }, [
+    chatNav.goToIndex,
+    chromeLayout.scrollButtonBottom,
+    chromeLayout.topClearance,
+    isFocused,
+    narrationTarget,
+    playing,
+    reduceMotion,
+    windowHeight,
+  ]);
 
   useEffect(() => {
-    if (narrationTarget?.explicitNonce == null) landNarrationTarget(false);
+    if (shouldLandNarrationPassively(!!playing, narrationTarget?.explicitNonce ?? null)) {
+      landNarrationTarget(false);
+    }
     return () => narrationLandingCancel.current?.();
-  }, [landNarrationTarget, narrationTarget?.explicitNonce]);
+  }, [landNarrationTarget, narrationTarget?.explicitNonce, playing]);
 
   useEffect(() => {
     const jump = audio.discussionJump;
@@ -2787,7 +2814,7 @@ function DiscussionThread({
       colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
       keyboardAvoidingViewProps={{ keyboardVerticalOffset: chromeLayout.keyboardVerticalOffset }}
-      isScrollToBottomEnabled
+      isScrollToBottomEnabled={shouldShowLegacyScrollButton(chatNavRail)}
       // The library's default is a bare "V" text glyph on a white circle — restyle it into
       // the app's circular icon-button idiom.
       scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={theme.mint} />}
@@ -2885,6 +2912,8 @@ function DiscussionThread({
         ref={railRef}
         onOldest={chatNav.goOldest}
         onUp={chatNav.goUp}
+        onCurrent={() => landNarrationTarget(true)}
+        currentEnabled={!!playing && !!narrationTarget}
         onDown={chatNav.goDown}
         onLive={chatNav.goLive}
         // `headerHeight` already includes the safe-area inset when the header overlays the

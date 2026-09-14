@@ -4,7 +4,16 @@
 // MathView). Deliberately small — not a full CommonMark implementation — to keep reading
 // fast and the bundle lean.
 
-import { createContext, Fragment, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  createContext,
+  Fragment,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import {
   Linking,
   Platform,
@@ -17,6 +26,12 @@ import {
 // inverted list under a gesture-handler hierarchy, where a core horizontal ScrollView loses
 // the Android gesture negotiation and simply doesn't pan.
 import { ScrollView } from 'react-native-gesture-handler';
+import Animated, {
+  interpolateColor,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { FigureCard } from '@/components/FigureCard';
 import { InlineMath, MathBlock } from '@/components/MathView';
@@ -27,7 +42,7 @@ import { markdownToInlineSource, restoreEscapes } from '@/lib/markdownPlain';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, makeTextStyles, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { fonts, motion, radius, space, type ThemePalette } from '@/theme/tokens';
 import type { DiscussionSentenceAnchor } from '@/audio/discussionFollow';
 
 /** When present, the paper's figures are carded inline immediately before the first paragraph that
@@ -59,11 +74,14 @@ export interface SentenceAnnotations {
  * sentence-comment affordance retain ownership of touch and accessibility behaviour. */
 export interface NarrationSentenceFollow {
   activeAnchorId: string;
+  reduceMotion?: boolean;
   registerAnchor: (
     anchorId: string,
     measure: (done: (screenY: number, height: number) => void) => boolean,
   ) => () => void;
 }
+
+export const NARRATION_HIGHLIGHT_FADE_MS = motion.standard;
 
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
 // monospace member, so code falls back to the platform's own mono face.
@@ -706,48 +724,106 @@ function AnnotatableParagraph({
         const quote = annotationQuote(sentence);
         const state = annotations?.stateForSentence?.(quote);
         const active = index === activeIndex;
+        const sentenceStyle = {
+          borderLeftColor: state?.annotated ? t.violet : undefined,
+          borderLeftWidth: state?.annotated ? 2 : 0,
+          paddingLeft: state?.annotated ? 2 : 0,
+          textDecorationColor: state?.annotated ? t.violet : undefined,
+          textDecorationLine: state?.annotated ? 'underline' as const : 'none' as const,
+        };
+        const sentenceContent = (
+          <>
+            <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks={!!annotations?.active} />
+            {state?.commentCount ? (
+              // DR-053 §1: was inheriting the sentence's line box and reading as an oversized
+              // rectangle rather than a badge. lineHeight (not the ~26px serif body line)
+              // keeps it superscript-sized regardless of surrounding type; the background
+              // stays fully opaque (t.violet, never a wash) so it can't read as transparent.
+              <RNText
+                accessibilityLabel={`${state.commentCount} attached comments`}
+                style={{
+                  backgroundColor: t.violet,
+                  color: t.bg,
+                  fontFamily: fonts.bodyBold,
+                  fontSize: 10,
+                  lineHeight: 14,
+                  borderRadius: radius.sm,
+                  overflow: 'hidden',
+                }}>
+                {` ${state.commentCount} `}
+              </RNText>
+            ) : null}
+          </>
+        );
+        const accessibilityProps = annotations?.active ? {
+          accessibilityRole: 'button' as const,
+          accessibilityLabel: `Comment on: ${quote}`,
+          accessibilityState: { selected: !!state?.selected },
+          onPress: () => annotations.onSentencePress(quote),
+        } : {};
         return (
           <Fragment key={`${index}:${sentence}`}>
-            <RNText
-              testID={`md-sentence-${index}`}
-              accessibilityRole={annotations?.active ? 'button' : undefined}
-              accessibilityLabel={annotations?.active ? `Comment on: ${quote}` : undefined}
-              accessibilityState={annotations?.active ? { selected: !!state?.selected } : undefined}
-              onPress={annotations?.active ? () => annotations.onSentencePress(quote) : undefined}
-              style={{
-                backgroundColor: state?.selected ? t.violetWash : active ? t.mintWashStrong : undefined,
-                borderLeftColor: state?.annotated ? t.violet : undefined,
-                borderLeftWidth: state?.annotated ? 2 : 0,
-                paddingLeft: state?.annotated ? 2 : 0,
-                textDecorationColor: state?.annotated ? t.violet : undefined,
-                textDecorationLine: state?.annotated ? 'underline' : 'none',
-              }}>
-              <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks={!!annotations?.active} />
-              {state?.commentCount ? (
-                // DR-053 §1: was inheriting the sentence's line box and reading as an oversized
-                // rectangle rather than a badge. lineHeight (not the ~26px serif body line)
-                // keeps it superscript-sized regardless of surrounding type; the background
-                // stays fully opaque (t.violet, never a wash) so it can't read as transparent.
-                <RNText
-                  accessibilityLabel={`${state.commentCount} attached comments`}
-                  style={{
-                    backgroundColor: t.violet,
-                    color: t.bg,
-                    fontFamily: fonts.bodyBold,
-                    fontSize: 10,
-                    lineHeight: 14,
-                    borderRadius: radius.sm,
-                    overflow: 'hidden',
-                  }}>
-                  {` ${state.commentCount} `}
-                </RNText>
-              ) : null}
-            </RNText>
+            {narrationFollow ? (
+              <NarrationSentenceText
+                testID={`md-sentence-${index}`}
+                active={active}
+                reduceMotion={!!narrationFollow.reduceMotion}
+                selected={!!state?.selected}
+                style={sentenceStyle}
+                {...accessibilityProps}>
+                {sentenceContent}
+              </NarrationSentenceText>
+            ) : (
+              <RNText
+                testID={`md-sentence-${index}`}
+                style={[
+                  sentenceStyle,
+                  state?.selected ? { backgroundColor: t.violetWash } : null,
+                ]}
+                {...accessibilityProps}>
+                {sentenceContent}
+              </RNText>
+            )}
             {index < sentences.length - 1 ? ' ' : null}
           </Fragment>
         );
       })}
     </RNText>
+  );
+}
+
+/** One host stays mounted as the boundary advances, so the old sentence fades out while the new
+ * one fades in. Selection remains violet and wins over the passive mint animation. */
+function NarrationSentenceText({
+  active,
+  reduceMotion,
+  selected,
+  style,
+  ...props
+}: ComponentProps<typeof RNText> & {
+  active: boolean;
+  reduceMotion: boolean;
+  selected: boolean;
+}) {
+  const t = useTheme();
+  const progress = useSharedValue(0);
+  useEffect(() => {
+    progress.value = withTiming(active ? 1 : 0, {
+      duration: reduceMotion ? 0 : NARRATION_HIGHLIGHT_FADE_MS,
+    });
+  }, [active, progress, reduceMotion]);
+  const highlight = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(
+      progress.value,
+      [0, 1],
+      ['transparent', t.mintWashStrong],
+    ),
+  }));
+  return (
+    <Animated.Text
+      {...props}
+      style={[style, highlight, selected ? { backgroundColor: t.violetWash } : null]}
+    />
   );
 }
 

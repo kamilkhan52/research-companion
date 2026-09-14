@@ -2,11 +2,24 @@ import { fireEventAsync, renderAsync, screen } from '@testing-library/react-nati
 
 import {
   Markdown,
+  NARRATION_HIGHLIGHT_FADE_MS,
   discussionSentenceAnchors,
   narrationLineForSentence,
   splitAnnotatableSentences,
 } from '@/components/Markdown';
 import { themes } from '@/theme/tokens';
+
+jest.mock('react-native-reanimated', () => {
+  const actual = jest.requireActual('react-native-reanimated');
+  return {
+    __esModule: true,
+    ...actual,
+    default: actual.default,
+    withTiming: jest.fn(actual.withTiming),
+  };
+});
+
+const reanimated = jest.requireMock('react-native-reanimated') as { withTiming: jest.Mock };
 
 // U.15 — rendering defects Kamil hit on device with a long analysis response (the AWQ
 // briefing): glued headings, links inside bold spans, pipe tables, and ordered-list numbering.
@@ -284,10 +297,11 @@ describe('narration follow render path', () => {
     expect(screen.getByText('Quoted claim.')).toBeTruthy();
   });
 
-  test('highlights and registers only the active passive sentence', async () => {
+  test('fades between and registers only the active passive sentence', async () => {
     const unregister = jest.fn();
     const registerAnchor = jest.fn(() => unregister);
-    const { unmountAsync } = await renderAsync(
+    reanimated.withTiming.mockClear();
+    const { rerenderAsync, unmountAsync } = await renderAsync(
       <Markdown
         text="First claim. Second claim."
         narrationFollow={{ activeAnchorId: 'b0.s1', registerAnchor }}
@@ -297,13 +311,43 @@ describe('narration follow render path', () => {
     expect(screen.getByTestId('md-sentence-0')).not.toHaveStyle({
       backgroundColor: themes.dim.mintWashStrong,
     });
-    expect(screen.getByTestId('md-sentence-1')).toHaveStyle({
-      backgroundColor: themes.dim.mintWashStrong,
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
     });
+    expect(NARRATION_HIGHLIGHT_FADE_MS).toBeGreaterThan(0);
     expect(screen.getByTestId('md-sentence-1').props.accessibilityRole).toBeUndefined();
     expect(registerAnchor).toHaveBeenCalledWith('b0.s1', expect.any(Function));
 
+    reanimated.withTiming.mockClear();
+    await rerenderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        narrationFollow={{ activeAnchorId: 'b0.s0', registerAnchor }}
+      />,
+    );
+    expect(reanimated.withTiming).toHaveBeenCalledWith(0, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
+    });
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
+    });
+
     await unmountAsync();
-    expect(unregister).toHaveBeenCalledTimes(1);
+    expect(unregister).toHaveBeenCalledTimes(2);
+  });
+
+  test('honours reduce motion for the narration highlight transition', async () => {
+    reanimated.withTiming.mockClear();
+    await renderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        narrationFollow={{
+          activeAnchorId: 'b0.s1',
+          registerAnchor: () => jest.fn(),
+          reduceMotion: true,
+        }}
+      />,
+    );
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, { duration: 0 });
   });
 });
