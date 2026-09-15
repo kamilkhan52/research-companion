@@ -28,7 +28,23 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-09-13)
+## Current position (updated 2026-09-15)
+
+**Delta at 2026-09-15** (live repository audit at `b9fa3fd`):
+- PR #523 / DR-159 is merged, reviewed, and deployed to both the server and device worktrees. The
+  notes-revision guard was already preventing data loss; the mobile review surface now makes that
+  conflict explicit and preserves both the newer notes and retained proposal through recovery.
+- DR-133's narration-follow refinement and DR-158's explicit rail jump are implemented together on
+  the isolated `codex/dr-133-follow-refinement` branch and are the next integration/review queue.
+- Five new September 15 bubble entries reconcile to three rows: DR-160 is one malformed-PDF-text
+  defect shared by arXiv fetch and upload; DR-161 is the deliberate product/agent naming decision;
+  and DR-162 is the related-work reading offer's copy reduction.
+- DR-160 is reproduced against the exact Stratum PDF: pypdf emits two lone `U+D835` surrogates and
+  the strict UTF-8 corpus writer refuses them. The fix belongs at extraction, not in the writer.
+- The live device ledger now has 162 rows: 99 `implemented — verify`, 44 closed, 8 partial, 7 open,
+  2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
+
+## Position at 2026-09-13 (superseded by the block above)
 
 **Delta at 2026-09-13** (live repository audit at `5641bd4`):
 - `main` and `origin/main` are aligned, the server and device worktrees are deployed to the same
