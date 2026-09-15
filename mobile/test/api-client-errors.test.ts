@@ -116,6 +116,22 @@ test('a structured refusal keeps the sentence it was written with', async () => 
   await expect(apiGet('/api/example')).rejects.toMatchObject({
     status: 409,
     message: 'This paper already exists in another project.',
+    code: 'paper_exists_elsewhere',
+  });
+});
+
+test('a nested notes conflict keeps its machine code separate from its sentence', async () => {
+  await setBaseUrl('https://api.example');
+  jest.spyOn(global, 'fetch').mockResolvedValueOnce(response(409, {
+    detail: {
+      code: 'notes_revision_conflict',
+      message: 'These notes changed after the AI proposal was prepared.',
+    },
+  }));
+  await expect(apiGet('/api/example')).rejects.toMatchObject({
+    status: 409,
+    message: 'These notes changed after the AI proposal was prepared.',
+    code: 'notes_revision_conflict',
   });
 });
 
