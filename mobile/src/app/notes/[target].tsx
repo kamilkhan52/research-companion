@@ -420,6 +420,7 @@ export default function NotesScreen() {
                 title="Edit current notes"
                 variant="ghost"
                 onPress={() => {
+                  setSaveError(null);
                   editDraft.setValue({ markdown, proposal: null });
                   setMode('edit');
                 }}
@@ -428,7 +429,10 @@ export default function NotesScreen() {
               <Button
                 title="Discard old proposal"
                 variant="ghost"
-                onPress={agent.dismissProposal}
+                onPress={() => {
+                  setSaveError(null);
+                  agent.dismissProposal();
+                }}
               />
             </View>
           ) : showProposal ? (

@@ -133,6 +133,7 @@ test('discard remains explicit after a stale approval', async () => {
 
   await waitFor(() => expect(api.discardNotesJob).toHaveBeenCalledWith('project', 'stale-job'));
   await waitFor(() => expect(screen.queryByText('Older generated proposal with unique detail.')).toBeNull());
+  expect(screen.queryByText('These notes changed after the AI proposal was prepared.')).toBeNull();
 });
 
 test('editing the current document does not silently discard the old proposal', async () => {
@@ -143,6 +144,7 @@ test('editing the current document does not silently discard the old proposal', 
   await fireEventAsync.press(screen.getByText('Edit current notes'));
 
   expect(screen.getByDisplayValue('## Notes\n\nNewer committed notes from Finish Reading.')).toBeTruthy();
+  expect(screen.queryByText('These notes changed after the AI proposal was prepared.')).toBeNull();
   expect(api.discardNotesJob).not.toHaveBeenCalled();
   await fireEventAsync.press(screen.getByText('Cancel'));
   await waitFor(() => expect(screen.getByText('Proposal out of date')).toBeTruthy());
