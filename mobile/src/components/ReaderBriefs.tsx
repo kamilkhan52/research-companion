@@ -1,12 +1,12 @@
-// DR-140 — reading assistants for the project papers a response cited without anyone here
-// having read them. Four surfaces, in the order the reader meets them:
+// DR-140 — reading assistants for project papers cited by a response. Four surfaces, in the
+// order the reader meets them:
 //
 //   ReaderOfferLink    — the little indicator under the response that earned the offer, the way
 //                        back into it once the window is closed (DR-145, the NotesUpdateLink
 //                        shape Kamil named).
-//   ReaderOfferSheet   — "the agent described these from their abstracts alone; read them in
-//                        full?" with a check mark per paper (Kamil's design). DR-145 makes it a
-//                        window over the discussion rather than a card inside the transcript.
+//   ReaderOfferSheet   — a concise offer with a check mark per paper (Kamil's design). DR-145
+//                        makes it a window over the discussion rather than a card inside the
+//                        transcript.
 //   ReaderProgressCard — the detailed pass state: one status row per paper, then the hand-off
 //                        to the agent's follow-up turn. DR-146 opens it from a header icon.
 //   ReaderBriefsTrail  — on the follow-up response, the briefs it was written from: collapsed
@@ -105,14 +105,11 @@ export function ReaderOfferCard({
           variant="caption"
           style={[styles.headerText, chatTextStyle, { fontFamily: fonts.serifMedium }]}
         >
-          Read the papers this response cites but nobody here has read?
+          Seminar would like to read {candidates.length === 1
+            ? 'this related work'
+            : 'these related works'}.
         </Text>
       </View>
-      <Text variant="caption" color={t.muted} style={chatTextStyle}>
-        The agent described {candidates.length === 1 ? 'this paper' : `these ${candidates.length} papers`} from
-        {candidates.length === 1 ? ' its abstract' : ' their abstracts'} alone. A reading assistant can read
-        each one in full against this response, and the agent will then revise what it said about them.
-      </Text>
       {capBinds ? (
         <Text
           variant="caption"
@@ -253,15 +250,15 @@ export function ReaderOfferLink({
   const t = useTheme();
   const chatTextStyle = useChatTextStyle(textScale);
   const label = count === 1
-    ? 'This response cites 1 paper nobody has read — read it?'
-    : `This response cites ${count} papers nobody has read — read them?`;
+    ? 'Seminar would like to read this related work.'
+    : 'Seminar would like to read these related works.';
   return (
     <Pressable
       testID="reader-offer-link"
       onPress={onOpen}
       style={[styles.offerLink, { borderColor: t.mint }]}
       accessibilityRole="button"
-      accessibilityLabel={`${label}. Tap to open the reading assistants.`}
+      accessibilityLabel={`${label} Tap to open.`}
     >
       <Icon name="users" size={13} color={t.mint} />
       <Text variant="caption" color={t.mint} style={[styles.offerLinkText, chatTextStyle]}>

@@ -1,5 +1,5 @@
-// DR-140 — reading assistants for the project papers a response cited without anyone here
-// having read them. Kamil's design: prompt with check marks so the reader picks the papers,
+// DR-140 — reading assistants for the project papers cited by a response. Kamil's design:
+// prompt with check marks so the reader picks the papers,
 // a simple status per assistant while they read, and the briefs viewable but collapsed.
 
 import { fireEvent, render } from '@testing-library/react-native';
@@ -87,7 +87,8 @@ describe('the offer', () => {
         starting={false}
       />,
     );
-    expect(screen.getByText(/Read the papers this response cites/)).toBeTruthy();
+    expect(screen.getByText('Seminar would like to read these related works.')).toBeTruthy();
+    expect(screen.queryByText(/nobody|agent described|reading assistant/i)).toBeNull();
     expect(screen.getByText('H3: HBM-side staging (2025)')).toBeTruthy();
     expect(screen.getByTestId('reader-candidate-h3').props.accessibilityState.checked).toBe(true);
     expect(screen.getByTestId('reader-candidate-ghost').props.accessibilityState.disabled).toBe(true);
@@ -169,7 +170,7 @@ describe('the offer', () => {
         textScale={1.2}
       />,
     );
-    const heading = screen.getByText(/Read the papers this response cites/);
+    const heading = screen.getByText('Seminar would like to read these related works.');
     const headingStyle = StyleSheet.flatten(heading.props.style);
     expect(headingStyle.fontFamily).toBe(fonts.serifMedium);
     const title = screen.getByText('H3: HBM-side staging (2025)');
@@ -259,10 +260,11 @@ describe('the offer window and its indicator', () => {
   test('the indicator names the papers and reopens the window', () => {
     const onOpen = jest.fn();
     const one = render(<ReaderOfferLink count={1} onOpen={onOpen} />);
-    expect(one.getByText('This response cites 1 paper nobody has read — read it?')).toBeTruthy();
+    expect(one.getByText('Seminar would like to read this related work.')).toBeTruthy();
+    expect(one.getByLabelText('Seminar would like to read this related work. Tap to open.')).toBeTruthy();
 
     const many = render(<ReaderOfferLink count={3} onOpen={onOpen} textScale={1.2} />);
-    const label = many.getByText('This response cites 3 papers nobody has read — read them?');
+    const label = many.getByText('Seminar would like to read these related works.');
     expect(StyleSheet.flatten(label.props.style).fontSize).toBeCloseTo(15);
     fireEvent.press(many.getByTestId('reader-offer-link'));
     expect(onOpen).toHaveBeenCalledTimes(1);
