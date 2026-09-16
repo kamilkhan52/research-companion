@@ -18,7 +18,7 @@ import { fireEvent, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
-import type { DiscoveryJob } from '@/api/types';
+import type { DiscoveryJob, GraphRecommendation } from '@/api/types';
 import { describeRunFocus, discoverySkipLabel } from '@/app/(tabs)/discover';
 import DiscoverScreen from '@/app/(tabs)/discover';
 import { ProjectProvider } from '@/store/project';
@@ -71,6 +71,7 @@ function TestLayout() {
 async function renderDiscover(
   result: Partial<Record<string, unknown>>,
   job: DiscoveryJob | null = null,
+  graphRecommendations: GraphRecommendation[] = [],
 ) {
   await setBaseUrl('https://api.test');
   // The active project is persisted, not derived — nothing selects one for an empty store.
@@ -81,6 +82,7 @@ async function renderDiscover(
     ],
   } as never);
   jest.mocked(api.getProjectState).mockResolvedValue({ papers: [] } as never);
+  jest.mocked(api.getGraph).mockResolvedValue({ recommendations: graphRecommendations } as never);
   // getNeighbourhood is deliberately left unmocked: its line renders null without data, and the
   // freshness row is not what this test is about.
   jest.mocked(api.getDiscovery).mockResolvedValue({
@@ -100,6 +102,34 @@ async function renderDiscover(
   } as never);
   return renderRouter({ _layout: TestLayout, index: DiscoverScreen }, { initialUrl: '/' });
 }
+
+test('project-ranked graph recommendations share the one Discover list with provenance', async () => {
+  await renderDiscover({ focus: '', suggestions: [] }, null, [{
+    id: 'ext:title:project recommendation',
+    kind: 'external',
+    slug: null,
+    title: 'Project Recommendation',
+    authors: ['A. Author'],
+    venue: '',
+    year: 2025,
+    arxiv_id: null,
+    doi: null,
+    url: null,
+    group: null,
+    list_status: null,
+    cited_by_project_count: 2,
+    significant_cited_by_count: 1,
+    cites_count: 0,
+    recommend_score: 6,
+    recommend_reasons: ['Cited by 2 papers in this project'],
+    betweenness_centrality: 0,
+  }]);
+
+  expect(await screen.findByText('Project Recommendation')).toBeTruthy();
+  expect(screen.getByText('Project graph')).toBeTruthy();
+  expect(screen.getByText('Cited by 2 papers in this project')).toBeTruthy();
+  expect(screen.getByText('Papers to add')).toBeTruthy();
+});
 
 test('the run focus is labelled and dated on the screen, never printed bare', async () => {
   await renderDiscover({ focus: FOCUS });

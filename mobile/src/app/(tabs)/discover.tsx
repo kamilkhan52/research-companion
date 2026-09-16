@@ -28,8 +28,20 @@ import {
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
-import { keys, useAddPaper, useDiscovery, useNeighbourhood, useProjectMembership } from '@/api/queries';
-import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
+import {
+  keys,
+  useAddPaper,
+  useDiscovery,
+  useGraph,
+  useNeighbourhood,
+  useProjectMembership,
+} from '@/api/queries';
+import type {
+  DiscoveryJob,
+  GraphRecommendation,
+  HiddenRecommendation,
+  PaperSuggestion,
+} from '@/api/types';
 import { NeighbourhoodLine, relativeAge } from '@/components/NeighbourhoodLine';
 import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
@@ -66,6 +78,103 @@ export function dedupeSuggestions<T extends { candidate_id?: string | null }>(ro
     seen.add(id);
     return true;
   });
+}
+
+export type UnifiedSuggestion = PaperSuggestion & {
+  recommendation_provenance: 'Search result' | 'Project graph' | 'Search result · Project graph';
+};
+
+/** Adapt the Map's persisted, project-ranked recommendation into the richer Discover card shape.
+ *
+ * This stays client-side so the stable GET /graph contract does not grow view-specific aliases.
+ * Fields the graph cannot know are honestly empty; the card already treats abstract,
+ * affiliations, and provider URLs as optional presentation. */
+export function graphRecommendationToSuggestion(rec: GraphRecommendation): UnifiedSuggestion {
+  const graphIdentity = rec.id.replace(/^ext:/, '');
+  const paperId = graphIdentity.startsWith('s2:') ? graphIdentity.slice(3) : undefined;
+  return {
+    candidate_id: `graph:${rec.id}`,
+    arxiv_id: rec.arxiv_id,
+    doi: rec.doi,
+    paper_id: paperId,
+    title: rec.title,
+    authors: rec.authors ?? [],
+    affiliations: [],
+    year: rec.year,
+    category: '',
+    venue: rec.venue || undefined,
+    url: rec.url ?? '',
+    pdf_url: '',
+    citation_count: rec.citation_count ?? null,
+    sources: rec.provenance?.includes('semantic_scholar') ? ['semantic_scholar'] : [],
+    relevance: 0,
+    credibility: 0,
+    score: rec.recommend_score,
+    reasons: rec.recommend_reasons ?? [],
+    recommendation_provenance: 'Project graph',
+  };
+}
+
+function normalizedIdentity(row: PaperSuggestion) {
+  const arxiv = (row.arxiv_id ?? '').trim().toLowerCase().replace(/v\d+$/, '');
+  const doi = (row.doi ?? '').trim().toLowerCase()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, '');
+  const paperId = (row.paper_id ?? '').trim().toLowerCase();
+  const title = row.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return { arxiv, doi, paperId, title };
+}
+
+function sameSuggestedWork(a: PaperSuggestion, b: PaperSuggestion): boolean {
+  const left = normalizedIdentity(a);
+  const right = normalizedIdentity(b);
+  if (
+    (left.arxiv && left.arxiv === right.arxiv)
+    || (left.doi && left.doi === right.doi)
+    || (left.paperId && left.paperId === right.paperId)
+  ) {
+    return true;
+  }
+  // A title is only a fallback. If both lanes name the same kind of strong identity and
+  // disagree, they are two works despite sharing a title (the wrong-PDF hazard behind DR-126).
+  if (
+    (left.arxiv && right.arxiv && left.arxiv !== right.arxiv)
+    || (left.doi && right.doi && left.doi !== right.doi)
+    || (left.paperId && right.paperId && left.paperId !== right.paperId)
+  ) {
+    return false;
+  }
+  return !!left.title && left.title === right.title;
+}
+
+/** One ranked list, never blended score scales: query-ranked rows lead, then the Map's existing
+ * project ranking. A cross-lane duplicate keeps the query card but gains any distinct project
+ * provenance, so de-duplication does not erase why the corpus itself recommended it. */
+export function mergeRecommendationLanes(
+  queryRows: PaperSuggestion[],
+  graphRows: GraphRecommendation[],
+): UnifiedSuggestion[] {
+  const merged: UnifiedSuggestion[] = dedupeSuggestions(queryRows).map((row) => ({
+    ...row,
+    recommendation_provenance: 'Search result',
+  }));
+  for (const recommendation of graphRows) {
+    const graphRow = graphRecommendationToSuggestion(recommendation);
+    const existing = merged.find((row) => sameSuggestedWork(row, graphRow));
+    if (!existing) {
+      merged.push(graphRow);
+      continue;
+    }
+    existing.reasons = Array.from(new Set([
+      ...(existing.reasons ?? []),
+      ...(graphRow.reasons ?? []),
+    ]));
+    existing.sources = Array.from(new Set([
+      ...(existing.sources ?? []),
+      ...(graphRow.sources ?? []),
+    ])) as PaperSuggestion['sources'];
+    existing.recommendation_provenance = 'Search result · Project graph';
+  }
+  return merged;
 }
 
 /** DR-136 — attribute `result.focus` to the run that wrote it.
@@ -120,6 +229,7 @@ export function DiscoverContent() {
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
   const discovery = useDiscovery(pid);
+  const graphQuery = useGraph(pid);
   const showDiscoverySkeleton = useDelayedInitialSkeleton(
     discovery.isLoading,
     discovery.data !== undefined,
@@ -158,7 +268,11 @@ export function DiscoverContent() {
   // the duplicate, and re-running Discover costs a paid multi-minute run. Collapsing here means
   // an existing result stops showing one paper twice — and the list's React keys, which are
   // candidate ids, stay unique instead of raising an error over the results.
-  const suggestions = dedupeSuggestions(result?.suggestions ?? []);
+  const graphRecommendations = graphQuery.data?.recommendations ?? [];
+  const suggestions = mergeRecommendationLanes(
+    result?.suggestions ?? [],
+    graphRecommendations,
+  );
   const inLibrary = dedupeSuggestions(result?.in_library ?? []);
   const topN = result?.top_n ?? 5;
   const visible = showAll ? suggestions : suggestions.slice(0, topN);
@@ -269,7 +383,7 @@ export function DiscoverContent() {
             <DiscoverLoadingSkeleton />
           ) : null}
 
-          {result && !runState.running ? (
+          {(result || suggestions.length > 0) && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
               {/* DR-052 PR 4: the shared neighbourhood line — the same freshness the Map shows,
                   since Discover's forward-citation sweep and the Map read one substrate. Its
@@ -282,7 +396,7 @@ export function DiscoverContent() {
                 />
               ) : null}
               <Text variant="editorial">
-                {runState.job?.status === 'cancelled' ? 'Previous results' : 'Results'}
+                {runState.job?.status === 'cancelled' ? 'Previous results' : 'Papers to add'}
               </Text>
               {/* DR-136 — Kamil: "Unexplained text at the top of Discover … 'Reinforcement
                   Learning for robotics…', I think that shouldn't be there. Maybe from a previous
@@ -294,10 +408,16 @@ export function DiscoverContent() {
                   it read as a caption on papers it does not describe. Labelled and dated, it says
                   what it is and that it is months old, which is the actionable half. */}
               <View style={{ marginTop: space.xs, marginBottom: space.md }}>
-                <Text variant="caption" color={t.muted}>
-                  {result.candidate_count} papers across scholarly sources, ranked by fit and
-                  evidence.
-                </Text>
+                {result ? (
+                  <Text variant="caption" color={t.muted}>
+                    {result.candidate_count} papers across scholarly sources; search matches lead,
+                    followed by recommendations from this project’s citation patterns.
+                  </Text>
+                ) : (
+                  <Text variant="caption" color={t.muted}>
+                    Ranked from this project’s citation patterns.
+                  </Text>
+                )}
                 {searchedFor ? (
                   <Text
                     testID="discover-run-focus"
@@ -498,7 +618,7 @@ export function SuggestionCard({
   onAdded,
 }: {
   pid: string;
-  suggestion: PaperSuggestion;
+  suggestion: PaperSuggestion & Partial<Pick<UnifiedSuggestion, 'recommendation_provenance'>>;
   rank: number;
   onAdded?: () => void;
 }) {
@@ -683,6 +803,11 @@ export function SuggestionCard({
           </Text>
         </View>
       </View>
+      {s.recommendation_provenance ? (
+        <Text variant="overline" color={t.muted} style={{ marginTop: space.sm }}>
+          {s.recommendation_provenance}
+        </Text>
+      ) : null}
       {(s.reasons ?? [])[0] ? (
         <View style={styles.reasonRow}>
           <Icon name="check" size={14} color={t.mint} />
