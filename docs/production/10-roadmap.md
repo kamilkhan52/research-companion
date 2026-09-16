@@ -30,9 +30,10 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ## Current position (updated 2026-09-16)
 
-**Delta at 2026-09-16** (DR-160/DR-162 implementations in
+**Delta at 2026-09-16** (DR-160/DR-162 and DR-052 surface work in
 [#526](https://github.com/kamilkhan52/research-companion/pull/526) and
-[#527](https://github.com/kamilkhan52/research-companion/pull/527)):
+[#527](https://github.com/kamilkhan52/research-companion/pull/527), with DR-052 staging in
+[#528](https://github.com/kamilkhan52/research-companion/pull/528)):
 - PR #524's September 15 feedback triage and PR #523 / DR-159 are reviewed, merged, and deployed to
   both the server and device worktrees. DR-159's notes conflict now preserves both the newer notes
   and retained proposal through explicit recovery.
@@ -48,6 +49,10 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
   Both the arXiv and upload job paths pin the exact Stratum-shaped failure.
 - DR-162 reduces both related-work reading-offer surfaces to the requested singular/plural
   **Seminar would like to read…** sentence; the visible rows and actions retain the mechanics.
+- DR-052 surface staging step 1 puts query-ranked Discover matches and the Map's existing
+  project-ranked recommendations behind one list, de-duplicated without blending score scales and
+  with explicit per-row provenance. Its duplicate Map sheet remains until the list moves under the
+  graph and the standalone Discover tab is removed in step 3, so DR-052 stays `partial`.
 - The live device ledger now has 162 rows: 103 `implemented — verify`, 44 closed, 7 partial, 4 open,
   2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
 

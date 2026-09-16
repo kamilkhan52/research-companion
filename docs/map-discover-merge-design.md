@@ -205,6 +205,12 @@ no other step leaves the tab half-merged.
    in-flight hide guard on `candidate_id` — so dropping graph rows in unchanged gives every one
    of them `undefined`, colliding React keys and a hide response that can flip the wrong card.
    Step 1 is a server-side `candidate_id` + `reasons` alias, or an explicit client adapter.
+
+   **Implemented in [#528](https://github.com/kamilkhan52/research-companion/pull/528).** The client
+   adapter gives graph rows stable card identities, preserves each lane's own ranking, collapses
+   cross-lane identities without replacing the richer query card, and labels every row as a search
+   result, project-graph recommendation, or both. The duplicate Map sheet remains by design until
+   step 3.
 2. **First-run, BEFORE the tab goes.** Empty project shows the query box as the on-ramp. This
    moved ahead of the tab removal in review: today's only on-ramp is `EmptyProjectHub`'s
    "Discover papers" CTA (`index.tsx:503` → `router.push('/discover')`), and the Map tab's
