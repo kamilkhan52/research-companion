@@ -812,17 +812,23 @@ function NarrationSentenceText({
       duration: reduceMotion ? 0 : NARRATION_HIGHLIGHT_FADE_MS,
     });
   }, [active, progress, reduceMotion]);
+  // Selection is part of the animated value rather than a later static array entry. Reanimated
+  // applies UI-thread updates directly to the shadow node after React has flattened that array,
+  // so a later animation frame would otherwise overwrite violet with mint (then transparent)
+  // while the sentence-comment editor still owns the selected sentence.
   const highlight = useAnimatedStyle(() => ({
-    backgroundColor: interpolateColor(
-      progress.value,
-      [0, 1],
-      ['transparent', t.mintWashStrong],
-    ),
+    backgroundColor: selected
+      ? t.violetWash
+      : interpolateColor(
+          progress.value,
+          [0, 1],
+          ['transparent', t.mintWashStrong],
+        ),
   }));
   return (
     <Animated.Text
       {...props}
-      style={[style, highlight, selected ? { backgroundColor: t.violetWash } : null]}
+      style={[style, highlight]}
     />
   );
 }
