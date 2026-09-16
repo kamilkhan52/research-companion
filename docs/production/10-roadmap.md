@@ -28,9 +28,9 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-09-15)
+## Current position (updated 2026-09-16)
 
-**Delta at 2026-09-15** (live repository audit at `b2cc8ba`):
+**Delta at 2026-09-16** (DR-160 implementation in [#526](https://github.com/kamilkhan52/research-companion/pull/526)):
 - PR #524's September 15 feedback triage and PR #523 / DR-159 are reviewed, merged, and deployed to
   both the server and device worktrees. DR-159's notes conflict now preserves both the newer notes
   and retained proposal through explicit recovery.
@@ -41,9 +41,10 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 - Five new September 15 bubble entries reconcile to three rows: DR-160 is one malformed-PDF-text
   defect shared by arXiv fetch and upload; DR-161 is the deliberate product/agent naming decision;
   and DR-162 is the related-work reading offer's copy reduction.
-- DR-160 is reproduced against the exact Stratum PDF: pypdf emits two lone `U+D835` surrogates and
-  the strict UTF-8 corpus writer refuses them. The fix belongs at extraction, not in the writer.
-- The live device ledger now has 162 rows: 101 `implemented — verify`, 44 closed, 7 partial, 6 open,
+- DR-160 is fixed at the shared PDF-extraction boundary: pypdf's two lone `U+D835` surrogates are
+  replaced before persistence, valid pairs remain intact, and the strict UTF-8 writer is unchanged.
+  Both the arXiv and upload job paths pin the exact Stratum-shaped failure.
+- The live device ledger now has 162 rows: 102 `implemented — verify`, 44 closed, 7 partial, 5 open,
   2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
 
 ## Position at 2026-09-13 (superseded by the block above)
