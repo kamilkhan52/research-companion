@@ -30,7 +30,9 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ## Current position (updated 2026-09-16)
 
-**Delta at 2026-09-16** (DR-160 implementation in [#526](https://github.com/kamilkhan52/research-companion/pull/526)):
+**Delta at 2026-09-16** (DR-160/DR-162 implementations in
+[#526](https://github.com/kamilkhan52/research-companion/pull/526) and
+[#527](https://github.com/kamilkhan52/research-companion/pull/527)):
 - PR #524's September 15 feedback triage and PR #523 / DR-159 are reviewed, merged, and deployed to
   both the server and device worktrees. DR-159's notes conflict now preserves both the newer notes
   and retained proposal through explicit recovery.
@@ -44,7 +46,9 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 - DR-160 is fixed at the shared PDF-extraction boundary: pypdf's two lone `U+D835` surrogates are
   replaced before persistence, valid pairs remain intact, and the strict UTF-8 writer is unchanged.
   Both the arXiv and upload job paths pin the exact Stratum-shaped failure.
-- The live device ledger now has 162 rows: 102 `implemented — verify`, 44 closed, 7 partial, 5 open,
+- DR-162 reduces both related-work reading-offer surfaces to the requested singular/plural
+  **Seminar would like to read…** sentence; the visible rows and actions retain the mechanics.
+- The live device ledger now has 162 rows: 103 `implemented — verify`, 44 closed, 7 partial, 4 open,
   2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
 
 ## Position at 2026-09-13 (superseded by the block above)
