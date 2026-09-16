@@ -82,7 +82,7 @@ async function renderDiscover(
     ],
   } as never);
   jest.mocked(api.getProjectState).mockResolvedValue({ papers: [] } as never);
-  jest.mocked(api.getGraph).mockResolvedValue({ recommendations: graphRecommendations } as never);
+  jest.mocked(api.getGraphRecommendations).mockResolvedValue(graphRecommendations);
   // getNeighbourhood is deliberately left unmocked: its line renders null without data, and the
   // freshness row is not what this test is about.
   jest.mocked(api.getDiscovery).mockResolvedValue({
@@ -129,6 +129,39 @@ test('project-ranked graph recommendations share the one Discover list with prov
   expect(screen.getByText('Project graph')).toBeTruthy();
   expect(screen.getByText('Cited by 2 papers in this project')).toBeTruthy();
   expect(screen.getByText('Papers to add')).toBeTruthy();
+});
+
+test('hiding a graph recommendation keeps its Undo row mounted instead of refetching it away', async () => {
+  const recommendation: GraphRecommendation = {
+    id: 'ext:title:hide me',
+    kind: 'external',
+    slug: null,
+    title: 'Hide Me',
+    authors: [],
+    venue: '',
+    year: 2025,
+    arxiv_id: null,
+    doi: null,
+    url: null,
+    group: null,
+    list_status: null,
+    cited_by_project_count: 1,
+    significant_cited_by_count: 0,
+    cites_count: 0,
+    recommend_score: 2,
+    recommend_reasons: ['Connected to this project'],
+    betweenness_centrality: 0,
+  };
+  jest.mocked(api.hideSuggestion).mockResolvedValue({
+    hidden: { keys: ['title:hide me'], title: 'Hide Me', hidden_at: '2026-09-16T00:00:00Z' },
+  });
+  await renderDiscover({ focus: '', suggestions: [] }, null, [recommendation]);
+
+  await screen.findByText('Hide Me');
+  fireEvent.press(screen.getByLabelText('Hide Hide Me from recommendations'));
+
+  expect(await screen.findByLabelText('Undo hiding Hide Me')).toBeTruthy();
+  expect(api.getGraphRecommendations).toHaveBeenCalledTimes(1);
 });
 
 test('the run focus is labelled and dated on the screen, never printed bare', async () => {

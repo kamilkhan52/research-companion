@@ -16,7 +16,7 @@
 
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Linking,
   Pressable,
@@ -32,7 +32,7 @@ import {
   keys,
   useAddPaper,
   useDiscovery,
-  useGraph,
+  useGraphRecommendations,
   useNeighbourhood,
   useProjectMembership,
 } from '@/api/queries';
@@ -83,6 +83,12 @@ export function dedupeSuggestions<T extends { candidate_id?: string | null }>(ro
 export type UnifiedSuggestion = PaperSuggestion & {
   recommendation_provenance: 'Search result' | 'Project graph' | 'Search result · Project graph';
 };
+
+// Match the Map sheet's high-signal ceiling. Real projects already hold 1,000+ low-signal
+// candidates; mounting all of them as hook-owning cards in a plain ScrollView stalls the device.
+export const MAX_UNIFIED_GRAPH_RECOMMENDATIONS = 100;
+const NO_QUERY_SUGGESTIONS: PaperSuggestion[] = [];
+const NO_GRAPH_RECOMMENDATIONS: GraphRecommendation[] = [];
 
 /** Adapt the Map's persisted, project-ranked recommendation into the richer Discover card shape.
  *
@@ -157,7 +163,7 @@ export function mergeRecommendationLanes(
     ...row,
     recommendation_provenance: 'Search result',
   }));
-  for (const recommendation of graphRows) {
+  for (const recommendation of graphRows.slice(0, MAX_UNIFIED_GRAPH_RECOMMENDATIONS)) {
     const graphRow = graphRecommendationToSuggestion(recommendation);
     const existing = merged.find((row) => sameSuggestedWork(row, graphRow));
     if (!existing) {
@@ -229,7 +235,7 @@ export function DiscoverContent() {
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
   const discovery = useDiscovery(pid);
-  const graphQuery = useGraph(pid);
+  const graphRecommendationsQuery = useGraphRecommendations(pid);
   const showDiscoverySkeleton = useDelayedInitialSkeleton(
     discovery.isLoading,
     discovery.data !== undefined,
@@ -268,10 +274,11 @@ export function DiscoverContent() {
   // the duplicate, and re-running Discover costs a paid multi-minute run. Collapsing here means
   // an existing result stops showing one paper twice — and the list's React keys, which are
   // candidate ids, stay unique instead of raising an error over the results.
-  const graphRecommendations = graphQuery.data?.recommendations ?? [];
-  const suggestions = mergeRecommendationLanes(
-    result?.suggestions ?? [],
-    graphRecommendations,
+  const graphRecommendations = graphRecommendationsQuery.data ?? NO_GRAPH_RECOMMENDATIONS;
+  const querySuggestions = result?.suggestions ?? NO_QUERY_SUGGESTIONS;
+  const suggestions = useMemo(
+    () => mergeRecommendationLanes(querySuggestions, graphRecommendations),
+    [querySuggestions, graphRecommendations],
   );
   const inLibrary = dedupeSuggestions(result?.in_library ?? []);
   const topN = result?.top_n ?? 5;
@@ -633,10 +640,11 @@ export function SuggestionCard({
   const [showAbstract, setShowAbstract] = useState(false);
   // Hide (R12.3): the server filters this paper from future recommendation responses; the
   // card flips into a compact undo row rather than vanishing, so a mis-tap is recoverable.
-  // The cached Discover list is deliberately NOT invalidated while the undo row shows, but
-  // the Map's recommendations query is — a mounted Graph tab must not keep serving the
-  // hidden paper from its cache. The card is keyed by pid+candidate at the call site, and
-  // an identity ref guards in-flight responses against representing a different project.
+  // Neither list cache is invalidated while the undo row shows: this card owns the app's only
+  // unhide action and must stay mounted. The full Map cache is separate, so it can refresh now
+  // and stop serving the hidden paper without removing this row. Undo refreshes all three views.
+  // The card is keyed by pid+candidate at the call site, and an identity ref guards in-flight
+  // responses against representing a different project.
   const qc = useQueryClient();
   const [hiddenEntry, setHiddenEntry] = useState<HiddenRecommendation | null>(null);
   const [hideBusy, setHideBusy] = useState(false);
@@ -673,6 +681,7 @@ export function SuggestionCard({
     try {
       await unhideSuggestion(requestPid, hiddenEntry.keys);
       void qc.invalidateQueries({ queryKey: keys.graph(requestPid) });
+      void qc.invalidateQueries({ queryKey: keys.graphRecommendations(requestPid) });
       void qc.invalidateQueries({ queryKey: keys.discovery(requestPid) });
       if (identityRef.current !== identity) return;
       setHiddenEntry(null);

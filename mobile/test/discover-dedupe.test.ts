@@ -7,6 +7,7 @@
 import {
   dedupeSuggestions,
   graphRecommendationToSuggestion,
+  MAX_UNIFIED_GRAPH_RECOMMENDATIONS,
   mergeRecommendationLanes,
 } from '@/app/(tabs)/discover';
 import type { GraphRecommendation, PaperSuggestion } from '@/api/types';
@@ -119,4 +120,17 @@ test('a shared title cannot merge two rows whose strong identities conflict', ()
   const graph = { ...GRAPH_REC, arxiv_id: null, doi: '10.1/graph' };
 
   expect(mergeRecommendationLanes([query], [graph])).toHaveLength(2);
+});
+
+test('the graph lane stops at the same high-signal ceiling as the Map sheet', () => {
+  const graphRows = Array.from({ length: MAX_UNIFIED_GRAPH_RECOMMENDATIONS + 1 }, (_, i) => ({
+    ...GRAPH_REC,
+    id: `ext:title:project recommendation ${i}`,
+    title: `Project Recommendation ${i}`,
+    arxiv_id: null,
+  }));
+
+  expect(mergeRecommendationLanes([], graphRows)).toHaveLength(MAX_UNIFIED_GRAPH_RECOMMENDATIONS);
+  expect(mergeRecommendationLanes([], graphRows).at(-1)?.title)
+    .toBe(`Project Recommendation ${MAX_UNIFIED_GRAPH_RECOMMENDATIONS - 1}`);
 });

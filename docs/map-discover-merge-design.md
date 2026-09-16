@@ -191,8 +191,11 @@ Each step ships and is verifiable on its own. Step 1 is deliberately duplicative
 no other step leaves the tab half-merged.
 
 1. **Lanes behind one list.** Feed the Map's recommendations into the same ranked list Discover
-   builds, with provenance per row. The source is `GET /graph`'s `recommendations` field, **not**
-   `GET /graph/recommendations` — that route has no caller in `mobile/`, `web/` or `shared/`.
+   builds, with provenance per row. Use the narrow `GET /graph/recommendations` view over the same
+   persisted ranking. The first implementation read `GET /graph`'s `recommendations` field, but
+   exact-head review measured real 5.5 MB graph payloads (nodes, raw citation text, and edges the
+   list never renders); activating that full query on Discover also made each Hide re-download it.
+   The previously unused narrow route avoids both costs without changing the source or ranking.
 
    **COPY, not move:** the Map's `zap` sheet keeps working through this step, because removing it
    would strip a Map feature and "we keep all features of Map" is the constraint. That does mean
@@ -209,8 +212,10 @@ no other step leaves the tab half-merged.
    **Implemented in [#528](https://github.com/kamilkhan52/research-companion/pull/528).** The client
    adapter gives graph rows stable card identities, preserves each lane's own ranking, collapses
    cross-lane identities without replacing the richer query card, and labels every row as a search
-   result, project-graph recommendation, or both. The duplicate Map sheet remains by design until
-   step 3.
+   result, project-graph recommendation, or both. It applies the Map sheet's existing 100-row
+   high-signal ceiling and memoizes the merge; a separate recommendation cache lets Hide preserve
+   its only Undo row while the full Map cache refreshes. The duplicate Map sheet remains by design
+   until step 3.
 2. **First-run, BEFORE the tab goes.** Empty project shows the query box as the on-ramp. This
    moved ahead of the tab removal in review: today's only on-ramp is `EmptyProjectHub`'s
    "Discover papers" CTA (`index.tsx:503` → `router.push('/discover')`), and the Map tab's
