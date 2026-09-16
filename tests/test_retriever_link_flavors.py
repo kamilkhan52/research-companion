@@ -129,3 +129,12 @@ def test_non_pdf_bytes_refused_even_when_not_html():
 def test_truncated_pdf_fails_as_a_retrieval_error_not_a_pypdf_internal():
     with pytest.raises(RetrievalError, match="Could not parse"):
         retriever._extract_pdf(b"%PDF-1.4 then nothing that pypdf can read")
+
+
+def test_pdf_cleanup_repairs_unpaired_surrogates_without_corrupting_a_valid_pair():
+    # Exact malformed shape from the Stratum PDF: each U+D835 is followed by the digit 2,
+    # rather than by a low surrogate. A real high/low pair is normalized to its scalar.
+    cleaned = retriever._clean("SelectTop-\ud8352\ud8352 / valid \ud83d\ude00")
+
+    assert cleaned == "SelectTop-\ufffd2\ufffd2 / valid 😀"
+    assert cleaned.encode("utf-8")
