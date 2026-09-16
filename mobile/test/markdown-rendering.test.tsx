@@ -1,12 +1,31 @@
-import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
+import { act, fireEventAsync, render, renderAsync, screen } from '@testing-library/react-native';
 
 import {
   Markdown,
+  NARRATION_HIGHLIGHT_FADE_MS,
   discussionSentenceAnchors,
   narrationLineForSentence,
   splitAnnotatableSentences,
 } from '@/components/Markdown';
 import { themes } from '@/theme/tokens';
+
+jest.mock('react-native-reanimated', () => {
+  const actual = jest.requireActual('react-native-reanimated');
+  return {
+    __esModule: true,
+    ...actual,
+    default: actual.default,
+    withTiming: jest.fn(actual.withTiming),
+  };
+});
+
+const reanimated = jest.requireMock('react-native-reanimated') as { withTiming: jest.Mock };
+
+function rgbaChannels(color: string): number[] {
+  const match = color.match(/^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/);
+  if (!match) throw new Error(`Expected an rgba color, received ${color}`);
+  return match.slice(1).map(Number);
+}
 
 // U.15 — rendering defects Kamil hit on device with a long analysis response (the AWQ
 // briefing): glued headings, links inside bold spans, pipe tables, and ordered-list numbering.
@@ -284,10 +303,11 @@ describe('narration follow render path', () => {
     expect(screen.getByText('Quoted claim.')).toBeTruthy();
   });
 
-  test('highlights and registers only the active passive sentence', async () => {
+  test('fades between and registers only the active passive sentence', async () => {
     const unregister = jest.fn();
     const registerAnchor = jest.fn(() => unregister);
-    const { unmountAsync } = await renderAsync(
+    reanimated.withTiming.mockClear();
+    const { rerenderAsync, unmountAsync } = await renderAsync(
       <Markdown
         text="First claim. Second claim."
         narrationFollow={{ activeAnchorId: 'b0.s1', registerAnchor }}
@@ -297,13 +317,110 @@ describe('narration follow render path', () => {
     expect(screen.getByTestId('md-sentence-0')).not.toHaveStyle({
       backgroundColor: themes.dim.mintWashStrong,
     });
-    expect(screen.getByTestId('md-sentence-1')).toHaveStyle({
-      backgroundColor: themes.dim.mintWashStrong,
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
     });
+    expect(NARRATION_HIGHLIGHT_FADE_MS).toBeGreaterThan(0);
     expect(screen.getByTestId('md-sentence-1').props.accessibilityRole).toBeUndefined();
     expect(registerAnchor).toHaveBeenCalledWith('b0.s1', expect.any(Function));
 
+    reanimated.withTiming.mockClear();
+    await rerenderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        narrationFollow={{ activeAnchorId: 'b0.s0', registerAnchor }}
+      />,
+    );
+    expect(reanimated.withTiming).toHaveBeenCalledWith(0, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
+    });
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, {
+      duration: NARRATION_HIGHLIGHT_FADE_MS,
+    });
     await unmountAsync();
-    expect(unregister).toHaveBeenCalledTimes(1);
+    expect(unregister).toHaveBeenCalledTimes(2);
+  });
+
+  test('renders the completed mint animation on the active sentence host', () => {
+    jest.useFakeTimers();
+    try {
+      const registerAnchor = jest.fn(() => jest.fn());
+      const view = render(
+        <Markdown
+          text="First claim. Second claim."
+          narrationFollow={{ activeAnchorId: 'b0.s1', registerAnchor }}
+        />,
+      );
+      act(() => jest.advanceTimersByTime(NARRATION_HIGHLIGHT_FADE_MS + 20));
+      const firstMint = rgbaChannels(
+        screen.getByTestId('md-sentence-1').props.jestAnimatedStyle.value.backgroundColor,
+      );
+      const expectedMint = rgbaChannels(themes.dim.mintWashStrong);
+      expect(firstMint.slice(0, 3)).toEqual(expectedMint.slice(0, 3));
+      expect(firstMint[3]).toBeCloseTo(expectedMint[3], 2);
+
+      view.rerender(
+        <Markdown
+          text="First claim. Second claim."
+          narrationFollow={{ activeAnchorId: 'b0.s0', registerAnchor }}
+        />,
+      );
+      act(() => jest.advanceTimersByTime(NARRATION_HIGHLIGHT_FADE_MS + 20));
+      const secondMint = rgbaChannels(
+        screen.getByTestId('md-sentence-0').props.jestAnimatedStyle.value.backgroundColor,
+      );
+      expect(secondMint.slice(0, 3)).toEqual(expectedMint.slice(0, 3));
+      expect(secondMint[3]).toBeCloseTo(expectedMint[3], 2);
+      view.unmount();
+    } finally {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    }
+  });
+
+  test('honours reduce motion for the narration highlight transition', async () => {
+    reanimated.withTiming.mockClear();
+    await renderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        narrationFollow={{
+          activeAnchorId: 'b0.s1',
+          registerAnchor: () => jest.fn(),
+          reduceMotion: true,
+        }}
+      />,
+    );
+    expect(reanimated.withTiming).toHaveBeenCalledWith(1, { duration: 0 });
+  });
+
+  test('sentence-comment selection stays violet across active narration transitions', async () => {
+    const annotations = {
+      active: true,
+      onSentencePress: jest.fn(),
+      stateForSentence: (quote: string) => ({ selected: quote === 'Second claim.' }),
+    };
+    const registerAnchor = jest.fn(() => jest.fn());
+    const { rerenderAsync } = await renderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        sentenceAnnotations={annotations}
+        narrationFollow={{ activeAnchorId: 'b0.s1', registerAnchor }}
+      />,
+    );
+
+    expect(screen.getByTestId('md-sentence-1').props.jestAnimatedStyle.value).toMatchObject({
+      backgroundColor: themes.dim.violetWash,
+    });
+
+    await rerenderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        sentenceAnnotations={annotations}
+        narrationFollow={{ activeAnchorId: 'b0.s0', registerAnchor }}
+      />,
+    );
+    expect(screen.getByTestId('md-sentence-1').props.jestAnimatedStyle.value).toMatchObject({
+      backgroundColor: themes.dim.violetWash,
+    });
   });
 });

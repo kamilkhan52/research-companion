@@ -30,18 +30,20 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ## Current position (updated 2026-09-15)
 
-**Delta at 2026-09-15** (live repository audit at `b9fa3fd`):
-- PR #523 / DR-159 is merged, reviewed, and deployed to both the server and device worktrees. The
-  notes-revision guard was already preventing data loss; the mobile review surface now makes that
-  conflict explicit and preserves both the newer notes and retained proposal through recovery.
-- DR-133's narration-follow refinement and DR-158's explicit rail jump are implemented together on
-  the isolated `codex/dr-133-follow-refinement` branch and are the next integration/review queue.
+**Delta at 2026-09-15** (live repository audit at `b2cc8ba`):
+- PR #524's September 15 feedback triage and PR #523 / DR-159 are reviewed, merged, and deployed to
+  both the server and device worktrees. DR-159's notes conflict now preserves both the newer notes
+  and retained proposal through explicit recovery.
+- DR-133's narration-follow refinement and DR-158's explicit current-sentence rail jump are
+  implemented together in [#525](https://github.com/kamilkhan52/research-companion/pull/525):
+  playback-gated gentle following, a reduced-motion-aware highlight fade, one rail-owned navigation
+  surface, and an explicit centered return to the sentence being narrated.
 - Five new September 15 bubble entries reconcile to three rows: DR-160 is one malformed-PDF-text
   defect shared by arXiv fetch and upload; DR-161 is the deliberate product/agent naming decision;
   and DR-162 is the related-work reading offer's copy reduction.
 - DR-160 is reproduced against the exact Stratum PDF: pypdf emits two lone `U+D835` surrogates and
   the strict UTF-8 corpus writer refuses them. The fix belongs at extraction, not in the writer.
-- The live device ledger now has 162 rows: 99 `implemented — verify`, 44 closed, 8 partial, 7 open,
+- The live device ledger now has 162 rows: 101 `implemented — verify`, 44 closed, 7 partial, 6 open,
   2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
 
 ## Position at 2026-09-13 (superseded by the block above)
