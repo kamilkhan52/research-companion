@@ -166,7 +166,36 @@ def _similar(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
+def _replace_unpaired_surrogates(text: str) -> str:
+    """Return valid Unicode scalar text even when a PDF extractor emits UTF-16 code units.
+
+    pypdf can return lone surrogate code points for malformed embedded fonts. Keep the corpus
+    writer strict: repair those extraction artifacts here, while still combining a legitimate
+    high/low pair if an extractor returns one instead of the corresponding non-BMP character.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        code = ord(text[index])
+        if 0xD800 <= code <= 0xDBFF:
+            if index + 1 < len(text):
+                low = ord(text[index + 1])
+                if 0xDC00 <= low <= 0xDFFF:
+                    scalar = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                    out.append(chr(scalar))
+                    index += 2
+                    continue
+            out.append("\ufffd")
+        elif 0xDC00 <= code <= 0xDFFF:
+            out.append("\ufffd")
+        else:
+            out.append(text[index])
+        index += 1
+    return "".join(out)
+
+
 def _clean(text: str) -> str:
+    text = _replace_unpaired_surrogates(text)
     text = text.replace("\x0c", "\n")
     # de-hyphenate words split across line breaks: "atten-\ntion" -> "attention"
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)

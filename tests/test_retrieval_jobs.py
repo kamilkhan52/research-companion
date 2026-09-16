@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from app import config, retrieval_jobs, store
+from app import config, retrieval_jobs, retriever, store
 from app.retriever import RetrievalError
 
 from tests.conftest import add_paper
@@ -71,6 +71,47 @@ def test_uploaded_pdf_extracts_and_persists_in_a_background_job(temp_project, mo
     assert snap["retrieved"] is True
     assert snap["source"] == "upload:my-paper.pdf"
     assert store.read_full_text("p1") == "uploaded full text"
+
+
+@pytest.mark.parametrize("entry_path", ["arxiv", "upload"])
+def test_pdf_surrogates_are_repaired_before_both_retrieval_paths_persist(
+    temp_project,
+    monkeypatch,
+    entry_path,
+):
+    """The two DR-160 entry paths must both cross the real PDF cleanup boundary."""
+    _unretrieved_paper(temp_project)
+
+    class Page:
+        def extract_text(self):
+            return ("Readable PDF text. " * 15) + "SelectTop-\ud8352\ud8352 MLP"
+
+    class Reader:
+        def __init__(self, stream):
+            self.pages = [Page()]
+
+    monkeypatch.setattr(retriever, "PdfReader", Reader)
+    pdf = b"%PDF-1.4 fake regression fixture"
+
+    if entry_path == "upload":
+        job = retrieval_jobs.start_upload("p1", pdf, "stratum.pdf")
+    else:
+        job = retrieval_jobs.start_retrieval(
+            "p1",
+            retrieve_fn=lambda title, aid, url: {
+                "full_text": retriever._extract_pdf(pdf),
+                "arxiv_id": "2510.05245",
+                "source": "https://arxiv.org/abs/2510.05245",
+            },
+        )
+
+    snap = _settled(job.id)
+    persisted = store.read_full_text("p1")
+
+    assert snap["status"] == "done"
+    assert "SelectTop-\ufffd2\ufffd2 MLP" in persisted
+    assert not any(0xD800 <= ord(char) <= 0xDFFF for char in persisted)
+    assert persisted.encode("utf-8")
 
 
 def test_background_retrieval_does_not_recreate_a_paper_removed_mid_fetch(temp_project):
