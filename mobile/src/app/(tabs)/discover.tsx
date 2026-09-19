@@ -252,7 +252,7 @@ export function DiscoverContent({
   const [addedCount, setAddedCount] = useState(0);
   useEffect(() => {
     if (editorRequest) setEditingGoals(true);
-  }, [editorRequest, pid]);
+  }, [editorRequest]);
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
     if (goalsDraft.submitted && accepted === goals.trim()) {

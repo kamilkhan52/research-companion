@@ -4,9 +4,10 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEventAsync, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, fireEventAsync, waitFor } from '@testing-library/react-native';
 import { router, Slot, Tabs, useRouter } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
+import { ScrollView } from 'react-native';
 
 import GraphScreen from '@/app/(tabs)/graph';
 import LibraryScreen from '@/app/(tabs)/index';
@@ -216,6 +217,10 @@ beforeEach(async () => {
   });
 });
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 test('the empty-library Discover CTA opens Map and exposes the real query on-ramp', async () => {
   jest.mocked(api.getProjectState).mockResolvedValue(projectState([]) as never);
   // An empty project has no graph to recover, so the on-ramp must not disappear just because
@@ -324,6 +329,42 @@ test('map build and paid discovery remain visible with independent controls', as
   expect(await screen.findByLabelText(/Map build in progress/)).toBeTruthy();
   expect(await screen.findByLabelText('Stop discovery search')).toBeTruthy();
   expect(screen.getByLabelText('Skip discovery step')).toBeTruthy();
+});
+
+test('the explore landing stops following layout changes after the reader scrolls', async () => {
+  const scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => {});
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([{
+    slug: 'known-paper',
+    title: 'Known Paper',
+    group: 'Unsorted',
+    list_status: 'unread',
+    cites: [],
+    retrieved: true,
+    has_notes: false,
+    session_state: null,
+    arxiv_id: '',
+  }]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(builtGraph());
+
+  renderRouter(
+    { _layout: TestLayout, graph: GraphScreen },
+    { initialUrl: '/graph?explore=add-sheet' },
+  );
+
+  const section = await screen.findByTestId('map-discover-section');
+  fireEvent(section, 'layout', {
+    nativeEvent: { layout: { x: 0, y: 700, width: 400, height: 500 } },
+  });
+  await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ y: 692, animated: false }));
+
+  fireEvent(screen.getByTestId('combined-map-scroll'), 'scrollBeginDrag');
+  scrollTo.mockClear();
+  fireEvent(section, 'layout', {
+    nativeEvent: { layout: { x: 0, y: 850, width: 400, height: 650 } },
+  });
+  await act(async () => Promise.resolve());
+
+  expect(scrollTo).not.toHaveBeenCalled();
 });
 
 test('adding the first result keeps the rest of the paid search visible for this Map visit', async () => {

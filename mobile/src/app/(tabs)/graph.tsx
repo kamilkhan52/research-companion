@@ -86,6 +86,10 @@ export default function GraphScreen() {
   const { height: windowHeight } = useWindowDimensions();
   const combinedScrollRef = useRef<ScrollView>(null);
   const discoverSectionY = useRef(0);
+  // `explore` is a one-shot navigation intent, not a permanent scroll lock. Keep following the
+  // section while the screen settles, then retire it as soon as the reader touches the surface.
+  // The ref closes the gap before setParams removes the route param on the next render.
+  const exploreLandingActive = useRef(Boolean(explore));
 
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -263,8 +267,20 @@ export default function GraphScreen() {
   }, []);
 
   useEffect(() => {
-    if (!explore || discoverSectionY.current <= 0) return;
-    const frame = requestAnimationFrame(() => scrollToDiscover(true));
+    if (explore) exploreLandingActive.current = true;
+  }, [explore]);
+
+  const consumeExploreLanding = useCallback(() => {
+    if (!exploreLandingActive.current) return;
+    exploreLandingActive.current = false;
+    router.setParams({ explore: undefined });
+  }, [router]);
+
+  useEffect(() => {
+    if (!explore || !exploreLandingActive.current || discoverSectionY.current <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      if (exploreLandingActive.current) scrollToDiscover(true);
+    });
     return () => cancelAnimationFrame(frame);
   }, [explore, scrollToDiscover]);
 
@@ -277,6 +293,7 @@ export default function GraphScreen() {
           {
             name: 'search',
             onPress: () => {
+              consumeExploreLanding();
               // Closing the search also clears it — a hidden query would silently keep
               // culling the canvas.
               setShowSearch((v) => {
@@ -290,6 +307,7 @@ export default function GraphScreen() {
             name: 'refresh-cw',
             badge: needsBuildAttention,
             onPress: () => {
+              consumeExploreLanding();
               // Full rebuild-from-scratch re-fetches everything (metadata, extractions, author
               // affiliations) rather than only what changed. It's an operator power tool, so
               // dev-only (RC_DEV). Android's AlertDialog caps at 3 buttons, so when dev adds
@@ -345,10 +363,20 @@ export default function GraphScreen() {
               ? 'Refresh graph (build action available)'
               : 'Refresh graph',
           },
-          { name: 'users', onPress: () => router.push('/authors'), accessibilityLabel: 'Authors & labs' },
+          {
+            name: 'users',
+            onPress: () => {
+              consumeExploreLanding();
+              router.push('/authors');
+            },
+            accessibilityLabel: 'Authors & labs',
+          },
           {
             name: 'compass',
-            onPress: () => scrollToDiscover(true),
+            onPress: () => {
+              consumeExploreLanding();
+              scrollToDiscover(true);
+            },
             accessibilityLabel: 'Explore papers below the map',
           },
         ]}
@@ -365,8 +393,11 @@ export default function GraphScreen() {
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <ScrollView
             ref={combinedScrollRef}
+            testID="combined-map-scroll"
             contentContainerStyle={styles.combinedBody}
-            keyboardShouldPersistTaps="handled">
+            keyboardShouldPersistTaps="handled"
+            onTouchStart={consumeExploreLanding}
+            onScrollBeginDrag={consumeExploreLanding}>
           <View style={!graph ? styles.mapStateRegion : undefined}>
       {graphQuery.isLoading ? (
         <Centered loading />
@@ -470,10 +501,13 @@ export default function GraphScreen() {
       )}
           </View>
           <View
+            testID="map-discover-section"
             onLayout={(event) => {
               discoverSectionY.current = event.nativeEvent.layout.y;
-              if (explore) {
-                requestAnimationFrame(() => scrollToDiscover(false));
+              if (exploreLandingActive.current) {
+                requestAnimationFrame(() => {
+                  if (exploreLandingActive.current) scrollToDiscover(false);
+                });
               }
             }}>
             <DiscoverContent
