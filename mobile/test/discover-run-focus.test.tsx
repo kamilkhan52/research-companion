@@ -19,8 +19,7 @@ import { fireEvent, waitFor } from '@testing-library/react-native';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { DiscoveryJob, GraphRecommendation } from '@/api/types';
-import { describeRunFocus, discoverySkipLabel } from '@/app/(tabs)/discover';
-import DiscoverScreen from '@/app/(tabs)/discover';
+import { describeRunFocus, DiscoverContent, discoverySkipLabel } from '@/app/(tabs)/discover';
 import { ProjectProvider } from '@/store/project';
 import { createTestQueryClient } from './queryClient';
 
@@ -100,7 +99,7 @@ async function renderDiscover(
       ...result,
     },
   } as never);
-  return renderRouter({ _layout: TestLayout, index: DiscoverScreen }, { initialUrl: '/' });
+  return renderRouter({ _layout: TestLayout, index: DiscoverContent }, { initialUrl: '/' });
 }
 
 test('project-ranked graph recommendations share the one Discover list with provenance', async () => {

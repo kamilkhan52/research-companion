@@ -1,7 +1,6 @@
-// DR-052 staged surface merge — before Discover can leave the tab bar, a fresh project's Map
-// must be a real query-driven first-paper on-ramp. These tests bind both halves of the contract:
-// an actually empty project gets the shared Discover experience, while a paper-bearing project
-// with no derived graph keeps the existing Build map recovery path.
+// DR-052 staged surface merge — Map owns the query/list for empty, unbuilt, and built projects.
+// These tests bind the first-paper latch and the combined graph/list surface so removing the
+// Discover tab cannot strand either a fresh project or a paper-bearing project with no map yet.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -14,12 +13,24 @@ import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import { keys } from '@/api/queries';
-import type { PaperSuggestion } from '@/api/types';
+import type {
+  DiscoveryJob,
+  GraphBuildJob,
+  GraphResponse,
+  PaperSuggestion,
+} from '@/api/types';
 import { GraphSettingsProvider } from '@/store/graphSettings';
 import { ProjectProvider } from '@/store/project';
 import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { Button } from '@/ui';
 import { createTestQueryClient } from './queryClient';
+
+jest.mock('@/components/graph/GraphCanvas', () => ({
+  GraphCanvas: () => require('react').createElement(
+    require('react-native').View,
+    { testID: 'combined-map-canvas' },
+  ),
+}));
 
 const PID = 'first-project';
 let client = createTestQueryClient();
@@ -120,6 +131,67 @@ function emptyGraph(totalPapers: number) {
   };
 }
 
+function builtGraph(build: GraphBuildJob | null = null): GraphResponse {
+  const base = emptyGraph(1);
+  return {
+    ...base,
+    build,
+    graph: {
+      built_at: '2026-09-19T00:00:00Z',
+      revision: 'graph-r1',
+      model: 'test',
+      stage: 'enriched',
+      completeness: {
+        total_papers: 1,
+        ready_papers: 1,
+        metadata_papers: 1,
+        full_text_papers: 1,
+        failed_papers: 0,
+        analyzed_papers: 1,
+        metadata_only_edges: 0,
+        full_text_edges: 0,
+      },
+      nodes: [{
+        id: 'known-paper', kind: 'project', slug: 'known-paper', title: 'Known Paper',
+        authors: ['A. Author'], venue: '', year: 2026, arxiv_id: null, doi: null, url: null,
+        group: 'Unsorted', list_status: 'unread', cited_by_project_count: 0,
+        significant_cited_by_count: 0, cites_count: 0,
+      }],
+      edges: [],
+    },
+    status: { ...base.status, has_graph: true, graph_stage: 'enriched' },
+  } as GraphResponse;
+}
+
+const RUNNING_BUILD = {
+  status: 'running',
+  phase: 'extraction',
+  total: 1,
+  ready: 1,
+  done: 0,
+  current_slug: 'known-paper',
+  current_title: 'Known Paper',
+  per_paper: { 'known-paper': { status: 'extracting', error: null } },
+  retrieval_candidates: {},
+  graph_stage: 'enriched',
+  graph_completeness: builtGraph().graph?.completeness ?? null,
+  graph_revision: 'graph-r1',
+  graph_updated_at: '2026-09-19T00:00:00Z',
+  graph: null,
+  recommendations: null,
+  error: null,
+  started_at: '2026-09-19T00:00:00Z',
+  finished_at: null,
+} as GraphBuildJob;
+
+const RUNNING_DISCOVERY = {
+  status: 'running',
+  phase: 'searching',
+  finds: [],
+  skip_requested: false,
+  skips: 0,
+} as unknown as DiscoveryJob;
+
 beforeEach(async () => {
   client.clear();
   client = createTestQueryClient();
@@ -132,6 +204,16 @@ beforeEach(async () => {
   });
   jest.mocked(api.getRecentSessions).mockResolvedValue({ sessions: [] });
   jest.mocked(api.getDiscovery).mockResolvedValue({ job: null, goals: '', result: null });
+  jest.mocked(api.getGraphRecommendations).mockResolvedValue([]);
+  jest.mocked(api.getNeighbourhood).mockResolvedValue({
+    last_swept: null,
+    age_seconds: null,
+    monitored: 0,
+    total_papers: 0,
+    unmonitored: 0,
+    time_stale: false,
+    ever_swept: false,
+  });
 });
 
 test('the empty-library Discover CTA opens Map and exposes the real query on-ramp', async () => {
@@ -154,7 +236,7 @@ test('the empty-library Discover CTA opens Map and exposes the real query on-ram
   expect(screen.queryByLabelText('Search papers')).toBeNull();
 });
 
-test('a project with a paper but no derived graph still offers Build map', async () => {
+test('a project with a paper but no derived graph offers both Build map and exploration', async () => {
   jest.mocked(api.getProjectState).mockResolvedValue(projectState([{
     slug: 'known-paper',
     title: 'Known Paper',
@@ -171,7 +253,77 @@ test('a project with a paper but no derived graph still offers Build map', async
 
   expect(await screen.findByText('Build map')).toBeTruthy();
   expect(screen.getByText('No map yet')).toBeTruthy();
-  expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+  expect(screen.getByPlaceholderText('Type a topic or question')).toBeTruthy();
+});
+
+test('a built project renders one Map surface with the graph above the unified paper list', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([{
+    slug: 'known-paper',
+    title: 'Known Paper',
+    group: 'Unsorted',
+    list_status: 'unread',
+    cites: [],
+    retrieved: true,
+    has_notes: false,
+    session_state: null,
+    arxiv_id: '',
+  }]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(builtGraph());
+  jest.mocked(api.getGraphRecommendations).mockResolvedValue([{
+    id: 'ext:title:next paper', kind: 'external', slug: null, title: 'Next Paper',
+    authors: ['B. Author'], venue: '', year: 2025, arxiv_id: null, doi: null, url: null,
+    group: null, list_status: null, cited_by_project_count: 1,
+    significant_cited_by_count: 0, cites_count: 0, recommend_score: 3,
+    recommend_reasons: ['Connected to Known Paper'], betweenness_centrality: 0,
+  }]);
+  // A saved result normally collapses the query to its summary. The explore token from an old
+  // /discover link or Add-paper entry must reopen the actual editor on arrival.
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: null,
+    goals: 'Saved goal',
+    result: {
+      goals: 'Saved goal', model: 'test', queries: [], candidate_count: 0, top_n: 5,
+      suggestions: [], in_library: [], generated_at: '2026-09-19T00:00:00Z',
+    },
+  } as never);
+
+  renderRouter(
+    { _layout: TestLayout, graph: GraphScreen },
+    { initialUrl: '/graph?explore=add-sheet' },
+  );
+
+  expect(await screen.findByTestId('combined-map-canvas')).toBeTruthy();
+  expect(screen.getByPlaceholderText('Type a topic or question')).toBeTruthy();
+  expect(await screen.findByText('Next Paper')).toBeTruthy();
+  expect(screen.getByText('Project graph')).toBeTruthy();
+  expect(screen.queryByLabelText('Recommendations')).toBeNull();
+});
+
+test('map build and paid discovery remain visible with independent controls', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([{
+    slug: 'known-paper',
+    title: 'Known Paper',
+    group: 'Unsorted',
+    list_status: 'unread',
+    cites: [],
+    retrieved: true,
+    has_notes: false,
+    session_state: null,
+    arxiv_id: '',
+  }]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(builtGraph(RUNNING_BUILD));
+  jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: RUNNING_BUILD });
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: RUNNING_DISCOVERY,
+    goals: 'Find complementary work',
+    result: null,
+  });
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+
+  expect(await screen.findByLabelText(/Map build in progress/)).toBeTruthy();
+  expect(await screen.findByLabelText('Stop discovery search')).toBeTruthy();
+  expect(screen.getByLabelText('Skip discovery step')).toBeTruthy();
 });
 
 test('adding the first result keeps the rest of the paid search visible for this Map visit', async () => {
@@ -248,5 +400,5 @@ test('adding the first result keeps the rest of the paid search visible for this
   await fireEventAsync.press(screen.getByText('Return to Map'));
   await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
   expect(await screen.findByText('Build map')).toBeTruthy();
-  expect(screen.queryByText('Second Result')).toBeNull();
+  expect(screen.getByText('Second Result')).toBeTruthy();
 });

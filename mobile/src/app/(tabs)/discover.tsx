@@ -14,7 +14,7 @@
 // result screen. DR-149 moves that entry to the active project's Library Plus sheet, which links
 // back here when the reader actually wants exploration.
 
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -46,14 +46,13 @@ import { NeighbourhoodLine, relativeAge } from '@/components/NeighbourhoodLine';
 import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
-import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { discoverProgress } from '@/lib/discoverProgress';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Icon, Screen, Text } from '@/ui';
+import { Button, Card, Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
@@ -208,28 +207,25 @@ export function describeRunFocus(
   return age ? `Searched ${age} for “${text}”` : `Searched for “${text}”`;
 }
 
-export default function DiscoverScreen() {
-  const router = useRouter();
-  return (
-    <Screen edges={['top']}>
-      <TabHeader
-        title="Discover"
-        actions={[
-          { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
-        ]}
-      />
-      <DiscoverContent />
-    </Screen>
-  );
+export default function DiscoverRedirect() {
+  return <Redirect href="/graph?explore=discover-route" />;
 }
 
 /** The complete query-to-ranked-results experience without its tab chrome.
  *
- * DR-052 stages the Map/Discover surface convergence without removing the Discover tab in the
- * same release. Keeping one content component lets an empty Map become a genuine first-paper
- * on-ramp now, while the existing tab continues to expose exactly the same job lifecycle,
- * results, and add action until the later navigation step is ready. */
-export function DiscoverContent() {
+ * DR-052's combined Map renders this inline below the graph. `embedded=false` remains for the
+ * empty-project first-paper state, where there is no graph viewport or parent scroller. */
+export function DiscoverContent({
+  embedded = false,
+  editorRequest,
+  showNeighbourhood = true,
+}: {
+  embedded?: boolean;
+  /** A changed non-empty token opens the editor when an old /discover entry point lands here. */
+  editorRequest?: string;
+  /** The combined Map already renders the shared freshness line above its graph. */
+  showNeighbourhood?: boolean;
+} = {}) {
   const router = useRouter();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -254,6 +250,9 @@ export function DiscoverContent() {
   // compact summary — the ranked list is the point of the screen then, and it stays one tap away.
   const [editingGoals, setEditingGoals] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
+  useEffect(() => {
+    if (editorRequest) setEditingGoals(true);
+  }, [editorRequest, pid]);
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
     if (goalsDraft.submitted && accepted === goals.trim()) {
@@ -299,9 +298,8 @@ export function DiscoverContent() {
     if (await runState.run(text)) await goalsDraft.clear(text);
   }
 
-  return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-        <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+  const content = (
+    <>
           {showEditor ? (
             <Card style={{ gap: space.sm }}>
               <Text variant="overline">Explore</Text>
@@ -395,7 +393,7 @@ export function DiscoverContent() {
               {/* DR-052 PR 4: the shared neighbourhood line — the same freshness the Map shows,
                   since Discover's forward-citation sweep and the Map read one substrate. Its
                   refresh IS a Discover run (which re-sweeps), so it reuses runDiscovery. */}
-              {pid ? (
+              {pid && showNeighbourhood ? (
                 <NeighbourhoodLine
                   neighbourhood={neighbourhood.data}
                   onRefresh={() => void runDiscovery()}
@@ -475,16 +473,32 @@ export function DiscoverContent() {
             </View>
           ) : null}
 
-        </ScrollView>
+    </>
+  );
+  const footer = addedCount > 0 ? (
+    <View style={styles.footer}>
+      <Button
+        title={`Go to library · ${addedCount} added`}
+        onPress={() => router.navigate('/')}
+      />
+    </View>
+  ) : null;
 
-        {addedCount > 0 ? (
-          <View style={styles.footer}>
-            <Button
-              title={`Go to library · ${addedCount} added`}
-              onPress={() => router.navigate('/')}
-            />
-          </View>
-        ) : null}
+  if (embedded) {
+    return (
+      <View>
+        <View style={styles.body}>{content}</View>
+        {footer}
+      </View>
+    );
+  }
+
+  return (
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+        {content}
+      </ScrollView>
+      {footer}
     </KeyboardAvoidingView>
   );
 }

@@ -117,7 +117,7 @@ export function AddPaperSheet({
 
   function openDiscover() {
     onClose();
-    router.push('/discover');
+    router.push(`/graph?explore=${Date.now()}`);
   }
 
   return (
@@ -156,14 +156,14 @@ export function AddPaperSheet({
       <Pressable
         onPress={openDiscover}
         accessibilityRole="button"
-        accessibilityLabel="Explore papers with Discover"
+        accessibilityLabel="Explore papers on Map"
         style={({ pressed }) => [styles.discover, pressed && { opacity: 0.82 }]}
       >
         <View style={styles.discoverIcon}>
           <Icon name="compass" size={19} color={t.violet} />
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text variant="heading">Explore with Discover</Text>
+          <Text variant="heading">Explore on Map</Text>
           <Text variant="caption" color={t.muted} numberOfLines={2}>
             Search and rank papers for this project’s research goal
           </Text>

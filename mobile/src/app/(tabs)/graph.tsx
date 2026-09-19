@@ -5,14 +5,24 @@
 import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { useDevMode, useGraph, useNeighbourhood, useProjectState } from '@/api/queries';
-import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
+import type { GraphEdge, GraphNode, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
-import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
@@ -61,7 +71,11 @@ export default function GraphScreen() {
   const styles = useThemedStyles(makeStyles);
   // `?focus=<slug>` (from the paper action sheet's "Show in Map") selects that node once
   // the graph is available; `t` is a per-tap nonce so re-focusing the same slug re-selects.
-  const { focus, t: focusNonce } = useLocalSearchParams<{ focus?: string; t?: string }>();
+  const {
+    focus,
+    t: focusNonce,
+    explore,
+  } = useLocalSearchParams<{ focus?: string; t?: string; explore?: string }>();
   const { activePid } = useActiveProject();
   const graphQuery = useGraph(activePid);
   const projectState = useProjectState(activePid);
@@ -69,12 +83,14 @@ export default function GraphScreen() {
   const neighbourhood = useNeighbourhood(activePid);
   const { allowAllFilter } = useGraphSettings();
   const devMode = useDevMode();
+  const { height: windowHeight } = useWindowDimensions();
+  const combinedScrollRef = useRef<ScrollView>(null);
+  const discoverSectionY = useRef(0);
 
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [filter, setFilter] = useState<FilterKind>('significant');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [showRecs, setShowRecs] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(GRAPH_PAGE_SIZE);
 
   // A filter/search change (or switching to a different project's graph — this tab stays
@@ -86,7 +102,6 @@ export default function GraphScreen() {
 
   const data = graphQuery.data;
   const graph = data?.graph ?? null;
-  const recommendations = data?.recommendations ?? [];
   const status = data?.status ?? null;
   // DR-052 staged surface merge: the empty project is the one state where the Map has nothing
   // useful to filter or build. Put the real query-to-results experience here before the
@@ -229,11 +244,6 @@ export default function GraphScreen() {
     router.push(`/paper/${encodeURIComponent(slug)}`);
   }
 
-  function selectRecommendation(rec: GraphRecommendation) {
-    setShowRecs(false);
-    setSelectedNode(rec);
-  }
-
   // A refresh that failed while something useful is already on screen — a built graph, or an
   // empty project mid-build. Non-blocking on purpose: the reader keeps what they have and the
   // next successful poll clears it by itself, which is exactly what was observed happening.
@@ -243,6 +253,20 @@ export default function GraphScreen() {
       onDismiss={() => graphQuery.refetch()}
     />
   ) : null;
+
+  const scrollToDiscover = useCallback((animated: boolean) => {
+    if (discoverSectionY.current <= 0) return;
+    combinedScrollRef.current?.scrollTo({
+      y: Math.max(0, discoverSectionY.current - space.sm),
+      animated,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!explore || discoverSectionY.current <= 0) return;
+    const frame = requestAnimationFrame(() => scrollToDiscover(true));
+    return () => cancelAnimationFrame(frame);
+  }, [explore, scrollToDiscover]);
 
   return (
     <Screen edges={['top']}>
@@ -322,7 +346,11 @@ export default function GraphScreen() {
               : 'Refresh graph',
           },
           { name: 'users', onPress: () => router.push('/authors'), accessibilityLabel: 'Authors & labs' },
-          { name: 'zap', onPress: () => setShowRecs(true), accessibilityLabel: 'Recommendations' },
+          {
+            name: 'compass',
+            onPress: () => scrollToDiscover(true),
+            accessibilityLabel: 'Explore papers below the map',
+          },
         ]}
       />
 
@@ -332,8 +360,15 @@ export default function GraphScreen() {
         // A zero-paper project has no graph to recover. Its first-paper on-ramp must not depend
         // on the unrelated graph read succeeding — a stale/offline graph cache cannot make a
         // fresh project's Discover entry disappear.
-        <DiscoverContent />
-      ) : graphQuery.isLoading ? (
+        <DiscoverContent editorRequest={explore} />
+      ) : (
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+          <ScrollView
+            ref={combinedScrollRef}
+            contentContainerStyle={styles.combinedBody}
+            keyboardShouldPersistTaps="handled">
+          <View style={!graph ? styles.mapStateRegion : undefined}>
+      {graphQuery.isLoading ? (
         <Centered loading />
       ) : graphQuery.isLoadingError ? (
         // `isLoadingError`, not `isError`: this branch is only for a query that has NEVER
@@ -389,29 +424,33 @@ export default function GraphScreen() {
             <NeighbourhoodLine neighbourhood={neighbourhood.data} />
           ) : null}
 
-          {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
-            <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />
-          ) : (
-            <GraphCanvas
-              nodes={visibleGraph.nodes}
-              edges={visibleGraph.edges}
-              selectedId={selectedNode?.id ?? null}
-              highlightIds={null}
-              onSelectNode={setSelectedNode}
-              layoutAlgo={graph?.layout?.algo ?? null}
-              overlay={showPager ? (
-                <GraphPagerOverlay
-                  shown={pagedNodes.length}
-                  total={filteredNodes.length}
-                  canIncrease={canIncrease}
-                  canDecrease={canDecrease}
-                  hitCap={hitCap}
-                  onIncrease={increaseVisible}
-                  onDecrease={decreaseVisible}
-                />
-              ) : null}
-            />
-          )}
+          <View style={[styles.graphViewport, {
+            height: Math.max(360, Math.min(520, windowHeight * 0.56)),
+          }]}>
+            {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
+              <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />
+            ) : (
+              <GraphCanvas
+                nodes={visibleGraph.nodes}
+                edges={visibleGraph.edges}
+                selectedId={selectedNode?.id ?? null}
+                highlightIds={null}
+                onSelectNode={setSelectedNode}
+                layoutAlgo={graph?.layout?.algo ?? null}
+                overlay={showPager ? (
+                  <GraphPagerOverlay
+                    shown={pagedNodes.length}
+                    total={filteredNodes.length}
+                    canIncrease={canIncrease}
+                    canDecrease={canDecrease}
+                    hitCap={hitCap}
+                    onIncrease={increaseVisible}
+                    onDecrease={decreaseVisible}
+                  />
+                ) : null}
+              />
+            )}
+          </View>
 
           {hasSemanticScholarData ? (
             <Pressable
@@ -429,6 +468,23 @@ export default function GraphScreen() {
           {refreshFailed}
         </>
       )}
+          </View>
+          <View
+            onLayout={(event) => {
+              discoverSectionY.current = event.nativeEvent.layout.y;
+              if (explore) {
+                requestAnimationFrame(() => scrollToDiscover(false));
+              }
+            }}>
+            <DiscoverContent
+              embedded
+              editorRequest={explore}
+              showNeighbourhood={false}
+            />
+          </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      )}
 
       <NodeDetailSheet
         pid={activePid}
@@ -439,13 +495,6 @@ export default function GraphScreen() {
         onOpenPaper={openPaper}
       />
 
-      <RecommendationsPanel
-        pid={activePid}
-        visible={showRecs}
-        recommendations={recommendations}
-        onClose={() => setShowRecs(false)}
-        onSelect={selectRecommendation}
-      />
     </Screen>
   );
 }
@@ -1043,6 +1092,9 @@ function Centered({ text, loading, action }: { text?: string; loading?: boolean;
 }
 
 const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
+  combinedBody: { paddingBottom: space.xxl },
+  mapStateRegion: { minHeight: 420 },
+  graphViewport: { minHeight: 360 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   banner: { margin: space.md, marginBottom: 0 },
