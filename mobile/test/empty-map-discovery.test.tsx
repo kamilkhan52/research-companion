@@ -355,14 +355,18 @@ test('the explore landing stops following layout changes after the reader scroll
   fireEvent(section, 'layout', {
     nativeEvent: { layout: { x: 0, y: 700, width: 400, height: 500 } },
   });
-  await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ y: 692, animated: false }));
+  act(() => { jest.runOnlyPendingTimers(); });
+  // Positive control: before interaction, a changing layout still follows the requested landing.
+  expect(scrollTo).toHaveBeenCalledWith({ y: 692, animated: false });
 
   fireEvent(screen.getByTestId('combined-map-scroll'), 'scrollBeginDrag');
   scrollTo.mockClear();
   fireEvent(section, 'layout', {
     nativeEvent: { layout: { x: 0, y: 850, width: 400, height: 650 } },
   });
-  await act(async () => Promise.resolve());
+  // renderRouter installs fake timers; without advancing them this negative assertion would be
+  // vacuous because the original requestAnimationFrame re-scroll would still be queued.
+  act(() => { jest.runOnlyPendingTimers(); });
 
   expect(scrollTo).not.toHaveBeenCalled();
 });
