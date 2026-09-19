@@ -229,6 +229,14 @@ no other step leaves the tab half-merged.
    removed; its route and `index.tsx`'s `onDiscover` both land on the query box. Touches
    `_layout.tsx`'s `TAB_META` (4 slots → 3) and `nowPlayingVisibility.ts`'s hardcoded
    `TAB_PATHS`.
+
+   **Implemented in [#529](https://github.com/kamilkhan52/research-companion/pull/529).** Map now
+   owns the graph and unified query/result list in one vertical surface for built and unbuilt
+   projects. The visible tab bar is Library / Notes / Map; saved `/discover` links and Add paper's
+   exploration action land on Map's query editor. The former Map-only recommendation sheet is
+   removed because its rows are now present in the shared list. Map-build progress and Discover's
+   Stop/Skip controls remain mounted independently when both jobs run. The hidden compatibility
+   route remains tab-owned during its redirect so it cannot flash a second mini-player.
 4. **Query ↔ graph highlighting.** Matching nodes light up; no new nodes.
 
 ## Scope and settled surface mechanics

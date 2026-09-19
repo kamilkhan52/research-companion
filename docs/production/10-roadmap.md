@@ -28,12 +28,13 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-09-16)
+## Current position (updated 2026-09-19)
 
-**Delta at 2026-09-16** (DR-160/DR-162 and DR-052 surface work in
+**Delta at 2026-09-19** (DR-160/DR-162 and DR-052 surface work in
 [#526](https://github.com/kamilkhan52/research-companion/pull/526) and
 [#527](https://github.com/kamilkhan52/research-companion/pull/527), with DR-052 staging in
-[#528](https://github.com/kamilkhan52/research-companion/pull/528)):
+[#528](https://github.com/kamilkhan52/research-companion/pull/528) and
+[#529](https://github.com/kamilkhan52/research-companion/pull/529)):
 - PR #524's September 15 feedback triage and PR #523 / DR-159 are reviewed, merged, and deployed to
   both the server and device worktrees. DR-159's notes conflict now preserves both the newer notes
   and retained proposal through explicit recovery.
@@ -51,8 +52,10 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
   **Seminar would like to read…** sentence; the visible rows and actions retain the mechanics.
 - DR-052 surface staging step 1 puts query-ranked Discover matches and the Map's existing
   project-ranked recommendations behind one list, de-duplicated without blending score scales and
-  with explicit per-row provenance. Its duplicate Map sheet remains until the list moves under the
-  graph and the standalone Discover tab is removed in step 3, so DR-052 stays `partial`.
+  with explicit per-row provenance. Step 3 moves that list and paid query below the graph, removes
+  the duplicate Map sheet and visible Discover tab, redirects old entry points to Map, and retains
+  independent controls for simultaneous graph-build and Discover jobs. Step 4's shared input and
+  graph highlighting remain, so DR-052 stays `partial`.
 - The live device ledger now has 162 rows: 103 `implemented — verify`, 44 closed, 7 partial, 4 open,
   2 planned, and 2 deferred. Device acceptance remains the active bottleneck.
 
