@@ -133,6 +133,7 @@ export function useGraphBuild(
               && response.graph.stage === 'skeleton'
             ) {
               qc.setQueryData(keys.graph(pid), response);
+              qc.setQueryData(keys.graphRecommendations(pid), response.recommendations);
             }
           })
           .catch(() => {
@@ -143,6 +144,7 @@ export function useGraphBuild(
       }
       if (job.graph && pid) {
         loadedSnapshotRef.current = job.graph.revision;
+        qc.setQueryData(keys.graphRecommendations(pid), job.recommendations ?? []);
         qc.setQueryData<GraphResponse>(keys.graph(pid), (old) => ({
           graph: job.graph,
           recommendations: job.recommendations ?? [],
@@ -203,6 +205,7 @@ export function useGraphBuild(
       }
       if (pid) {
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
+        qc.invalidateQueries({ queryKey: keys.graphRecommendations(pid) });
         // A completed build refreshes authors/affiliations too (U.9) — an open Authors
         // screen would otherwise keep showing the pre-build board.
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
@@ -289,6 +292,7 @@ export function useGraphBuild(
         // If the job actually ran to completion before the lost POST settled, the refetch
         // still surfaces the new graph.
         qc.invalidateQueries({ queryKey: keys.graph(requestPid) });
+        qc.invalidateQueries({ queryKey: keys.graphRecommendations(requestPid) });
       } finally {
         if (generation === startGenerationRef.current) startingRef.current = false;
       }

@@ -45,6 +45,7 @@ export const keys = {
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
+  graphRecommendations: (pid: string) => ['project', pid, 'graphRecommendations'] as const,
   neighbourhood: (pid: string) => ['project', pid, 'neighbourhood'] as const,
   paperGraph: (pid: string, slug: string) => ['project', pid, 'paperGraph', slug] as const,
   graphAuthors: (pid: string) => ['project', pid, 'graphAuthors'] as const,
@@ -401,6 +402,18 @@ export function useGraph(pid: string | null, enabled = true) {
     queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
     queryFn: () => api.getGraph(pid as string),
     enabled: !!pid && hasUrl && enabled,
+  });
+}
+
+/** The Map's persisted project ranking, without downloading its full graph payload. */
+export function useGraphRecommendations(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid
+      ? keys.graphRecommendations(pid)
+      : ['project', 'none', 'graphRecommendations'],
+    queryFn: () => api.getGraphRecommendations(pid as string),
+    enabled: !!pid && hasUrl,
   });
 }
 

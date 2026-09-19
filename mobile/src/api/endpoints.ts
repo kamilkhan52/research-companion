@@ -32,6 +32,7 @@ import type {
   GraphBuildStatusResponse,
   GraphEdge,
   GraphNode,
+  GraphRecommendation,
   GraphResponse,
   NotesDoc,
   Plan,
@@ -687,6 +688,11 @@ export const unhideSuggestion = (pid: string, keys: string[]) =>
 
 export const getGraph = (pid: string) =>
   apiGet<GraphResponse>(`${P(pid)}/graph`).then(noting((r) => scopedJob(`graph-build:${pid}`, r.build)));
+/** Ranked external recommendations without the graph's potentially multi-megabyte nodes, edges,
+ * citation contexts, and raw text. Recommendation-only surfaces must use this narrow route. */
+export const getGraphRecommendations = (pid: string) =>
+  apiGet<{ recommendations: GraphRecommendation[] }>(`${P(pid)}/graph/recommendations`)
+    .then((r) => r.recommendations);
 // DR-052 PR 4: the shared corpus-neighbourhood freshness both tabs show.
 export interface Neighbourhood {
   last_swept: string | null;
