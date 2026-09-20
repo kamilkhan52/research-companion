@@ -14,13 +14,26 @@ prose with equations/quotes/links breaks JSON string escaping.
 """
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
-from . import assembler, config, figures, llm, model_provenance, prompts, sessions, spend_ceiling
+from . import (
+    assembler,
+    config,
+    figures,
+    llm,
+    logging_config,
+    model_provenance,
+    prompts,
+    sessions,
+    spend_ceiling,
+)
 from .models import REVIEW_SLUG, ProposedCommit, Turn
+
+log = logging_config.get("agent")
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
 MATH_MARKDOWN_CONTRACT = (
@@ -454,6 +467,24 @@ NARRATION_TOTAL_TIMEOUT_S = 900.0
 #: or a code block with no prose around it narrates BADLY — the model has nothing to speak the
 #: symbols as. Keeping a span whole must not turn it into a section by itself.
 NARRATION_MIN_SECTION_RATIO = 0.1
+#: DR-163. Sectioning lowered the CHANCE of the collapse DR-153 measured; it did not remove it,
+#: and its row says so. This is the check that turns "the transcript closely matches the written
+#: response" from a hope into something the pipeline notices: a passage narrated to less than
+#: this fraction of its own SPEAKABLE length (see `_speakable_length` — markdown scaffolding and
+#: code fences are not spoken, so they must not count as content that went missing) has
+#: demonstrably disobeyed the prompt's "do NOT summarize, shorten, or re-explain", and is
+#: narrated once more before it is accepted.
+#:
+#: 0.6 is chosen to separate the failure from the successes with room on both sides rather than
+#: to sit between them: every healthy pair measured for DR-153 came back at 99-105% of its input,
+#: and the one flagged response came back at 45%. So the guard is silent on a narration that is
+#: merely terser than its source, and the extra wait is paid only by the responses Kamil is
+#: complaining about.
+NARRATION_MIN_FIDELITY_RATIO = 0.6
+#: Below this many speakable characters the ratio is noise — a two-sentence passage legitimately
+#: narrates to half its length when one sentence is a heading — so the guard does not run. An
+#: EMPTY result is refused at any size (see `_narration_is_faithful`).
+NARRATION_MIN_GUARDED_CHARS = 400
 
 _SECTION_INSTRUCTION = (
     "This is section {index} of {total} of ONE longer response. The sections are spoken one "
@@ -463,6 +494,25 @@ _SECTION_INSTRUCTION = (
     "add lands in the middle of the transcript. It is short so that you can follow it sentence "
     "by sentence; do not summarize, merge or shorten it."
 )
+
+#: Sent only on the second attempt at a passage the fidelity check refused. It names the
+#: observed failure rather than repeating the rule the first attempt already had and ignored.
+_INSIST_INSTRUCTION = (
+    "A previous attempt at this exact passage came back far shorter than the passage itself: it "
+    "summarized instead of converting. Do not do that. Work through the passage from its first "
+    "sentence to its last and convert each one where it stands — every claim, number, name, "
+    "comparison and quotation must still be there, in the same order, at the same level of "
+    "detail. Spoken, it should be about as long as what you were given. Do not pad it either: "
+    "add nothing that is not in the passage."
+)
+
+#: What a listener actually hears, for the purpose of comparing lengths. The narration prompt
+#: asks for markdown, code fences and bare URLs to be REMOVED, so counting them on the source
+#: side would make a heavily formatted passage look compressed when it was converted correctly.
+_FENCED_BLOCK_RE = re.compile(r"```.*?```", re.S)
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_BARE_URL_RE = re.compile(r"<?https?://[^\s>)\]]+>?")
+_MD_SYNTAX_RE = re.compile(r"[*_`#>|~\[\]\\$]")
 
 #: A paragraph break: a run of blank lines, matched so that splitting keeps the newline that
 #: ended the paragraph with the paragraph and hands the rest back as the separator. Joining
@@ -588,12 +638,82 @@ def narration_sections(canonical_text: str) -> list[str]:
     return sections
 
 
-def _narrate_one(text: str, *, model: str | None, section: tuple[int, int] | None) -> str:
+def _speakable_length(text: str) -> int:
+    """How much of `text` a listener would hear, in characters.
+
+    Fenced code and bare URLs are dropped and markdown punctuation is stripped, because the
+    narration prompt asks for exactly that — so a passage that is 20% backticks and hashes is
+    not treated as having lost a fifth of its content when the transcript leaves them out.
+    Whitespace is collapsed so a paragraph break costs the same as a space on both sides.
+    """
+    body = _FENCED_BLOCK_RE.sub(" ", text)
+    body = _MD_LINK_RE.sub(r"\1", body)      # a link's visible words are spoken; its target is not
+    body = _BARE_URL_RE.sub(" ", body)
+    body = _MD_SYNTAX_RE.sub("", body)
+    return len(" ".join(body.split()))
+
+
+def _narration_is_faithful(source: str, spoken: str) -> bool:
+    """Whether one narrated passage kept its source's content, by the single signal that
+    separated DR-153's failure from every healthy pair beside it: how much of it came back.
+
+    This is a screen, not a proof — a transcript can be the right length and still be wrong.
+    It is deliberately one-sided for that reason: it can only ask for a passage to be narrated
+    again, never reject the result, so the worst a false positive costs is one cheap call.
+    """
+    if not spoken.strip():
+        return False
+    source_length = _speakable_length(source)
+    if source_length < NARRATION_MIN_GUARDED_CHARS:
+        return True
+    return _speakable_length(spoken) >= source_length * NARRATION_MIN_FIDELITY_RATIO
+
+
+@contextlib.contextmanager
+def _no_lease() -> Iterator[None]:
+    yield None
+
+
+def _narration_lease(unit: str | None, model: str | None):
+    """A spend hold for one narration call, or nothing when the caller's own admission ticket
+    already covers it. `unit is None` means "the job reserved this call"; anything else is an
+    EXTRA call under a ticket that reserved one lease, and DR-150's rule applies — it holds for
+    itself or it is not bounded at all."""
+    return _no_lease() if unit is None else spend_ceiling.per_unit("narration", unit, model=model)
+
+
+def _narrate_faithfully(text: str, *, model: str | None, section: tuple[int, int] | None,
+                        unit: str, ticket_covers_first: bool,
+                        may_retry: Callable[[], bool]) -> str:
+    """Narrate one passage, and narrate it once more if the first transcript came back
+    compressed (DR-163).
+
+    The retry is bounded and optional by construction: at most one per passage, skipped
+    entirely when `may_retry` says the job is cancelled or out of wall clock, and the longer of
+    the two transcripts is kept — a second attempt that is also short must not be allowed to
+    make the result worse than not having tried.
+    """
+    with _narration_lease(None if ticket_covers_first else unit, model):
+        part = _narrate_one(text, model=model, section=section)
+    if _narration_is_faithful(text, part) or not may_retry():
+        return part
+    log.warning("narration compressed, retrying section=%s source_chars=%d spoken_chars=%d",
+                f"{section[0]}/{section[1]}" if section else "whole",
+                _speakable_length(text), _speakable_length(part))
+    with _narration_lease(unit, model):
+        second = _narrate_one(text, model=model, section=section, insist=True)
+    return second if _speakable_length(second) > _speakable_length(part) else part
+
+
+def _narrate_one(text: str, *, model: str | None, section: tuple[int, int] | None,
+                 insist: bool = False) -> str:
     instructions = (
         prompts.get("narration_system") + "\n\n" + prompts.get("self_contained_research")
     )
     if section is not None:
         instructions += "\n\n" + _SECTION_INSTRUCTION.format(index=section[0], total=section[1])
+    if insist:
+        instructions += "\n\n" + _INSIST_INSTRUCTION
     messages = [
         {"role": "system", "content": instructions},
         {"role": "user", "content": text},
@@ -618,19 +738,28 @@ def narrate(canonical_text: str, *, unit_id: str | None = None,
     rather than returning what arrived: the sections compose one artifact, and half a narration
     is audio that stops mid-argument with nothing to say so.
 
-    `should_stop` is the caller's cancellation checkpoint, polled between sections. Without one,
-    `audio_jobs.cancel_job`'s promise — at most one in-flight upstream call completes after a
-    cancel returns — would be false the moment a narration became several calls: a cancelled job
-    would go on paying for up to `NARRATION_MAX_SECTIONS` more of them.
+    Every passage — a section, or the whole response on the single-call path — is checked
+    against its own source before it is accepted, and narrated once more if it came back
+    compressed (DR-163). The retry is an EXTRA call beyond what the ticket reserved, so it
+    holds for itself through `per_unit` on both paths, including the single-call one where the
+    first attempt does not.
+
+    `should_stop` is the caller's cancellation checkpoint, polled between sections and again
+    before any retry. Without one, `audio_jobs.cancel_job`'s promise — at most one in-flight
+    upstream call completes after a cancel returns — would be false the moment a narration
+    became several calls: a cancelled job would go on paying for up to
+    `NARRATION_MAX_SECTIONS` more of them.
     """
     if not canonical_text.strip():
         return ""
     settings = config.load_settings()
     model = settings.get("narration_model") or settings.get("model")
     sections = narration_sections(canonical_text)
-    if len(sections) == 1:
-        return _narrate_one(sections[0], model=model, section=None)
     unit = unit_id or uuid.uuid4().hex
+    if len(sections) == 1:
+        return _narrate_faithfully(
+            sections[0], model=model, section=None, unit=unit, ticket_covers_first=True,
+            may_retry=lambda: should_stop is None or not should_stop())
     deadline = time.monotonic() + NARRATION_TOTAL_TIMEOUT_S
     spoken: list[str] = []
     for index, section in enumerate(sections, start=1):
@@ -640,8 +769,14 @@ def narrate(canonical_text: str, *, unit_id: str | None = None,
             raise AgentError(
                 f"Narration took too long: {index - 1} of {len(sections)} sections were spoken "
                 f"within {int(NARRATION_TOTAL_TIMEOUT_S)}s.")
-        with spend_ceiling.per_unit("narration", unit, model=model):
-            part = _narrate_one(section, model=model, section=(index, len(sections)))
+        # A retry is only worth its wall clock while there is wall clock left: past the
+        # deadline the compressed transcript is kept rather than spending the next section's
+        # budget re-reading this one.
+        part = _narrate_faithfully(
+            section, model=model, section=(index, len(sections)), unit=unit,
+            ticket_covers_first=False,
+            may_retry=lambda: ((should_stop is None or not should_stop())
+                               and time.monotonic() <= deadline))
         if not part:
             raise AgentError(
                 f"The narration model returned nothing for section {index} of {len(sections)}.")
