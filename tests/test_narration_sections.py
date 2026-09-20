@@ -631,3 +631,36 @@ def test_the_retry_is_not_told_to_match_the_source_length(monkeypatch):
     it asks for."""
     assert "as long as" not in agent._INSIST_INSTRUCTION
     assert "nothing merged away" in agent._INSIST_INSTRUCTION
+
+
+def test_a_stray_math_opener_cannot_swallow_the_prose_after_it(monkeypatch):
+    """`\\[` and `\\]` are DISTINCT delimiters, so a stray opener does not simply fail to match —
+    it pairs with the next legitimate equation's closer and deletes everything between them.
+    With thousands of characters of prose gone from the measure, a badly collapsed section
+    measures faithful and the guard silently stops guarding. Found by the second review."""
+    prose = "The kernel fuses the two passes into one sweep. " * 60
+    equation = "\\[\n  E = mc^2 + \\alpha \\beta\n\\]"
+    source = "A stray \\[ opens here. " + prose + "\n\n" + equation + "\n\nAnd it continues."
+
+    # The prose between the stray opener and the real equation's closer is still counted...
+    assert agent._speakable_length(source) >= len(prose) - 20
+    # ...so a transcript that came back a fraction of the section is still caught.
+    assert not agent._narration_is_faithful(source, "It compresses.")
+
+
+def test_a_bounded_math_span_is_still_discounted(monkeypatch):
+    """The bound caps the damage at one equation's worth; an ordinary display equation is far
+    inside it and is still removed from the measure."""
+    equation = "\\[\n\\sum_{i=1}^{N} \\alpha_i \\beta_i \\gamma_i \\delta_i \\epsilon_i\n\\]"
+    prose = "The weighted sum runs over every retained candidate."
+    assert agent._speakable_length(equation + "\n\n" + prose) <= len(prose) + 5
+
+
+def test_the_math_stripper_is_linear_too(monkeypatch):
+    """Same quadratic shape as `_MD_LINK_RE`, for the same reason: a lazy span against a
+    delimiter that cannot pair with itself gives every opener a full scan."""
+    import time as clock
+
+    started = clock.monotonic()
+    agent._speakable_length("\\[" * 20_000)
+    assert clock.monotonic() - started < 1.0

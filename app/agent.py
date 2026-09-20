@@ -529,12 +529,21 @@ _INSIST_INSTRUCTION = (
 #: is a 60-character gloss reads as content that went missing, and a section that is mostly
 #: equation-plus-gloss pairs would buy a second call every single time — on exactly the
 #: passages where the retry's output is most likely to be worse than the first attempt's.
-# Both are deliberately CLOSED-ONLY: an unbalanced opener matches nothing and is simply
-# counted, which under-strips (one wasted call at worst) where the alternative — running to
-# end-of-text — would let a stray ``` or `$$` delete the rest of the passage from the measure
-# and hide a real collapse.
+# Both are closed-only, and the math one is additionally LENGTH-BOUNDED. Closed-only alone is
+# enough for `` ``` `` and `$$`, whose delimiters are self-pairing: a stray opener re-pairs with
+# the next one rather than eating an arbitrary span. `\[ … \]` is the only shape here with
+# DISTINCT delimiters, so "unbalanced opener matches nothing" is false for it — a stray `\[`
+# lazily pairs with the next legitimate equation's `\]` and deletes every character of PROSE
+# in between. This codebase already treats a stray opener as an expected model output
+# (`_spans_open`, and `_paragraph_pieces`' "one stray `\\(` in a 30,000-character response"),
+# and the consequence here is worse than a wasted call: with thousands of characters removed
+# from the source measure, a badly collapsed section measures faithful and the guard silently
+# stops guarding — possibly by falling under `NARRATION_MIN_GUARDED_CHARS` entirely. Bounding
+# the span caps the damage at one equation's worth, and keeps the measure linear in its input:
+# an unbounded lazy `.*?` against a delimiter that cannot pair with itself gives every opener a
+# full scan, which is the same quadratic shape `_MD_LINK_RE` below is bounded to avoid.
 _FENCED_BLOCK_RE = re.compile(r"```.*?```", re.S)
-_DISPLAY_MATH_RE = re.compile(r"\\\[.*?\\\]|\$\$.*?\$\$", re.S)
+_DISPLAY_MATH_RE = re.compile(r"\\\[[\s\S]{0,2000}?\\\]|\$\$[\s\S]{0,2000}?\$\$")
 # Bounded repetition, not `[^\]]*`: an unmatched `[` otherwise scans to end-of-text and unwinds
 # one character at a time, which is O(n^2) over a response full of them. A link label is a few
 # words and a target is a URL; past those bounds it is not a link.
