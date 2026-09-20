@@ -235,14 +235,17 @@ def test_a_budget_refusal_mid_narration_does_not_return_half(monkeypatch):
 
 
 def test_an_empty_section_is_an_error_not_a_silent_gap(monkeypatch):
-    """A section the model never answers ends the narration. It is retried first (DR-163 refuses
-    an empty transcript at any size), but a second silence is still an error rather than a gap
-    the listener hears as the argument skipping a third of itself."""
-    sections: list[str] = []
+    """A section the model never answers ends the narration, and a second silence at the same
+    section does not change that. The retry happening first is asserted here too — without it
+    this test passes with DR-163's guard removed entirely, which is how a guard gets merged
+    alongside a test that stopped guarding it."""
+    attempts: list[int] = []
 
     def fake_complete(messages, **kwargs):
-        sections.append(_section_of(messages))
-        # Silent on BOTH attempts at section 2 — one silence is retried, by design.
+        attempts.append(_section_of(messages))
+        # Silent on BOTH attempts at section 2. `llm.complete` refuses an empty completion
+        # upstream of this, so only an injected fake reaches the branch — that is the point of
+        # injecting one.
         return "" if _section_of(messages) == 2 else _faithful(messages[1]["content"])
 
     monkeypatch.setattr(agent, "_complete", fake_complete)
@@ -251,12 +254,15 @@ def test_an_empty_section_is_an_error_not_a_silent_gap(monkeypatch):
     with pytest.raises(agent.AgentError) as excinfo:
         agent.narrate(_long_text(), unit_id="job-1")
     assert "section 2" in str(excinfo.value)
+    assert attempts == [1, 2, 2], "the silent section is narrated again before it ends the job"
 
 
 def test_a_narration_that_runs_past_its_total_budget_stops(monkeypatch):
     calls = _record(monkeypatch)
     _held(monkeypatch)
-    clock = iter([0.0, agent.NARRATION_TOTAL_TIMEOUT_S + 1])
+    # Spare values after the two that matter: a reading of the clock that this test does not
+    # care about must fail the assertion below, not raise StopIteration from the fixture.
+    clock = iter([0.0] + [agent.NARRATION_TOTAL_TIMEOUT_S + 1] * 20)
     monkeypatch.setattr(agent.time, "monotonic", lambda: next(clock))
 
     with pytest.raises(agent.AgentError) as excinfo:
@@ -489,3 +495,139 @@ def test_a_narration_out_of_wall_clock_does_not_buy_a_retry(monkeypatch):
         agent.narrate(_long_text(), unit_id="job-1")
     assert "1 of" in str(excinfo.value)
     assert len(calls) == 1, "no retry once the wall clock is gone"
+
+
+# ---- what the first Opus review of #530 found -----------------------------------------------
+
+
+def _first_then(monkeypatch, second):
+    """A model that answers the first call with a compressed transcript and the second with
+    whatever `second` does — raise, usually."""
+    calls: list[dict] = []
+
+    def fake_complete(messages, **kwargs):
+        calls.append({"messages": messages, **kwargs})
+        if len(calls) == 1:
+            return "It compresses. "
+        return second()
+
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+    return calls
+
+
+def _short_response() -> str:
+    text = "The paper reports a 135 Gbps stacked link. " * 40
+    assert len(text) <= agent.NARRATION_SECTION_CHARS
+    return text
+
+
+def test_a_failed_retry_keeps_the_transcript_it_already_had(monkeypatch):
+    """The retry is optional work on top of a complete transcript. An upstream failure on the
+    SECOND call must not throw the first away and hand the listener an errored audio job —
+    that is strictly worse than never having tried."""
+    def boom():
+        raise agent.AgentError("upstream 429 after three attempts")
+
+    calls = _first_then(monkeypatch, boom)
+    _held(monkeypatch)
+
+    assert agent.narrate(_short_response(), unit_id="job-1") == "It compresses."
+    assert len(calls) == 2
+
+
+def test_a_refused_retry_hold_keeps_the_transcript_it_already_had(monkeypatch):
+    """Same property through the ceiling: a reader with room for the narration the ticket
+    reserved but not for a second call still gets their audio. `per_unit` leaves "does this end
+    the job or just this unit" to the caller, and for optional work it is just this unit."""
+    calls = _record(monkeypatch, reply=lambda text: "It compresses. ")
+
+    @contextlib.contextmanager
+    def refuse(operation, job_id, *, model=None):
+        raise quotas.QuotaExceeded(used_nanousd=9, requested_nanousd=9, limit_nanousd=10)
+        yield  # pragma: no cover - unreachable, kept so this is a generator
+
+    monkeypatch.setattr(agent.spend_ceiling, "per_unit", refuse)
+
+    assert agent.narrate(_short_response(), unit_id="job-1") == "It compresses."
+    assert len(calls) == 1, "the refused call never reached the model"
+
+
+def test_a_refused_section_still_ends_the_narration(monkeypatch):
+    """The exemption above is for the RETRY only. A section's own first call being refused is
+    still half a narration, and still ends it — the property #512 pinned."""
+    calls = _record(monkeypatch)
+
+    @contextlib.contextmanager
+    def refuse_after_first(operation, job_id, *, model=None):
+        if calls:
+            raise quotas.QuotaExceeded(used_nanousd=9, requested_nanousd=9, limit_nanousd=10)
+        yield None
+
+    monkeypatch.setattr(agent.spend_ceiling, "per_unit", refuse_after_first)
+
+    with pytest.raises(quotas.QuotaError):
+        agent.narrate(_long_text(), unit_id="job-1")
+    assert len(calls) == 1
+
+
+def test_the_single_call_path_has_a_wall_clock_bound_too(monkeypatch):
+    """It had none while it was one unconditional call. A second call is what such a bound is
+    for: two narration calls in series can each spend the per-call ceiling."""
+    calls = _first_then(monkeypatch, lambda: "Irrelevant. ")
+    _held(monkeypatch)
+    clock = iter([0.0] + [agent.NARRATION_TOTAL_TIMEOUT_S + 1] * 20)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: next(clock))
+
+    assert agent.narrate(_short_response(), unit_id="job-1") == "It compresses."
+    assert len(calls) == 1, "no retry once the wall clock is gone, on either path"
+
+
+def test_display_math_is_not_counted_as_content_that_went_missing(monkeypatch):
+    """The narration prompt says that where voicing the symbols would be hard to follow, the
+    plain-English sentence beside the equation IS the spoken version. Counted raw, a passage of
+    equation-and-gloss pairs would buy a retry every time — and the tie-break would then hand
+    the listener the symbol-voiced attempt over the clean gloss."""
+    pair = ("\\[\n\\mathcal{L}(\\theta) = -\\frac{1}{N}\\sum_{i=1}^{N}"
+            "\\sum_{t=1}^{T}\\log p_\\theta(y_{i,t} \\mid y_{i,<t}, x_i)\n\\]\n\n"
+            "This is the average per-token negative log-likelihood over the corpus.\n\n")
+    source = pair * 8
+    spoken = "This is the average per-token negative log-likelihood over the corpus. " * 8
+
+    assert len(spoken) < len(source) * agent.NARRATION_MIN_FIDELITY_RATIO
+    assert agent._narration_is_faithful(source, spoken)
+
+
+def test_dollar_display_math_is_discounted_the_same_way(monkeypatch):
+    source = ("$$\n\\sum_{i=1}^{N} \\alpha_i \\beta_i \\gamma_i \\delta_i\n$$\n\n"
+              "The weighted sum runs over every retained candidate.\n\n") * 8
+    spoken = "The weighted sum runs over every retained candidate. " * 8
+
+    assert agent._narration_is_faithful(source, spoken)
+
+
+def test_an_unbalanced_delimiter_does_not_erase_the_rest_of_the_measure(monkeypatch):
+    """Both strippers are closed-only on purpose: running an unmatched opener to end-of-text
+    would let one stray fence hide a genuine collapse from the check."""
+    prose = "The kernel fuses the two passes into one sweep. " * 40
+    assert agent._speakable_length("```\n" + prose) >= len(prose) - 10
+    assert agent._speakable_length("$$\n" + prose) >= len(prose) - 10
+    assert not agent._narration_is_faithful("```python\n" + prose, "It compresses.")
+
+
+def test_the_speakable_measure_is_linear_in_the_text_it_reads(monkeypatch):
+    """`_MD_LINK_RE` used an unbounded negated class, which unwinds one character at a time
+    from every unmatched bracket. This repo has had a quadratic-regex incident; one uvicorn
+    worker holds the GIL through `re`, so it stalls the server, not just the narration."""
+    import time as clock
+
+    started = clock.monotonic()
+    agent._speakable_length("[" * 40_000)
+    assert clock.monotonic() - started < 1.0
+
+
+def test_the_retry_is_not_told_to_match_the_source_length(monkeypatch):
+    """A length instruction here would contradict the narration prompt, which allows an
+    equation to become one plain-English sentence. Coverage is what failed; coverage is what
+    it asks for."""
+    assert "as long as" not in agent._INSIST_INSTRUCTION
+    assert "nothing merged away" in agent._INSIST_INSTRUCTION
