@@ -1035,6 +1035,9 @@ def _select_by_protection(candidates: list[dict], limit: int,
     return selected
 
 
+#: How the ledger records an abstract answer that carried a score but no recognisable role.
+SCORE_ONLY_ROLE = "SCORE-ONLY"
+
 #: The role vocabulary both screening prompts ask for. Also the test for "this field IS the answer".
 SCREEN_ROLES = frozenset({"FOUNDATION", "METHOD", "SURVEY", "APPLICATION", "BENCHMARK",
                           "ADJACENT", "OFF-TOPIC"})
@@ -1183,9 +1186,10 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
                 and cached.get("profile_hash") == profile_hash
                 and isinstance(cached.get("relevance"), int)
                 and 0 <= cached["relevance"] <= 10
-                # "" is a score-only answer (see `_abstract_answer`); the poisoned rows hold a
-                # title there, never an empty string.
-                and (not cached.get("role") or _screen_role(cached["role"]))):
+                # A score-only answer is cached under an explicit marker, never as "": before
+                # DR-164 an UNANSWERED row was cached as 5/""/"", and reusing "" would serve those
+                # placeholders forever as real scores.
+                and (cached.get("role") == SCORE_ONLY_ROLE or _screen_role(cached["role"] or ""))):
             candidate["relevance"] = float(cached["relevance"])
             candidate["role"] = _screen_role(cached.get("role") or "")
             candidate["screen_note"] = str(cached.get("note") or "")[:160]
@@ -2010,7 +2014,7 @@ def _record_verdicts(ledger: dict, judged: list[dict], all_candidates: list[dict
               and not candidate.get("screen_unjudged")):
             discovery_ledger.record_abstract_score(
                 entry, relevance=int(candidate["relevance"]),
-                role=str(candidate.get("role") or ""),
+                role=str(candidate.get("role") or SCORE_ONLY_ROLE),
                 note=str(candidate.get("screen_note") or ""), model=model,
                 profile=profile, today=today)
 

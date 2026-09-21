@@ -1538,9 +1538,13 @@ def test_a_poisoned_cached_abstract_score_is_rescored_not_reused():
     by being replayed from the ledger."""
     good = {"title": "Good", "abstract": "a", "paper_id": "good"}
     score_only = {"title": "Score only", "abstract": "a", "paper_id": "score-only"}
+    # What the old code cached for an UNANSWERED row: a placeholder, not a score.
+    placeholder = {"title": "Placeholder", "abstract": "a", "paper_id": "placeholder"}
     bad = {"title": "Deep Residual Learning", "abstract": "a", "paper_id": "bad"}
     ledger = {"entries": {}}
-    for candidate, role, relevance in ((good, "METHOD", 8), (score_only, "", 6),
+    for candidate, role, relevance in ((good, "METHOD", 8),
+                                       (score_only, discovery.SCORE_ONLY_ROLE, 6),
+                                       (placeholder, "", 5),
                                        (bad, "DEEP RESIDUAL LEARNING", 10)):
         key = discovery._candidate_key(candidate)
         entry = discovery_ledger.observe(ledger, key, candidate, "bulk", "2026-09-21")
@@ -1552,11 +1556,23 @@ def test_a_poisoned_cached_abstract_score_is_rescored_not_reused():
         judged.extend(line.split("|")[2] for line in user.splitlines())
         return "\n".join(f"{line.split('|', 1)[0]}|1|OFF-TOPIC|n" for line in user.splitlines())
 
-    _, audit = discovery.score_abstracts([good, score_only, bad], "FOCUS: x", cheap,
-                                         ledger=ledger, cheap_model="m", profile_hash="h")
-    assert judged == ["Deep Residual Learning"]
+    _, audit = discovery.score_abstracts([good, score_only, placeholder, bad], "FOCUS: x",
+                                         cheap, ledger=ledger, cheap_model="m",
+                                         profile_hash="h")
+    assert judged == ["Placeholder", "Deep Residual Learning"]
     assert audit["reused"] == 2
-    assert (good["relevance"], score_only["relevance"], bad["relevance"]) == (8.0, 6.0, 1.0)
+    assert score_only["role"] == ""          # the marker never reaches a card
+    assert [c["relevance"] for c in (good, score_only, placeholder, bad)] == [8.0, 6.0, 1.0, 1.0]
+
+
+def test_a_score_only_answer_is_cached_under_its_marker():
+    candidate = {"title": "P", "abstract": "a", "paper_id": "p1", "relevance": 6.0, "role": ""}
+    ledger = {"entries": {}}
+    key = discovery._candidate_key(candidate)
+    discovery_ledger.observe(ledger, key, candidate, "bulk", "2026-09-21")
+    discovery._record_verdicts(ledger, [candidate], [candidate], kind="abstract", model="m",
+                               profile="h", today="2026-09-21")
+    assert discovery_ledger.get(ledger, key)["abstract"]["role"] == discovery.SCORE_ONLY_ROLE
 
 
 def test_an_unanswered_title_keep_is_not_cached_as_a_verdict():
