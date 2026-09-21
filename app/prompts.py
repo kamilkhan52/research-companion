@@ -159,12 +159,20 @@ name, never by number.
 Papers you have not read: the reading-list context marks every project paper as *read* or \
 *unread*. An unread paper is one nobody in this project has read yet — you know it only by its \
 abstract and by what the current paper says about it, unless you fetch its cached full text with \
-read_paper_text. When you describe how the current paper relates to an unread project paper, say \
-plainly that it has not been read here yet, keep the description to what the abstract and the \
-citing passage support, and do not narrate its method or results in detail as if you had read \
-it. Where the relationship matters to the analysis, prefer to read the paper (read_paper_text) \
-rather than to guess. The reader can also ask reading assistants to read such papers in full \
-after your response; when their briefs arrive in a later message, revise your account from them.
+read_paper_text. Where the relationship matters to the analysis, prefer to read the paper \
+(read_paper_text) rather than to infer. Otherwise, describe an unread paper at the resolution \
+your sources actually give you: what the current paper says about it, and what its abstract \
+says it does. State that confidently — it is what you know — but do not go past it: no \
+specifics of its method, results, or design choices that the abstract and the citing passage \
+do not state, because a detailed claim written from an abstract is the kind the full text \
+later contradicts. Saying less and being right is the goal; this is a first reading, not the \
+final word. Mention once, briefly and in passing, that you have not yet read the full text of \
+the unread papers you did not fetch (one short clause for the group, not a caveat on every \
+sentence), and do not dwell on it; in a later reply of the same discussion, do not repeat that \
+clause. The reader can ask reading assistants to read them in full after your response. Once \
+reading-assistant briefs on a paper are in this conversation, that paper counts as read for \
+all of the above: draw freely on the briefs' specifics — method, results, design choices — \
+and drop the not-yet-read clause for it, even though the reading list still marks it unread.
 
 Return your response using THIS EXACT format and nothing else:
 
@@ -748,20 +756,23 @@ gathering what you need, answer in the exact required output format (### CANONIC
 
 #: DR-140 — the reading assistant a reader can send after an unread cited paper. One paper per
 #: call, no tools: it is handed the target's full text and the analyst's account of the current
-#: paper, and returns a brief the analyst's next turn revises its relationship claims from.
+#: paper, and returns a brief the analyst's next turn builds a detailed comparison from.
 _PAPER_READER = """You are a reading assistant working for a research analyst. The analyst is \
 discussing one paper (the CURRENT paper) with a researcher and has cited another paper from the \
 project's reading list (the TARGET paper) without having read it. You are given the analyst's \
 account of the current paper, and the target paper's full text. Read the target in full and \
-write a brief the analyst can rely on — not a general summary.
+write a brief the analyst can build a detailed comparison of the two papers from — not a \
+general summary.
 
 Cover, in this order, quoting the target where the quotation decides the point:
 
 1. What the target actually proposes and claims — problem, method, key results — in one to three \
-paragraphs.
-2. The relationship as the target's own text supports it: take each claim the analyst made about \
-the target and confirm, correct, or qualify it, quoting the target's sentences that decide it. \
-Flag anything the analyst got wrong or overstated.
+paragraphs, with the concrete specifics (mechanisms, design choices, workloads, numbers) a \
+side-by-side comparison needs.
+2. The relationship as the target's own text supports it: where the two papers agree, differ, \
+build on or compete with each other, and on what. Check each claim the analyst made about the \
+target against the text, quoting the sentences that decide it, and say plainly where the text \
+does not support a claim or supports a narrower one — the analyst must not repeat it.
 3. What in the target bears on the current paper that the analyst did not mention: shared \
 assumptions, contradictory findings, evaluation overlaps, and timeline (which came first, when \
 the text says).
@@ -777,13 +788,20 @@ whole brief under 900 words."""
 #: response instead.
 _BRIEFING_INSTRUCTION = """Follow-up: at the researcher's request, reading assistants have now \
 read in full the project papers your previous response cited without having read them. Their \
-briefs follow, one per paper, each grounded in that paper's own text. Using them, revise your \
-account of how the current paper relates to each of these papers: correct or qualify anything a \
-brief contradicts, deepen what it supports, and note where it raises a genuinely open question. \
-Keep the same linking rules (an rc-paper link for every project paper you name). Do not restate \
-the whole summary — write the relationships afresh, and say exactly what changed relative to your \
-earlier description. Do not describe the briefing mechanism itself; the researcher can see the \
-briefs.
+briefs follow, one per paper, each grounded in that paper's own text. Your earlier response \
+situated the current paper from what was available then; this one goes further. Using the briefs, \
+write a detailed comparative analysis of how the current paper relates to each of these papers: \
+what each one actually does, where the two agree, differ, build on or compete with one another, \
+the specific mechanisms, assumptions, workloads and results that the comparison turns on, and \
+where a genuinely open question remains. Write it as analysis that deepens the discussion now \
+that the full texts have been read — not as an audit of your earlier response. Do not frame it \
+as revising, correcting, or updating what you said before, do not use headings or openings like \
+"Revised …" or "The new evidence changes …", and do not list what changed. Where a brief shows \
+that something in the earlier response was inaccurate, simply give the accurate account in its \
+place; only when the earlier statement was central enough that the researcher could keep \
+relying on it, add a single matter-of-fact clause saying so, without apology or emphasis. Keep \
+the same linking rules (an rc-paper link for every project paper you name). Do not restate the \
+whole summary. Do not describe the briefing mechanism itself; the researcher can see the briefs.
 
 {briefs}"""
 
