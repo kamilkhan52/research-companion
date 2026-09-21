@@ -1518,6 +1518,15 @@ def test_a_row_with_no_valid_score_is_neutral_and_uncached():
     assert "abstract" not in discovery_ledger.get(ledger, key)
 
 
+def test_a_good_score_with_a_sloppy_role_is_still_an_answer():
+    """Content validation must not throw away what positional reading got right: a real score
+    with a role word outside the vocabulary keeps its score rather than being re-bought."""
+    assert discovery._abstract_answer(["8", "Methods", "fits"]) == ["8", "", "fits"]
+    assert discovery._abstract_answer(["2015", "Title", "venue"]) is None
+    assert discovery._title_answer(["KEEP", "method"]) == ["K", "METHOD"]
+    assert discovery._title_answer(["2015", "Drop", "off topic"]) == ["D", "OFF-TOPIC"]
+
+
 def test_an_out_of_range_score_is_neutral_not_maximal():
     assert discovery._clamped_score("2021") == 5.0
     assert discovery._clamped_score("-3") == 5.0

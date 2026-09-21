@@ -121,7 +121,9 @@ CheapLlmFn = Callable[[str, str, int], str]
 RecallFn = Callable[[list], tuple[list[dict], dict]]
 WideRecallFn = Callable[[list[dict], list[dict], dict], tuple[list[dict], dict, list[dict]]]
 
-CHECKPOINT_PIPELINE = f"wide-recall-v1:{CHEAP_MODEL}"
+# v2 (DR-164): triage/scoring now read replies by content and cap keeps-first, so a v1 snapshot
+# resumed at `triaged` or `scored` would re-serve the misread verdicts and year-as-score rows.
+CHECKPOINT_PIPELINE = f"wide-recall-v2:{CHEAP_MODEL}"
 
 
 class DiscoveryError(Exception):
@@ -995,8 +997,10 @@ def _cap_with_protections(candidates: list[dict], limit: int,
     paper above a kept one, but ordering the cap purely by protection priority did exactly that —
     DR-164's replay of a real run: 296 of 400 slots went to title-dropped papers while 66 of the
     78 on-topic keeps (hybrid-bonded DRAM, for a hybrid-bonded-DRAM goal) never reached scoring.
-    Drops still get `TITLE_DROP_SHARE` of the cap when there are enough keeps, so the
-    false-negative audit keeps its sample, and any capacity the keeps leave unused.
+    Drops still get `TITLE_DROP_SHARE` of the cap, highest protection first, plus any capacity
+    the keeps leave unused. That keeps the false-negative audit fed with the drops that matter most
+    (grounded, well-cited). It does not guarantee slots to the priority-10 random sample, which
+    only reaches scoring when fewer higher-priority drops compete.
     """
     dropped = [candidate for candidate in candidates if candidate.get("screen_protected")]
     kept = [candidate for candidate in candidates if not candidate.get("screen_protected")]
@@ -1047,10 +1051,11 @@ def _title_answer(fields: list[str]) -> list[str] | None:
 
     DR-164: the cheap model echoes input columns ahead of its answer (`7|2015|D|OFF-TOPIC`), and
     reading `fields[0]` took the year's first digit as the verdict. The verdict is the first field
-    that is exactly K or D; an echoed year or title never is. No such field means no answer.
+    that is K or D (or spelled out as KEEP/DROP); an echoed year or title never is. No such field
+    means no answer.
     """
     for index, field in enumerate(fields):
-        verdict = field.strip().upper()
+        verdict = {"KEEP": "K", "DROP": "D"}.get(field.strip().upper(), field.strip().upper())
         if verdict in {"K", "D"}:
             tag = _screen_role(fields[index + 1]) if index + 1 < len(fields) else ""
             return [verdict, tag]
@@ -1064,6 +1069,10 @@ def _abstract_answer(fields: list[str]) -> list[str] | None:
     before it and the note the one just after, so echoed year/title/venue/cites columns in front
     are skipped (DR-164). A score outside 0-10 is not a score — the year that became 10/10 was
     exactly that — so the row is rejected rather than clamped.
+
+    A row with no recognisable role still answers if its FIRST field is an in-range score: a
+    sloppy role word must not discard a good score and re-buy it every run, and an echoed year
+    can never pass that range test.
     """
     for index, field in enumerate(fields):
         role = _screen_role(field)
@@ -1077,7 +1086,13 @@ def _abstract_answer(fields: list[str]) -> list[str] | None:
             continue
         note = fields[index + 1] if index + 1 < len(fields) else ""
         return [fields[index - 1].strip(), role, note]
-    return None
+    try:
+        relevance = float(fields[0].strip())
+    except ValueError:
+        return None
+    if not 0.0 <= relevance <= 10.0:
+        return None
+    return [fields[0].strip(), "", fields[2] if len(fields) > 2 else ""]
 
 
 def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: dict | None = None,
@@ -1170,7 +1185,7 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
                 and 0 <= cached["relevance"] <= 10
                 and _screen_role(cached.get("role") or "")):
             candidate["relevance"] = float(cached["relevance"])
-            candidate["role"] = str(cached.get("role") or "")
+            candidate["role"] = _screen_role(cached.get("role") or "")
             candidate["screen_note"] = str(cached.get("note") or "")[:160]
             reused += 1
         else:
@@ -1607,9 +1622,12 @@ def run_discovery(
         # The false-negative denominator is every protected title DROP we paid to abstract-score,
         # not merely the final 60. Computing after the final cap made the audit look healthier by
         # silently excluding reviewed drops that ranked below the display boundary.
+        # An unanswered drop sits at the neutral 5.0 and can never count as a false negative, so
+        # including it would only dilute the rate.
         audited_drops = [candidate for candidate in all_scored
                          if candidate.get("screen_protected")
-                         and candidate.get("triage_verdict") == "D"]
+                         and candidate.get("triage_verdict") == "D"
+                         and not candidate.get("screen_unjudged")]
         false_negatives = [candidate for candidate in audited_drops
                            if float(candidate.get("relevance") or 0) >= 7]
         abstract_audit["title_drop_audit"] = {

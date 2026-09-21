@@ -542,3 +542,23 @@ def test_a_row_the_normaliser_rejects_is_unanswered_not_an_answer():
     assert parsed.values == {2: ["K", "METHOD"]}
     assert parsed.missing == [1]
     assert parsed.rejected_rows == 1
+
+
+def test_mass_rejection_triggers_the_half_size_retry_and_the_retry_answer_wins():
+    def only_k_or_d(fields):
+        return fields if fields[0] in {"K", "D"} else None
+
+    calls = []
+
+    def llm(system, user):
+        calls.append(user)
+        numbers = [line.split("|")[0] for line in user.splitlines()]
+        answer = "2015|D|OFF-TOPIC" if len(calls) == 1 else "D|OFF-TOPIC"
+        return "\n".join(f"{n}|{answer}" for n in numbers)
+
+    values, audit = discovery_batch.run_batches(
+        _items(4), batch_size=4, system="s", render_item=_render, llm_fn=llm,
+        normalise=only_k_or_d)
+    assert len(calls) == 3                         # the whole batch, then two halves
+    assert audit["retried"] == 1
+    assert values == {n: ["D", "OFF-TOPIC"] for n in (1, 2, 3, 4)}
