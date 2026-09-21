@@ -55,6 +55,7 @@ class BatchResult:
         self.missing: list[int] = []
         self.unknown_rows = 0        # rows echoing a number we never sent
         self.duplicate_rows = 0      # a number answered more than once (first answer wins)
+        self.rejected_rows = 0       # a sent number whose fields did not hold a valid answer
         self.degraded: list[str] = []
 
     @property
@@ -66,12 +67,25 @@ class BatchResult:
 _ROW_RE = re.compile(r"^\s*(\d+)\s*\|(.*)$")
 
 
-def parse_rows(text: str, expected: Sequence[int], *, min_fields: int = 1) -> BatchResult:
+#: Turns a row's raw fields into the stage's canonical answer, or None when the row does not
+#: actually answer the question (see `parse_rows`).
+Normalise = Callable[[list[str]], "list[str] | None"]
+
+
+def parse_rows(text: str, expected: Sequence[int], *, min_fields: int = 1,
+               normalise: Normalise | None = None) -> BatchResult:
     """Reconcile a model's reply against the item numbers we actually sent.
 
     `expected` is the authoritative set; anything else in the reply is noise. The first answer for
     a number wins — a model that repeats a number has usually restated, not corrected, and
     preferring the later row would let a truncated retry overwrite a good answer.
+
+    `normalise` exists because the NUMBER is not the only thing a cheap model gets wrong: it
+    also echoes input columns back ahead of its answer. DR-164: DeepSeek v4 Flash replied
+    `7|2015|D|OFF-TOPIC` to a `number|year|title` prompt, a positional reader took the year as
+    the score, the clamp made it 10/10, and ResNet and BERT topped a hybrid-bonded-DRAM Discover
+    run. A row the normaliser rejects is treated exactly like a missing row — unanswered, so it
+    fails open and counts toward the retry threshold — never as an answer.
     """
     result = BatchResult()
     wanted = set(expected)
@@ -94,6 +108,12 @@ def parse_rows(text: str, expected: Sequence[int], *, min_fields: int = 1) -> Ba
         fields = [part.strip() for part in match.group(2).split("|")]
         if len([f for f in fields if f]) < min_fields:
             continue                      # an echoed number with no usable answer is not an answer
+        if normalise is not None:
+            normalised = normalise(fields)
+            if normalised is None:
+                result.rejected_rows += 1
+                continue
+            fields = normalised
         result.values[number] = fields
 
     result.answered = len(result.values)
@@ -110,6 +130,7 @@ def run_batches(
     llm_fn: LlmFn,
     min_fields: int = 1,
     stage: str = "batch",
+    normalise: Normalise | None = None,
 ) -> tuple[dict[int, list[str]], dict]:
     """Screen `items` in batches, returning `{index -> fields}` and an audit block.
 
@@ -122,7 +143,7 @@ def run_batches(
     """
     values: dict[int, list[str]] = {}
     audit = {"stage": stage, "items": len(items), "batches": 0, "answered": 0,
-             "missing": 0, "unknown_rows": 0, "duplicate_rows": 0,
+             "missing": 0, "unknown_rows": 0, "duplicate_rows": 0, "rejected_rows": 0,
              "retried": 0, "failed_open": 0, "degraded": []}
 
     chunks = [list(enumerate(items[start:start + batch_size], start=start + 1))
@@ -133,7 +154,7 @@ def run_batches(
     # are network-bound, so running them concurrently is nearly free, and `run_parallel` rebinds the
     # contextvars each worker needs to attribute its own token spend (invariant 2).
     results = jobs.run_parallel(
-        chunks, lambda chunk: _judge(chunk, system, render_item, llm_fn, min_fields),
+        chunks, lambda chunk: _judge(chunk, system, render_item, llm_fn, min_fields, normalise),
         max_workers=concurrency(), thread_name_prefix=f"discover-{stage}")
 
     # Merge serially, in submission order, so the audit and the "first answer wins" rule stay
@@ -157,7 +178,7 @@ def concurrency() -> int:
 
 def _judge(chunk: list[tuple[int, dict]], system: str,
            render_item: Callable[[int, dict], str], llm_fn: LlmFn, min_fields: int,
-           *, allow_retry: bool = True) -> list[tuple[list, object]]:
+           normalise: Normalise | None = None, *, allow_retry: bool = True) -> list[tuple[list, object]]:
     """Ask the model about one batch. Returns `[(subchunk, parsed_or_exception), ...]`.
 
     Pure with respect to the caller's state — it touches neither `values` nor the audit — so it is
@@ -174,7 +195,7 @@ def _judge(chunk: list[tuple[int, dict]], system: str,
                     type(e).__name__, len(chunk))
         return [(chunk, e)]
 
-    parsed = parse_rows(reply, numbers, min_fields=min_fields)
+    parsed = parse_rows(reply, numbers, min_fields=min_fields, normalise=normalise)
 
     if parsed.loss_ratio > MAX_LOSS_RATIO and allow_retry and len(chunk) > 1:
         # The model lost the format rather than skipping a few rows. Halve and retry ONCE; a
@@ -182,8 +203,10 @@ def _judge(chunk: list[tuple[int, dict]], system: str,
         log.info("discovery batch lost %.0f%% of %d rows; retrying at half size",
                  parsed.loss_ratio * 100, len(chunk))
         mid = len(chunk) // 2
-        return [*_judge(chunk[:mid], system, render_item, llm_fn, min_fields, allow_retry=False),
-                *_judge(chunk[mid:], system, render_item, llm_fn, min_fields, allow_retry=False),
+        return [*_judge(chunk[:mid], system, render_item, llm_fn, min_fields, normalise,
+                        allow_retry=False),
+                *_judge(chunk[mid:], system, render_item, llm_fn, min_fields, normalise,
+                        allow_retry=False),
                 ("retried", None)]
 
     return [(chunk, parsed)]
@@ -212,6 +235,7 @@ def _absorb(chunk: list, result: object, values: dict[int, list[str]], audit: di
             continue
         audit["unknown_rows"] += parsed.unknown_rows
         audit["duplicate_rows"] += parsed.duplicate_rows
+        audit["rejected_rows"] += parsed.rejected_rows
         audit["degraded"].extend(parsed.degraded)
         for number, fields in parsed.values.items():
             values.setdefault(number, fields)   # first answer wins, across retries too

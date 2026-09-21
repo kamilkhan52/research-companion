@@ -5,6 +5,7 @@ sequence, and per-project persistence of the ranked result."""
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -1449,3 +1450,143 @@ def test_generate_queries_without_a_library_sends_the_goals_verbatim():
 
     discovery.generate_queries("understand 3D DRAM", "m", capture_llm, papers=[])
     assert seen["user"] == "understand 3D DRAM"
+
+
+# ---------- DR-164: echoed input columns must not become verdicts or scores ----------
+
+def _echo_reply(answer):
+    """A cheap model that echoes each input row's year before answering — what DeepSeek v4
+    Flash actually did on the 3d-stacked-dram run."""
+    def cheap(system, user, max_tokens):
+        rows = []
+        for line in user.splitlines():
+            number, year, *_ = line.split("|")
+            rows.append(f"{number}|{year}|{answer}")
+        return "\n".join(rows)
+    return cheap
+
+
+def _judge_by_title(system, user, max_tokens):
+    return "\n".join(
+        f"{line.split('|', 1)[0]}|{'D|OFF-TOPIC' if 'Famous' in line else 'K|METHOD'}"
+        for line in user.splitlines())
+
+
+def test_title_triage_reads_the_verdict_past_an_echoed_year():
+    """`7|2015|D|OFF-TOPIC` used to parse as verdict "2" (the year's first digit) — not D, so
+    the paper was kept — with tag "D"."""
+    candidates = [{"title": f"Off topic {i}", "year": 2015, "abstract": "a",
+                   "channels": ["bulk"]} for i in range(3)]
+    kept, audit = discovery.triage_titles(candidates, "FOCUS: x", _echo_reply("D|OFF-TOPIC"))
+    assert all(c["triage_verdict"] == "D" for c in candidates)
+    assert all(c["triage_tag"] == "OFF-TOPIC" for c in kept)
+    assert audit["answered"] == 3 and audit["rejected_rows"] == 0
+
+
+def test_abstract_scoring_reads_the_score_past_echoed_columns():
+    """The year used to be read as the relevance and clamped to 10/10, and the TITLE became the
+    role — the bug that put ResNet and BERT at the top of a hybrid-bonded-DRAM run."""
+    candidates = [{"title": "Deep Residual Learning", "year": 2016, "venue": "CVPR",
+                   "citation_count": 9, "abstract": "a"}]
+
+    def echo_everything(system, user, max_tokens):
+        return "\n".join(f"{line.rsplit('|', 1)[0]}|2|off-topic|image classification"
+                         for line in user.splitlines())
+
+    scored, _ = discovery.score_abstracts(candidates, "FOCUS: x", echo_everything)
+    assert scored[0]["relevance"] == 2.0
+    assert scored[0]["role"] == "OFF-TOPIC"
+    assert scored[0]["screen_note"] == "image classification"
+    assert not scored[0]["screen_unjudged"]
+
+
+def test_a_row_with_no_valid_score_is_neutral_and_uncached():
+    """No role/score in range means no answer: the neutral 5.0 placeholder, never 10, and never
+    written to the ledger as though the model had judged it."""
+    candidates = [{"title": "P", "year": 2021, "abstract": "a", "paper_id": "p1"}]
+    scored, audit = discovery.score_abstracts(
+        candidates, "FOCUS: x", _echo_reply("P|venue|cites=3|note"))
+    assert scored[0]["relevance"] == 5.0
+    assert scored[0]["screen_unjudged"]
+    assert audit["rejected_rows"] == 1
+
+    ledger = {"entries": {}}
+    key = discovery._candidate_key(candidates[0])
+    discovery_ledger.observe(ledger, key, candidates[0], "bulk", "2026-09-21")
+    discovery._record_verdicts(ledger, scored, scored, kind="abstract", model="m",
+                               profile="h", today="2026-09-21")
+    assert "abstract" not in discovery_ledger.get(ledger, key)
+
+
+def test_an_out_of_range_score_is_neutral_not_maximal():
+    assert discovery._clamped_score("2021") == 5.0
+    assert discovery._clamped_score("-3") == 5.0
+    assert discovery._clamped_score("7.5") == 7.5
+
+
+def test_a_poisoned_cached_abstract_score_is_rescored_not_reused():
+    """Entries the bug already wrote (relevance 10, the title as role) must not outlive the fix
+    by being replayed from the ledger."""
+    good = {"title": "Good", "abstract": "a", "paper_id": "good"}
+    bad = {"title": "Deep Residual Learning", "abstract": "a", "paper_id": "bad"}
+    ledger = {"entries": {}}
+    for candidate, role, relevance in ((good, "METHOD", 8),
+                                       (bad, "DEEP RESIDUAL LEARNING", 10)):
+        key = discovery._candidate_key(candidate)
+        entry = discovery_ledger.observe(ledger, key, candidate, "bulk", "2026-09-21")
+        discovery_ledger.record_abstract_score(entry, relevance=relevance, role=role, note="",
+                                               model="m", profile="h", today="2026-09-21")
+    judged = []
+
+    def cheap(system, user, max_tokens):
+        judged.extend(line.split("|")[2] for line in user.splitlines())
+        return "\n".join(f"{line.split('|', 1)[0]}|1|OFF-TOPIC|n" for line in user.splitlines())
+
+    _, audit = discovery.score_abstracts([good, bad], "FOCUS: x", cheap, ledger=ledger,
+                                         cheap_model="m", profile_hash="h")
+    assert judged == ["Deep Residual Learning"]
+    assert audit["reused"] == 1
+    assert (good["relevance"], bad["relevance"]) == (8.0, 1.0)
+
+
+def test_an_unanswered_title_keep_is_not_cached_as_a_verdict():
+    candidate = {"title": "P", "year": 2021, "abstract": "a", "paper_id": "p1"}
+    kept, _ = discovery.triage_titles([candidate], "FOCUS: x", lambda s, u, m: "no rows here")
+    assert kept == [candidate] and candidate["triage_unjudged"]
+
+    ledger = {"entries": {}}
+    key = discovery._candidate_key(candidate)
+    discovery_ledger.observe(ledger, key, candidate, "bulk", "2026-09-21")
+    discovery._record_verdicts(ledger, kept, [candidate], kind="cheap", model="m",
+                               profile="h", today="2026-09-21")
+    assert "cheap" not in discovery_ledger.get(ledger, key)
+
+
+def test_protected_title_drops_cannot_crowd_title_keeps_out_of_the_cap():
+    """DR-164's replay: ordering the cap by protection priority alone gave 296 of 400 slots to
+    title-DROPPED papers (protected because well cited, or a lane/topic/era representative),
+    and 66 of 78 on-topic keeps never reached abstract scoring."""
+    limit = discovery.MAX_AFTER_TITLE_TRIAGE
+    # Grounded AND famous: every one of these drops is protected at the top priority.
+    dropped = [{"title": f"Famous off-topic {i}", "year": 2015, "abstract": "a",
+                "citation_count": 100_000 - i, "channels": ["cites"]} for i in range(limit)]
+    kept = [{"title": f"On topic {i}", "year": 2025, "abstract": "a", "citation_count": 1,
+             "channels": ["bulk"]} for i in range(limit)]
+
+    capped, _ = discovery.triage_titles(dropped + kept, "FOCUS: x", _judge_by_title)
+    drops = [c for c in capped if c.get("screen_protected")]
+    assert len(capped) == limit
+    assert 0 < len(drops) <= math.ceil(limit * discovery.TITLE_DROP_SHARE), (
+        "protected drops took more than their reserved share of the cap")
+
+
+def test_protected_title_drops_fill_capacity_the_keeps_leave_unused(monkeypatch):
+    monkeypatch.setattr(discovery, "MAX_AFTER_TITLE_TRIAGE", 50)
+    dropped = [{"title": f"Famous {i}", "year": 2015, "abstract": "a", "citation_count": 900,
+                "channels": ["cites"]} for i in range(100)]
+    kept = [{"title": f"Kept {i}", "abstract": "a", "channels": ["bulk"]} for i in range(5)]
+
+    capped, _ = discovery.triage_titles(dropped + kept, "FOCUS: x", _judge_by_title)
+    # The reserve is a floor for drops, not a ceiling: five keeps leave 45 slots, not 8.
+    assert len(capped) == 50
+    assert sum(1 for c in capped if not c.get("screen_protected")) == 5

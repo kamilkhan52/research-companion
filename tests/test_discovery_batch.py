@@ -527,3 +527,18 @@ def test_screening_batches_run_concurrently():
         _items(6), batch_size=2, system="s", render_item=_render, llm_fn=llm)
     assert sorted(values) == [1, 2, 3, 4, 5, 6]
     assert audit["batches"] == 3
+
+
+# ---------- content validation (DR-164) ----------
+
+def test_a_row_the_normaliser_rejects_is_unanswered_not_an_answer():
+    """An echoed-columns row carries the right NUMBER but no answer in the right place. It must
+    count toward the loss ratio (and so the retry) exactly like a missing row."""
+    def only_k_or_d(fields):
+        return fields if fields[0] in {"K", "D"} else None
+
+    parsed = discovery_batch.parse_rows(
+        "1|2015|D|OFF-TOPIC\n2|K|METHOD", [1, 2], normalise=only_k_or_d)
+    assert parsed.values == {2: ["K", "METHOD"]}
+    assert parsed.missing == [1]
+    assert parsed.rejected_rows == 1
