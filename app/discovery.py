@@ -1189,7 +1189,7 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
                 # A score-only answer is cached under an explicit marker, never as "": before
                 # DR-164 an UNANSWERED row was cached as 5/""/"", and reusing "" would serve those
                 # placeholders forever as real scores.
-                and (cached.get("role") == SCORE_ONLY_ROLE or _screen_role(cached["role"] or ""))):
+                and (cached.get("role") == SCORE_ONLY_ROLE or _screen_role(cached.get("role") or ""))):
             candidate["relevance"] = float(cached["relevance"])
             candidate["role"] = _screen_role(cached.get("role") or "")
             candidate["screen_note"] = str(cached.get("note") or "")[:160]
