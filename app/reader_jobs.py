@@ -30,8 +30,11 @@ That is exactly the shape here, with the app's standing rules applied:
   order the offer listed them rather than the order they happened to finish.
 * **The briefs become context by becoming a turn**: when the assistants finish, the job appends
   a hidden user record (`sessions.record_briefing`) carrying the framed briefs and the
-  briefing instruction, then chains the ordinary chat turn on it — the analyst revises its
-  relationship claims from the briefs, and every later turn in the thread has them in history.
+  briefing instruction, then chains the ordinary chat turn on it — the analyst writes a detailed
+  comparison from the briefs, and every later turn in the thread has them in history. That turn
+  is prompted to read as deeper analysis, not as a correction of the first response (DR-163):
+  the first response is told to stay within what the abstract and citing passage support, so
+  the second has little to take back.
   The transcript hides the record like a Finish prompt and attaches the briefs to the response
   that answered it, which is where the client renders them collapsed.
 
