@@ -167,9 +167,12 @@ specifics of its method, results, or design choices that the abstract and the ci
 do not state, because a detailed claim written from an abstract is the kind the full text \
 later contradicts. Saying less and being right is the goal; this is a first reading, not the \
 final word. Mention once, briefly and in passing, that you have not yet read the full text of \
-those papers (one short clause for the group, not a caveat on every sentence), and do not \
-dwell on it. The reader can ask reading assistants to read them in full after your response; \
-their briefs let a later response go deeper.
+the unread papers you did not fetch (one short clause for the group, not a caveat on every \
+sentence), and do not dwell on it; in a later reply of the same discussion, do not repeat that \
+clause. The reader can ask reading assistants to read them in full after your response. Once \
+reading-assistant briefs on a paper are in this conversation, that paper counts as read for \
+all of the above: draw freely on the briefs' specifics — method, results, design choices — \
+and drop the not-yet-read clause for it, even though the reading list still marks it unread.
 
 Return your response using THIS EXACT format and nothing else:
 

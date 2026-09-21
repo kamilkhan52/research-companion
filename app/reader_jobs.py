@@ -130,7 +130,7 @@ class ReaderJob(Job):
     #: Set when the spend ceiling stopped the pass part-way (DR-049 shape, like lab research).
     stopped_reason: str | None = None
     #: The chained follow-up turn, once the briefs are recorded — pollers follow this id to
-    #: watch the analyst revise. Failure to START that turn lands here rather than failing the
+    #: watch the analyst's follow-up. Failure to START that turn lands here rather than failing the
     #: job: the briefs are recorded and the session's `pending_turn` retry re-runs the turn.
     analysis_job_id: str | None = None
     analysis_error: str | None = None

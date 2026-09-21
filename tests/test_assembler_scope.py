@@ -33,6 +33,16 @@ def test_both_contexts_carry_the_paper_link_instruction_and_targets(temp_project
         assert "link to its `link:` target" in ctx or "markdown link" in ctx
 
 
+def test_reading_list_hint_keeps_unread_papers_at_abstract_level_without_a_caveat_each(
+        temp_project):
+    """DR-163: the per-paper "say it has not been read here yet" instruction made every unread
+    citation carry its own caveat; the system prompt now asks for one clause per group."""
+    add_paper(temp_project, "orca", "Orca: A Serving System", full_text="t")
+    ctx = assembler.build_context("orca")
+    assert "stay at the level its abstract and the citing passage support" in ctx
+    assert "say it has not been read here yet" not in ctx
+
+
 def test_related_scope_excludes_unrelated_notes(temp_project, monkeypatch):
     _setup(temp_project)
     _settings(monkeypatch, "related")

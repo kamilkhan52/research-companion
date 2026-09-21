@@ -152,6 +152,9 @@ def test_reading_pass_follow_up_deepens_rather_than_corrects():
 
     assert "Saying less and being right is the goal" in analysis
     assert "one short clause for the group" in analysis
+    # The briefing turn runs under this same system prompt while the reading list still marks the
+    # briefed papers unread, so the abstract-level limit must lift once briefs are present.
+    assert "that paper counts as read for all of the above" in analysis
     assert "revise your account" not in analysis
 
     assert "detailed comparative analysis" in briefing

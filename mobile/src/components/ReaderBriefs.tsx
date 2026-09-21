@@ -296,7 +296,7 @@ export function readerHandoffLine(job: ReaderJob): string | null {
     // A reply sent while the assistants read is being answered first; the briefs follow it.
     return job.waiting ? 'Waiting for the current response to finish before handing over the briefs.' : null;
   }
-  if (job.analysis_job_id) return 'Handing the briefs to the agent — its revised account is on its way.';
+  if (job.analysis_job_id) return 'Handing the briefs to the agent — its fuller comparison is on its way.';
   if (job.status === 'error') return job.error;
   if (job.analysis_error) return `The briefs were recorded but the follow-up did not start: ${job.analysis_error}`;
   if (job.stopped_reason) return job.stopped_reason;
