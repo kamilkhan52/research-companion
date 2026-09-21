@@ -1183,7 +1183,9 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
                 and cached.get("profile_hash") == profile_hash
                 and isinstance(cached.get("relevance"), int)
                 and 0 <= cached["relevance"] <= 10
-                and _screen_role(cached.get("role") or "")):
+                # "" is a score-only answer (see `_abstract_answer`); the poisoned rows hold a
+                # title there, never an empty string.
+                and (not cached.get("role") or _screen_role(cached["role"]))):
             candidate["relevance"] = float(cached["relevance"])
             candidate["role"] = _screen_role(cached.get("role") or "")
             candidate["screen_note"] = str(cached.get("note") or "")[:160]

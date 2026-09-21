@@ -1537,9 +1537,10 @@ def test_a_poisoned_cached_abstract_score_is_rescored_not_reused():
     """Entries the bug already wrote (relevance 10, the title as role) must not outlive the fix
     by being replayed from the ledger."""
     good = {"title": "Good", "abstract": "a", "paper_id": "good"}
+    score_only = {"title": "Score only", "abstract": "a", "paper_id": "score-only"}
     bad = {"title": "Deep Residual Learning", "abstract": "a", "paper_id": "bad"}
     ledger = {"entries": {}}
-    for candidate, role, relevance in ((good, "METHOD", 8),
+    for candidate, role, relevance in ((good, "METHOD", 8), (score_only, "", 6),
                                        (bad, "DEEP RESIDUAL LEARNING", 10)):
         key = discovery._candidate_key(candidate)
         entry = discovery_ledger.observe(ledger, key, candidate, "bulk", "2026-09-21")
@@ -1551,11 +1552,11 @@ def test_a_poisoned_cached_abstract_score_is_rescored_not_reused():
         judged.extend(line.split("|")[2] for line in user.splitlines())
         return "\n".join(f"{line.split('|', 1)[0]}|1|OFF-TOPIC|n" for line in user.splitlines())
 
-    _, audit = discovery.score_abstracts([good, bad], "FOCUS: x", cheap, ledger=ledger,
-                                         cheap_model="m", profile_hash="h")
+    _, audit = discovery.score_abstracts([good, score_only, bad], "FOCUS: x", cheap,
+                                         ledger=ledger, cheap_model="m", profile_hash="h")
     assert judged == ["Deep Residual Learning"]
-    assert audit["reused"] == 1
-    assert (good["relevance"], bad["relevance"]) == (8.0, 1.0)
+    assert audit["reused"] == 2
+    assert (good["relevance"], score_only["relevance"], bad["relevance"]) == (8.0, 6.0, 1.0)
 
 
 def test_an_unanswered_title_keep_is_not_cached_as_a_verdict():
