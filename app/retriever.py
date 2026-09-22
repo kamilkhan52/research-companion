@@ -17,6 +17,7 @@ import io
 import re
 import threading
 import time
+import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
@@ -164,6 +165,87 @@ def _arxiv_get(url: str, params: dict | None = None, timeout: float = 30) -> htt
 
 def _similar(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+#: How much of an extracted PDF counts as its "first page" for `text_names_title`. The title sits
+#: in the first few hundred characters; the margin covers an arXiv stamp, a journal banner or a
+#: conference header printed above it. Kept short on purpose: a paper that CITES the one we want
+#: carries its title in the bibliography, and the bibliography must stay outside this window.
+_TITLE_HEAD_CHARS = 4000
+#: The narrower window a title's "Name:" prefix must appear in to vouch for the paper alone: the
+#: title line and the author block, not the abstract, where a citer may well name the system.
+#: Counted in words with bare numbers skipped, because a review-copy PDF opens with a column of
+#: line numbers ("1 2 3 … 110") that would otherwise fill any character budget.
+_TITLE_NAME_HEAD_WORDS = 40
+#: Words too common to count as evidence that a window of text is this title.
+_TITLE_STOPWORDS = frozenset(
+    "a an and at by for from in into of on or the to using via with".split())
+#: The share of a title's words that must appear, in order and close together, on the first page.
+_TITLE_MIN_COVERAGE = 0.8
+
+
+def _title_words(text: str) -> list[str]:
+    # NFKC folds the ligatures pypdf emits ("ﬁ" -> "fi") so they compare equal to typed text.
+    return re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKC", text).lower())
+
+
+def text_names_title(full_text: str, title: str) -> bool:
+    """Whether an extracted paper's first page carries `title` — is this PDF the paper we asked for?
+
+    DR-165. Two retrieval paths accept a PDF without comparing it to anything: the rate-limit
+    fallback, which takes the arXiv link a web search surfaced, and the agentic hunt, which takes
+    whatever PDF the model fetched. For a paper that is not on arXiv (an IEEE circuits paper, say)
+    the top arXiv hit for its title is routinely a paper that CITES it, because its title is
+    printed in that paper's bibliography. Both paths filed such a citer as the paper's full text,
+    twice in a row, and the analysis then opened with "the supplied full text is a different
+    paper".
+
+    Word-level and order-aware rather than a bag of words: short generic titles ("Accelerator
+    Design using 3D Stacked Capacitorless DRAM for Large Language Models") share most of their
+    words with the abstract of any paper in the same area, so the words must appear IN ORDER inside
+    a window about the title's own length. Spacing is also tried away entirely, because pypdf often
+    drops the spaces in a large-font title line ("AcceleratorDesignusing3D…").
+
+    Two allowances come from running this over every corpus file of a real project: reading-list
+    titles often carry a trailing "(Hoffmann et al., 2022)", which is not part of the title; and a
+    paper's other version can carry a different title under the same system name ("GPipe: Easy
+    Scaling…" filed as "Gpipe: Efficient training…"), so a one-word "Name:" prefix found at the very
+    top of the PDF — the title line, above the authors — is accepted on its own. A citer does not
+    print the cited system's name there.
+
+    Answers True when the title gives nothing to check (empty, or only stopwords): this is a guard
+    against a wrong paper, and it must not refuse the reader's paper for a reason unrelated to that.
+    """
+    title = re.sub(r"\s*\([^()]*\)\s*$", "", title or "")
+    head = _title_words(full_text[:_TITLE_HEAD_CHARS])
+    name = re.match(r"^\s*([^\s:]+)\s*:", title)
+    if name:
+        name_words = _title_words(name.group(1))
+        if len(name_words) == 1 and len(name_words[0]) >= 3:
+            top = [w for w in head if not w.isdigit()][:_TITLE_NAME_HEAD_WORDS]
+            if name_words[0] in top:
+                return True
+    words = _title_words(title)
+    significant = [w for w in words if w not in _TITLE_STOPWORDS]
+    if not significant:
+        return True
+    if "".join(words) in "".join(head):
+        return True
+    needed = _TITLE_MIN_COVERAGE * len(significant)
+    head_significant = [w for w in head if w not in _TITLE_STOPWORDS]
+    span = len(significant) + max(2, len(significant) // 2)
+    # A title word absent from the head can never match, so only windows starting at a title word
+    # need scoring — which keeps this linear-ish in practice on a 4000-character head.
+    title_set = set(significant)
+    for start, word in enumerate(head_significant):
+        if word not in title_set:
+            continue
+        window = head_significant[start:start + span]
+        matched = sum(block.size for block in SequenceMatcher(
+            None, significant, window, autojunk=False).get_matching_blocks())
+        if matched >= needed:
+            return True
+    return False
 
 
 def _replace_unpaired_surrogates(text: str) -> str:
@@ -386,18 +468,30 @@ def _fetch(url: str) -> bytes:
         raise RetrievalError(f"Download failed for {url}: {e}") from e
 
 
-def _arxiv_id_via_web(title: str) -> str | None:
-    """Rate-limit fallback: when the arXiv query API is throttled, find the paper's arXiv id
-    with the web-search chain instead (research_tools; Firecrawl et al.). The PDF host
+#: How many of the arXiv ids a web search surfaced are worth downloading to find the paper. Each is
+#: a full PDF download; the right paper, when it is on arXiv at all, is near the top.
+_MAX_WEB_ARXIV_IDS = 3
+
+
+def _arxiv_ids_via_web(title: str) -> list[str]:
+    """Rate-limit fallback: when the arXiv query API is throttled, find candidate arXiv ids for
+    the paper with the web-search chain instead (research_tools; Firecrawl et al.). The PDF host
     (arxiv.org) is separate infrastructure from the query API (export.arxiv.org) and is
-    typically still reachable, so an id is all we need to proceed."""
+    typically still reachable, so an id is all we need to proceed.
+
+    CANDIDATES, in the order the search ranked them — not an answer. A search for a title that is
+    not on arXiv still returns arXiv pages: the papers that cite it (DR-165). The caller downloads
+    each and keeps only one whose first page names the title."""
     try:
         from . import research_tools  # lazy: keeps retriever free of the tools layer otherwise
         out = research_tools.web_search(f"arXiv page for the paper: {title}", [f"{title} arxiv"])
     except Exception:
-        return None
-    m = re.search(r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})", out)
-    return m.group(1) if m else None
+        return []
+    ids: list[str] = []
+    for m in re.finditer(r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})", out):
+        if m.group(1) not in ids:
+            ids.append(m.group(1))
+    return ids[:_MAX_WEB_ARXIV_IDS]
 
 
 
@@ -621,23 +715,28 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         # Query API throttled/down — try to locate the id via web search and go straight to
         # the (separately-hosted) PDF. Re-raise the original, actionable error if that fails.
         #
-        # Not for a DOI, though. This branch takes whatever the web search surfaced and files it
-        # WITHOUT comparing titles at all, which is an accepted trade for a free-text search and
-        # the exact hazard the DOI lane exists to avoid: a DOI names one specific work, so a
-        # plausible-looking arXiv paper retrieved in its place is worse than saying we failed.
-        # Kamil's own paper is not on arXiv, so this is the case that would mis-file, not a
-        # hypothetical one.
+        # Not for a DOI, though. The web search has no metadata to compare against — only the
+        # downloaded text, checked below — and a DOI names one specific work, so a plausible-
+        # looking arXiv paper retrieved in its place is worse than saying we failed. Kamil's own
+        # paper is not on arXiv, so this is the case that would mis-file, not a hypothetical one.
         if doi_failure:
             # `from None`: the throttle is not why the DOI failed — no copy of it was reachable —
             # and chaining would point the reader's error at an unrelated rate limit.
             raise doi_failure from None
-        aid = _arxiv_id_via_web(title)
-        if not aid:
-            raise
-        data = _fetch(f"https://arxiv.org/pdf/{aid}")
-        return {"full_text": _extract_pdf(data),
-                "arxiv_id": aid, "source": f"https://arxiv.org/abs/{aid}",
-                "matched_title": title, "score": 0.9, "pdf_bytes": data}
+        # DR-165: every candidate must name the title on its first page. This branch used to file
+        # the first arXiv link the search returned, and for two IEEE papers in a row that link was
+        # a paper CITING the one asked for — filed as its full text with nothing to say so.
+        for aid in _arxiv_ids_via_web(title):
+            try:
+                data = _fetch(f"https://arxiv.org/pdf/{aid}")
+                full_text = _extract_pdf(data)
+            except RetrievalError:
+                continue
+            if text_names_title(full_text, title):
+                return {"full_text": full_text,
+                        "arxiv_id": aid, "source": f"https://arxiv.org/abs/{aid}",
+                        "matched_title": title, "score": 0.9, "pdf_bytes": data}
+        raise
     if not candidates:
         raise doi_failure or RetrievalError(
             "No arXiv match. This paper may not be on arXiv (e.g. an OSDI/SOSP-only paper). "
