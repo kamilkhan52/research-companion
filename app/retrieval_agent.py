@@ -90,6 +90,12 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
             text = retriever.extract_pdf_bytes(data)
         except retriever.RetrievalError as e:
             return f"PDF unusable: {e}"
+        # DR-165: a PDF that downloads is not yet the paper. Searching a title that is not on
+        # arXiv surfaces the papers that CITE it, and the hunt filed one of those as the full text.
+        # Told as a failure, so the model moves on to its next candidate.
+        if not retriever.text_names_title(text, title):
+            return ("Wrong paper: this PDF's first page does not carry the requested title — it "
+                    "is a different paper (often one that cites it). Try another candidate.")
         holder["full_text"] = text
         holder["source"] = url
         return f"SUCCESS: extracted {len(text)} characters from {url}"

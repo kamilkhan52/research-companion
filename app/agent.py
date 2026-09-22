@@ -457,7 +457,7 @@ NARRATION_SECTION_CHARS = 9_000
 #: COUNT is what bounds the wall clock and the spend of one pathological response; past this
 #: the sections grow instead of multiplying.
 #:
-#: **It is not the bound on narration CALLS, and has not been since DR-163.** A section that
+#: **It is not the bound on narration CALLS, and has not been since DR-166.** A section that
 #: comes back compressed is narrated once more, so the call bound is `2 *` this — twelve, in
 #: the worst case where every section fails its fidelity check. The wall clock stays bounded by
 #: `NARRATION_TOTAL_TIMEOUT_S` regardless, because a retry is only dispatched while that
@@ -475,7 +475,7 @@ NARRATION_TOTAL_TIMEOUT_S = 900.0
 #: or a code block with no prose around it narrates BADLY — the model has nothing to speak the
 #: symbols as. Keeping a span whole must not turn it into a section by itself.
 NARRATION_MIN_SECTION_RATIO = 0.1
-#: DR-163. Sectioning lowered the CHANCE of the collapse DR-153 measured; it did not remove it,
+#: DR-166. Sectioning lowered the CHANCE of the collapse DR-153 measured; it did not remove it,
 #: and its row says so. This is the check that turns "the transcript closely matches the written
 #: response" from a hope into something the pipeline notices: a passage narrated to less than
 #: this fraction of its own SPEAKABLE length (see `_speakable_length` — markdown scaffolding and
@@ -695,7 +695,7 @@ def _narration_is_faithful(source: str, spoken: str) -> bool:
     """Whether one narrated passage kept its source's content, by the single signal that
     separated DR-153's failure from every healthy pair beside it: how much of it came back.
 
-    This is a screen, not a proof, and the difference matters for what DR-163 can claim: a
+    This is a screen, not a proof, and the difference matters for what DR-166 can claim: a
     transcript that REORDERS its source, or substitutes content of the same size, passes. Even
     DR-153's own "merged and re-said" shape passes above the threshold. What it catches is the
     collapse — the transcript that came back a fraction of the passage.
@@ -732,7 +732,7 @@ def _narrate_faithfully(text: str, *, model: str | None, section: tuple[int, int
                         unit: str, ticket_covers_first: bool,
                         may_retry: Callable[[], bool]) -> str:
     """Narrate one passage, and narrate it once more if the first transcript came back
-    compressed (DR-163).
+    compressed (DR-166).
 
     The retry is bounded and optional by construction: at most one per passage, skipped
     entirely when `may_retry` says the job is cancelled or out of wall clock, and the longer of
@@ -798,7 +798,7 @@ def narrate(canonical_text: str, *, unit_id: str | None = None,
 
     Every passage — a section, or the whole response on the single-call path — is checked
     against its own source before it is accepted, and narrated once more if it came back
-    compressed (DR-163). The retry is an EXTRA call beyond what the ticket reserved, so it
+    compressed (DR-166). The retry is an EXTRA call beyond what the ticket reserved, so it
     holds for itself through `per_unit` on both paths, including the single-call one where the
     first attempt does not. It also runs under the same total deadline on both paths: the
     single-call path had no wall-clock bound at all while it was one unconditional call, and a

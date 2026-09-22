@@ -24,7 +24,7 @@ def _prompts_and_model(monkeypatch):
 
 
 #: A stand-in for a narration model that OBEYS the prompt. It has to be length-proportional
-#: rather than a fixed stub, because DR-163's fidelity guard re-dispatches a passage that comes
+#: rather than a fixed stub, because DR-166's fidelity guard re-dispatches a passage that comes
 #: back far shorter than its source — a fake returning twenty characters for a nine-thousand
 #: character section is exactly the failure being guarded, and would make every call count
 #: below a measurement of the guard instead of of sectioning.
@@ -237,7 +237,7 @@ def test_a_budget_refusal_mid_narration_does_not_return_half(monkeypatch):
 def test_an_empty_section_is_an_error_not_a_silent_gap(monkeypatch):
     """A section the model never answers ends the narration, and a second silence at the same
     section does not change that. The retry happening first is asserted here too — without it
-    this test passes with DR-163's guard removed entirely, which is how a guard gets merged
+    this test passes with DR-166's guard removed entirely, which is how a guard gets merged
     alongside a test that stopped guarding it."""
     attempts: list[int] = []
 
@@ -341,7 +341,7 @@ def test_a_cancel_stops_the_remaining_sections(monkeypatch):
     assert len(calls) == 1
 
 
-# ---- DR-163: a compressed transcript is narrated again ------------------------------------
+# ---- DR-166: a compressed transcript is narrated again ------------------------------------
 #
 # Kamil's second sighting of DR-153's symptom, on /paper/stratum, after sectioning shipped.
 # Sectioning lowered the CHANCE of the collapse; these pin the check that notices it happened.
