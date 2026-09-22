@@ -231,7 +231,7 @@ def test_a_throttled_arxiv_api_does_not_let_a_web_hit_answer_a_doi(monkeypatch):
         raise RetrievalError("arXiv query API is rate limiting us (429)")
 
     monkeypatch.setattr(retriever, "search_arxiv", throttled)
-    monkeypatch.setattr(retriever, "_arxiv_id_via_web",
+    monkeypatch.setattr(retriever, "_arxiv_ids_via_web",
                         lambda title: pytest.fail("a DOI must not be answered by a web-search id"))
     monkeypatch.setattr(retriever, "_fetch",
                         lambda url: pytest.fail("nothing may be downloaded on this path"))
@@ -249,9 +249,10 @@ def test_the_web_search_fallback_still_serves_an_ordinary_title_search(monkeypat
         raise RetrievalError("arXiv query API is rate limiting us (429)")
 
     monkeypatch.setattr(retriever, "search_arxiv", throttled)
-    monkeypatch.setattr(retriever, "_arxiv_id_via_web", lambda title: "2401.00009")
+    monkeypatch.setattr(retriever, "_arxiv_ids_via_web", lambda title: ["2401.00009"])
     monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF-ok")
-    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Full text. " * 60)
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data: "A Paper Not On The DOI Lane. Full text. " * 60)
 
     out = retriever.retrieve("A Paper Not On The DOI Lane")
     assert out["arxiv_id"] == "2401.00009"
