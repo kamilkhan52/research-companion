@@ -70,6 +70,9 @@ TITLE_TRIAGE_MAX_TOKENS = 8_000
 ABSTRACT_SCORING_MAX_TOKENS = 8_000
 ABSTRACT_CHARS_FOR_SCREENING = 1100
 MAX_AFTER_TITLE_TRIAGE = 400
+#: The part of that cap reserved for protected title DROPS (see `_cap_with_protections`): enough
+#: to keep the false-negative audit measurable, small enough that drops cannot crowd out keeps.
+TITLE_DROP_SHARE = 0.15
 MAX_AFTER_ABSTRACTS = 60
 
 # Grounded channels earn a bounded bonus: evidence tied to THIS project's corpus should outrank a
@@ -118,7 +121,9 @@ CheapLlmFn = Callable[[str, str, int], str]
 RecallFn = Callable[[list], tuple[list[dict], dict]]
 WideRecallFn = Callable[[list[dict], list[dict], dict], tuple[list[dict], dict, list[dict]]]
 
-CHECKPOINT_PIPELINE = f"wide-recall-v1:{CHEAP_MODEL}"
+# v2 (DR-164): triage/scoring now read replies by content and cap keeps-first, so a v1 snapshot
+# resumed at `triaged` or `scored` would re-serve the misread verdicts and year-as-score rows.
+CHECKPOINT_PIPELINE = f"wide-recall-v2:{CHEAP_MODEL}"
 
 
 class DiscoveryError(Exception):
@@ -986,6 +991,34 @@ def _title_protections(candidates: list[dict], profile: str) -> dict[int, int]:
 
 def _cap_with_protections(candidates: list[dict], limit: int,
                           protected: dict[int, int]) -> list[dict]:
+    """Cap the title survivors: what the title stage KEPT first, protected drops in a reserved share.
+
+    Protection exists to stop a title DROP from being final. It was never meant to rank a dropped
+    paper above a kept one, but ordering the cap purely by protection priority did exactly that —
+    DR-164's replay of a real run: 296 of 400 slots went to title-dropped papers while 66 of the
+    78 on-topic keeps (hybrid-bonded DRAM, for a hybrid-bonded-DRAM goal) never reached scoring.
+    Drops still get `TITLE_DROP_SHARE` of the cap, highest protection first, plus any capacity
+    the keeps leave unused. That keeps the false-negative audit fed with the drops that matter most
+    (grounded, well-cited). It does not guarantee slots to the priority-10 random sample, which
+    only reaches scoring when fewer higher-priority drops compete.
+    """
+    dropped = [candidate for candidate in candidates if candidate.get("screen_protected")]
+    kept = [candidate for candidate in candidates if not candidate.get("screen_protected")]
+    reserve = min(len(dropped), math.ceil(limit * TITLE_DROP_SHARE))
+    selected = _select_by_protection(kept, limit - reserve, protected)
+    selected.extend(_select_by_protection(dropped, limit - len(selected), protected))
+    if len(selected) < limit:
+        chosen = {id(candidate) for candidate in selected}
+        selected.extend(_select_by_protection(
+            [candidate for candidate in kept if id(candidate) not in chosen],
+            limit - len(selected), protected))
+    return selected
+
+
+def _select_by_protection(candidates: list[dict], limit: int,
+                          protected: dict[int, int]) -> list[dict]:
+    if limit <= 0:
+        return []
     input_order = {id(candidate): index for index, candidate in enumerate(candidates)}
     protected_rows = [candidate for candidate in candidates if id(candidate) in protected]
     protected_rows.sort(key=lambda candidate: (
@@ -1000,6 +1033,69 @@ def _cap_with_protections(candidates: list[dict], limit: int,
         remainder = [candidate for candidate in candidates if id(candidate) not in selected_ids]
         selected.extend(_interleave_by_lane(remainder, limit - len(selected)))
     return selected
+
+
+#: How the ledger records an abstract answer that carried a score but no recognisable role.
+SCORE_ONLY_ROLE = "SCORE-ONLY"
+
+#: The role vocabulary both screening prompts ask for. Also the test for "this field IS the answer".
+SCREEN_ROLES = frozenset({"FOUNDATION", "METHOD", "SURVEY", "APPLICATION", "BENCHMARK",
+                          "ADJACENT", "OFF-TOPIC"})
+
+
+def _screen_role(value: str) -> str:
+    """A role field in canonical form, or "" when it is not one of `SCREEN_ROLES`."""
+    role = re.sub(r"[\s_]+", "-", str(value or "").strip().upper())
+    return role if role in SCREEN_ROLES else ""
+
+
+def _title_answer(fields: list[str]) -> list[str] | None:
+    """`[verdict, tag]` from a title-triage row, found by CONTENT rather than position.
+
+    DR-164: the cheap model echoes input columns ahead of its answer (`7|2015|D|OFF-TOPIC`), and
+    reading `fields[0]` took the year's first digit as the verdict. The verdict is the first field
+    that is K or D (or spelled out as KEEP/DROP); an echoed year or title never is. No such field
+    means no answer.
+    """
+    for index, field in enumerate(fields):
+        verdict = {"KEEP": "K", "DROP": "D"}.get(field.strip().upper(), field.strip().upper())
+        if verdict in {"K", "D"}:
+            tag = _screen_role(fields[index + 1]) if index + 1 < len(fields) else ""
+            return [verdict, tag]
+    return None
+
+
+def _abstract_answer(fields: list[str]) -> list[str] | None:
+    """`[relevance, role, note]` from an abstract-scoring row, found by CONTENT, or None.
+
+    Anchored on the ROLE, the one field whose vocabulary is closed: the score is the field just
+    before it and the note the one just after, so echoed year/title/venue/cites columns in front
+    are skipped (DR-164). A score outside 0-10 is not a score — the year that became 10/10 was
+    exactly that — so the row is rejected rather than clamped.
+
+    A row with no recognisable role still answers if its FIRST field is an in-range score: a
+    sloppy role word must not discard a good score and re-buy it every run, and an echoed year
+    can never pass that range test.
+    """
+    for index, field in enumerate(fields):
+        role = _screen_role(field)
+        if not role or index == 0:
+            continue
+        try:
+            relevance = float(fields[index - 1].strip())
+        except ValueError:
+            continue
+        if not 0.0 <= relevance <= 10.0:
+            continue
+        note = fields[index + 1] if index + 1 < len(fields) else ""
+        return [fields[index - 1].strip(), role, note]
+    try:
+        relevance = float(fields[0].strip())
+    except ValueError:
+        return None
+    if not 0.0 <= relevance <= 10.0:
+        return None
+    return [fields[0].strip(), "", fields[2] if len(fields) > 2 else ""]
 
 
 def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: dict | None = None,
@@ -1031,7 +1127,7 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: di
     values, audit = discovery_batch.run_batches(
         to_judge, batch_size=TITLE_BATCH_SIZE, system=system, render_item=render,
         llm_fn=lambda s, u: cheap_llm(s, u, TITLE_TRIAGE_MAX_TOKENS),
-        min_fields=1, stage="title_triage")
+        min_fields=1, stage="title_triage", normalise=_title_answer)
     audit["reused"] = len(cached_keep)
 
     verdicts = {id(c): (values.get(i), True) for i, c in enumerate(to_judge, 1)}
@@ -1046,9 +1142,11 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: di
         fields, _ = verdicts.get(id(candidate), (None, False))
         # No answer means KEEP: an unjudged paper is uncertainty, and the whole point of the
         # instruction "when uncertain, reply K" is that this stage must not delete on silence.
-        verdict = (fields[0].upper() if fields else "K")[:1]
-        tag = fields[1].upper() if fields and len(fields) > 1 else ""
+        verdict = fields[0] if fields else "K"
+        tag = fields[1] if fields and len(fields) > 1 else ""
         candidate["triage_verdict"] = verdict
+        # A default KEEP is not a verdict either: cached, it would be reused as one forever.
+        candidate["triage_unjudged"] = not fields
         if verdict == "D":
             if tag in {"FOUNDATION", "SURVEY"}:
                 protected[id(candidate)] = max(50, protected.get(id(candidate), 0))
@@ -1081,11 +1179,19 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
     for candidate in candidates:
         entry = discovery_ledger.get(ledger or {}, _candidate_key(candidate))
         cached = (entry or {}).get("abstract") if entry else None
+        # The role check also retires DR-164's poisoned entries: a misparsed row cached the year
+        # as relevance 10 and the paper's TITLE as its role, and reusing those would carry the
+        # bug past its fix for as long as the profile stays unchanged.
         if (isinstance(cached, dict) and cached.get("model") == cheap_model
                 and cached.get("profile_hash") == profile_hash
-                and isinstance(cached.get("relevance"), int)):
+                and isinstance(cached.get("relevance"), int)
+                and 0 <= cached["relevance"] <= 10
+                # A score-only answer is cached under an explicit marker, never as "": before
+                # DR-164 an UNANSWERED row was cached as 5/""/"", and reusing "" would serve those
+                # placeholders forever as real scores.
+                and (cached.get("role") == SCORE_ONLY_ROLE or _screen_role(cached.get("role") or ""))):
             candidate["relevance"] = float(cached["relevance"])
-            candidate["role"] = str(cached.get("role") or "")
+            candidate["role"] = _screen_role(cached.get("role") or "")
             candidate["screen_note"] = str(cached.get("note") or "")[:160]
             reused += 1
         else:
@@ -1109,15 +1215,18 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
     values, audit = discovery_batch.run_batches(
         candidates_to_score, batch_size=ABSTRACT_BATCH_SIZE, system=system, render_item=render,
         llm_fn=lambda s, u: cheap_llm(s, u, ABSTRACT_SCORING_MAX_TOKENS),
-        min_fields=2, stage="abstract_scoring")
+        min_fields=2, stage="abstract_scoring", normalise=_abstract_answer)
     audit["reused"] = reused
 
     for index, candidate in enumerate(candidates_to_score, 1):
         fields = values.get(index) or []
         candidate["relevance"] = _clamped_score(fields[0] if fields else None)
-        candidate["role"] = (fields[1].upper() if len(fields) > 1 else "") or ""
+        candidate["role"] = fields[1] if len(fields) > 1 else ""
         note = fields[2].strip() if len(fields) > 2 else ""
         candidate["screen_note"] = note[:160]
+        # The neutral 5.0 an unanswered paper ranks on is a placeholder, not a judgement, and must
+        # not be cached as one: the ledger would replay it on every rerun instead of asking again.
+        candidate["screen_unjudged"] = not fields
     audit["scored"] = sum(1 for c in candidates if c.get("relevance"))
     return candidates, audit
 
@@ -1132,7 +1241,11 @@ def _clamped_score(raw: object) -> float:
         value = float(str(raw).strip())
     except (TypeError, ValueError):
         return 5.0
-    return max(0.0, min(10.0, value))
+    # Out of range is a parse slip, not an emphatic score: clamping turned an echoed publication
+    # year into 10/10 and put ResNet at the top of a DRAM run (DR-164).
+    if not 0.0 <= value <= 10.0:
+        return 5.0
+    return value
 
 
 def _momentum_term(candidate: dict, cites: int) -> float:
@@ -1515,9 +1628,12 @@ def run_discovery(
         # The false-negative denominator is every protected title DROP we paid to abstract-score,
         # not merely the final 60. Computing after the final cap made the audit look healthier by
         # silently excluding reviewed drops that ranked below the display boundary.
+        # An unanswered drop sits at the neutral 5.0 and can never count as a false negative, so
+        # including it would only dilute the rate.
         audited_drops = [candidate for candidate in all_scored
                          if candidate.get("screen_protected")
-                         and candidate.get("triage_verdict") == "D"]
+                         and candidate.get("triage_verdict") == "D"
+                         and not candidate.get("screen_unjudged")]
         false_negatives = [candidate for candidate in audited_drops
                            if float(candidate.get("relevance") or 0) >= 7]
         abstract_audit["title_drop_audit"] = {
@@ -1887,15 +2003,18 @@ def _record_verdicts(ledger: dict, judged: list[dict], all_candidates: list[dict
         if entry is None:
             continue
         if kind == "cheap":
+            if candidate.get("triage_unjudged"):
+                continue
             discovery_ledger.record_cheap_verdict(
                 entry, verdict=(str(candidate.get("triage_verdict") or "")
                                 or ("K" if key in kept_keys else "D")),
                 tag=str(candidate.get("triage_tag") or ""), model=model,
                 profile=profile, today=today)
-        elif key in kept_keys and isinstance(candidate.get("relevance"), (int, float)):
+        elif (key in kept_keys and isinstance(candidate.get("relevance"), (int, float))
+              and not candidate.get("screen_unjudged")):
             discovery_ledger.record_abstract_score(
                 entry, relevance=int(candidate["relevance"]),
-                role=str(candidate.get("role") or ""),
+                role=str(candidate.get("role") or SCORE_ONLY_ROLE),
                 note=str(candidate.get("screen_note") or ""), model=model,
                 profile=profile, today=today)
 
