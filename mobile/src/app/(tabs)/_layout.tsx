@@ -1,5 +1,5 @@
-// Bottom tab navigation — the redesign's four top-level destinations (Figma DS
-// `Bottom Navigation`): Library · Discover · Notes · Map. A custom tab bar hosts the
+// Bottom tab navigation — the combined research surface has three top-level destinations:
+// Library · Notes · Map. A custom tab bar hosts the
 // NowPlaying mini-player directly above the tab row, so audio stays visible on every tab
 // without covering content; stack screens get the same card from the root layout instead.
 
@@ -15,9 +15,8 @@ import { Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
-const TAB_META: Record<string, { label: string; icon: IconName }> = {
+export const TAB_META: Record<string, { label: string; icon: IconName }> = {
   index: { label: 'Library', icon: 'book-open' },
-  discover: { label: 'Discover', icon: 'search' },
   notes: { label: 'Notes', icon: 'edit-3' },
   graph: { label: 'Map', icon: 'share-2' },
 };
@@ -81,7 +80,8 @@ export default function TabsLayout() {
         sceneStyle: { backgroundColor: t.bg },
       }}>
       <Tabs.Screen name="index" />
-      <Tabs.Screen name="discover" />
+      {/* Keep the old route as a redirect for saved links, but never as a fourth tab. */}
+      <Tabs.Screen name="discover" options={{ href: null }} />
       <Tabs.Screen name="notes" />
       <Tabs.Screen name="graph" />
     </Tabs>

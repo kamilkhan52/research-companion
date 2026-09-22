@@ -83,6 +83,7 @@ export const hideSuggestion = unexpected('hideSuggestion');
 export const unhideSuggestion = unexpected('unhideSuggestion');
 export const getGraph = unexpected('getGraph');
 export const getGraphRecommendations = unexpected('getGraphRecommendations');
+export const getNeighbourhood = unexpected('getNeighbourhood');
 export const getGraphAuthors = unexpected('getGraphAuthors');
 export const getRelated = unexpected('getRelated');
 export const startGraphBuild = unexpected('startGraphBuild');

@@ -43,9 +43,9 @@ test('keeps known-paper, device-PDF, and Discover entry paths together', async (
   expect(screen.getByLabelText('Paper title, DOI, or arXiv link')).toBeTruthy();
   expect(screen.getByLabelText('Upload a PDF from this device')).toBeTruthy();
 
-  await fireEventAsync.press(screen.getByLabelText('Explore papers with Discover'));
+  await fireEventAsync.press(screen.getByLabelText('Explore papers on Map'));
   expect(onClose).toHaveBeenCalledTimes(1);
-  expect(mockPush).toHaveBeenCalledWith('/discover');
+  expect(mockPush).toHaveBeenCalledWith(expect.stringMatching(/^\/graph\?explore=\d+$/));
 });
 
 test('a native picker failure stays recoverable in the Add paper sheet', async () => {

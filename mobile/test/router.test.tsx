@@ -7,6 +7,7 @@ import { renderRouter, screen } from 'expo-router/testing-library';
 import { StyleSheet, Text } from 'react-native';
 
 import LibraryScreen from '@/app/(tabs)/index';
+import DiscoverRedirect from '@/app/(tabs)/discover';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import { keys } from '@/api/queries';
@@ -28,6 +29,21 @@ function TestLayout() {
     </QueryClientProvider>
   );
 }
+
+function MapExploreRoute() {
+  const { explore } = useLocalSearchParams<{ explore?: string }>();
+  return <Text>Map explore {explore}</Text>;
+}
+
+test('an old Discover route redirects to the Map query surface', async () => {
+  const rendered = renderRouter(
+    { _layout: () => <Slot />, discover: DiscoverRedirect, graph: MapExploreRoute },
+    { initialUrl: '/discover' },
+  );
+
+  await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
+  expect(await screen.findByText('Map explore discover-route')).toBeTruthy();
+});
 
 test('renders an in-memory app route and navigates from the existing Library screen', async () => {
   const rendered = renderRouter(
@@ -69,7 +85,7 @@ test('a persisted hidden-title preference removes the whole Library header', asy
   )).toBeNull();
 });
 
-test('the active project pill opens Add paper and links onward to Discover', async () => {
+test('the active project pill opens Add paper and links onward to Map exploration', async () => {
   client.clear();
   await setBaseUrl('api.test');
   jest.mocked(api.listProjects).mockResolvedValueOnce({
@@ -102,7 +118,7 @@ test('the active project pill opens Add paper and links onward to Discover', asy
     {
       _layout: TestLayout,
       index: LibraryScreen,
-      discover: () => <Text>Discover route</Text>,
+      graph: MapExploreRoute,
     },
     { initialUrl: '/' },
   );
@@ -112,9 +128,9 @@ test('the active project pill opens Add paper and links onward to Discover', asy
   await waitFor(() => expect(screen.getByText('Add a paper')).toBeTruthy());
   expect(screen.getByLabelText('Upload a PDF from this device')).toBeTruthy();
 
-  await fireEventAsync.press(screen.getByLabelText('Explore papers with Discover'));
-  await waitFor(() => expect(rendered.getPathname()).toBe('/discover'));
-  expect(screen.getByText('Discover route')).toBeTruthy();
+  await fireEventAsync.press(screen.getByLabelText('Explore papers on Map'));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
+  expect(await screen.findByText(/Map explore \d+/)).toBeTruthy();
 });
 
 test('continues the latest unfinished session across projects', async () => {
