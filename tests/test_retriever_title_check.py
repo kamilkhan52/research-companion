@@ -56,13 +56,36 @@ def test_a_system_name_prefix_at_the_top_vouches_for_another_version_title():
 
 
 def test_the_name_prefix_is_found_past_a_column_of_review_line_numbers():
-    head = " ".join(str(i) for i in range(1, 111)) + " MemServe: Flexible Mem Pool Cunchen Hu"
+    head = (" ".join(str(i) for i in range(1, 111))
+            + " MemServe: Flexible Mem Pool for Building Disaggregated LLM Serving with Caching"
+            + " Cunchen Hu")
     assert text_names_title(head, "MemServe: Context Caching for Disaggregated LLM Serving")
 
 
 def test_a_system_name_mentioned_only_in_a_citer_abstract_does_not_vouch():
     head = FULL_STACK_HEAD.replace("We design", "Unlike Tasa, we design")
     assert not text_names_title(head * 2, "Tasa: Thermal-aware 3D-stacked architecture design")
+
+
+def test_a_follow_up_opening_on_the_same_system_name_needs_more_of_the_title():
+    # Review P2: the name alone vouched for "Orca-2" when "Orca: …" was asked for.
+    head = "Orca 2: Teaching Small Language Models How to Reason. Arindam Mitra Abstract …"
+    assert not text_names_title(head, "Orca: A Distributed Serving System for Generative Models")
+
+
+def test_a_short_title_is_not_matched_by_the_spaces_removed_comparison_deep_in_the_head():
+    # Review P2: "flashattention" squashed matched any citer mentioning it in its abstract.
+    head = ("PagedAttention for LLM Serving. Woosuk Kwon. Abstract: " + "filler words here. " * 20
+            + "Unlike FlashAttention, we page the KV cache. " + "More text. " * 50)
+    assert not text_names_title(head, "FlashAttention")
+
+
+def test_a_pasted_paragraph_as_title_stays_cheap():
+    import time
+    title = " ".join(f"word{i}" for i in range(400))
+    start = time.monotonic()
+    text_names_title(" ".join(f"word{i}" for i in range(0, 800, 2)), title)
+    assert time.monotonic() - start < 1.0
 
 
 def test_a_title_with_nothing_to_check_is_not_refused():

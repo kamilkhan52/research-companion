@@ -175,8 +175,20 @@ _TITLE_HEAD_CHARS = 4000
 #: The narrower window a title's "Name:" prefix must appear in to vouch for the paper alone: the
 #: title line and the author block, not the abstract, where a citer may well name the system.
 #: Counted in words with bare numbers skipped, because a review-copy PDF opens with a column of
-#: line numbers ("1 2 3 … 110") that would otherwise fill any character budget.
+#: line numbers ("1 2 3 … 110") that would otherwise fill any character budget. The name must sit
+#: in the first few (the title line, allowing for an arXiv stamp), and at least one more word of
+#: the title must appear within the wider block — a follow-up paper ("Orca-2", "Comparing vLLM and
+#: Orca") also opens on the name, so the name alone is not enough.
+_TITLE_NAME_FIRST_WORDS = 12
 _TITLE_NAME_HEAD_WORDS = 40
+#: Where the spaces-removed comparison may match, and the shortest title it applies to. pypdf's
+#: dropped spaces happen on the title line itself; searched across the whole head, a short
+#: squashed title ("flashattention", or "orca" inside "for ca…") matches almost any citer.
+_TITLE_SQUASHED_HEAD_CHARS = 500
+_TITLE_SQUASHED_MIN_CHARS = 20
+#: A reading-list "title" can be a pasted paragraph; the ordered-window scoring is quadratic in
+#: title length, so only its opening words are compared.
+_TITLE_MAX_WORDS = 40
 #: Words too common to count as evidence that a window of text is this title.
 _TITLE_STOPWORDS = frozenset(
     "a an and at by for from in into of on or the to using via with".split())
@@ -218,21 +230,29 @@ def text_names_title(full_text: str, title: str) -> bool:
     """
     title = re.sub(r"\s*\([^()]*\)\s*$", "", title or "")
     head = _title_words(full_text[:_TITLE_HEAD_CHARS])
+    words = _title_words(title)[:_TITLE_MAX_WORDS]
+    significant = [w for w in words if w not in _TITLE_STOPWORDS]
+    if not significant:
+        return True
     name = re.match(r"^\s*([^\s:]+)\s*:", title)
     if name:
         name_words = _title_words(name.group(1))
         if len(name_words) == 1 and len(name_words[0]) >= 3:
             top = [w for w in head if not w.isdigit()][:_TITLE_NAME_HEAD_WORDS]
-            if name_words[0] in top:
+            rest = set(significant) - set(name_words)
+            if (name_words[0] in top[:_TITLE_NAME_FIRST_WORDS]
+                    and len(rest & set(top)) >= min(2, len(rest))):
                 return True
-    words = _title_words(title)
-    significant = [w for w in words if w not in _TITLE_STOPWORDS]
-    if not significant:
-        return True
-    if "".join(words) in "".join(head):
+    squashed = "".join(words)
+    if len(squashed) >= _TITLE_SQUASHED_MIN_CHARS and squashed in "".join(
+            _title_words(full_text[:_TITLE_SQUASHED_HEAD_CHARS])):
         return True
     needed = _TITLE_MIN_COVERAGE * len(significant)
     head_significant = [w for w in head if w not in _TITLE_STOPWORDS]
+    if len(significant) < 3:
+        # One or two words are too little evidence to find anywhere in an abstract ("Unlike
+        # FlashAttention, …"): a title that short must be on the title line itself.
+        head_significant = head_significant[:_TITLE_NAME_HEAD_WORDS]
     span = len(significant) + max(2, len(significant) // 2)
     # A title word absent from the head can never match, so only windows starting at a title word
     # need scoring — which keeps this linear-ish in practice on a 4000-character head.
