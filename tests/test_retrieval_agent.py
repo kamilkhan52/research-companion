@@ -30,7 +30,8 @@ def test_hunt_success_streams_tools_and_returns_text(monkeypatch):
                         lambda url, **kw: retrieval_agent.safe_fetch.FetchResult(
                             url=url, status_code=200, headers=httpx.Headers({}),
                             content=b"%PDF-1.4 fake"))
-    monkeypatch.setattr(retriever, "extract_pdf_bytes", lambda data: "The paper text. " * 50)
+    monkeypatch.setattr(retriever, "extract_pdf_bytes",
+                        lambda data: "Some OSDI Paper. " + "The paper text. " * 50)
 
     calls = {"n": 0}
 
@@ -48,8 +49,31 @@ def test_hunt_success_streams_tools_and_returns_text(monkeypatch):
     assert tool["name"] == "fetch_pdf" and "usenix.org" in tool["detail"]
     result = events[-1]
     assert result["type"] == "result" and result["ok"]
-    assert result["full_text"].startswith("The paper text.")
+    assert result["full_text"].startswith("Some OSDI Paper.")
     assert result["source"] == "https://usenix.org/system/files/paper.pdf"
+
+
+def test_fetch_pdf_refuses_a_pdf_that_is_a_different_paper(monkeypatch):
+    """DR-165: the hunt filed a paper CITING the requested one as its full text. A PDF whose first
+    page does not carry the title is reported back as a failure, so the model tries its next
+    candidate and nothing reaches the holder."""
+    monkeypatch.setattr(retrieval_agent.safe_fetch, "fetch",
+                        lambda url, **kw: retrieval_agent.safe_fetch.FetchResult(
+                            url=url, status_code=200, headers=httpx.Headers({}),
+                            content=b"%PDF-1.4 fake"))
+    monkeypatch.setattr(retriever, "extract_pdf_bytes",
+                        lambda data: "Tasa: Thermal-aware 3D-Stacked Architecture. " * 5
+                        + "Body. " * 2000 + "[18] A 135 GBps/Gbit Stacked Embedded DRAM")
+    holder: dict = {}
+    stub_model = FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(content="x")]))
+    agent = retrieval_agent.build_hunt_agent(
+        "A 135 GBps/Gbit 0.66 pJ/bit Stacked Embedded DRAM with Multilayer Arrays", holder,
+        model=stub_model)
+    fetch_pdf = next(t for t in agent._function_toolset.tools.values()
+                     if t.name == "fetch_pdf").function
+    result = fetch_pdf("https://arxiv.org/pdf/2508.07252")
+    assert result.startswith("Wrong paper")
+    assert not holder
 
 
 def test_hunt_failure_reports_not_ok():
