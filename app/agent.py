@@ -459,10 +459,13 @@ NARRATION_SECTION_CHARS = 9_000
 #:
 #: **It is not the bound on narration CALLS, and has not been since DR-166.** A section that
 #: comes back compressed is narrated once more, so the call bound is `2 *` this — twelve, in
-#: the worst case where every section fails its fidelity check. The wall clock stays bounded by
-#: `NARRATION_TOTAL_TIMEOUT_S` regardless, because a retry is only dispatched while that
-#: deadline holds; the spend is what doubles, and it doubles only on a response the model is
-#: demonstrably mangling.
+#: the worst case where every section fails its fidelity check. The wall clock is still
+#: bounded: a retry is only dispatched while `NARRATION_TOTAL_TIMEOUT_S` holds, and the time
+#: it takes is then ADDED to that deadline so the sections still to come are not charged for
+#: it (a retry that used up the next section's budget would fail a narration that would have
+#: finished without it — the third review of #530 found exactly that). So the true bound is
+#: the total timeout plus up to `NARRATION_MAX_SECTIONS` retries, each under the per-call
+#: ceiling. The spend doubles too, and only on a response the model is demonstrably mangling.
 NARRATION_MAX_SECTIONS = 6
 #: Total wall clock for a sectioned narration, checked before each section is DISPATCHED — so
 #: the true bound is this plus however long the last section takes, which is `llm.complete`'s
@@ -730,9 +733,11 @@ def _narration_lease(unit: str | None, model: str | None):
 
 def _narrate_faithfully(text: str, *, model: str | None, section: tuple[int, int] | None,
                         unit: str, ticket_covers_first: bool,
-                        may_retry: Callable[[], bool]) -> str:
+                        may_retry: Callable[[], bool]) -> tuple[str, float]:
     """Narrate one passage, and narrate it once more if the first transcript came back
-    compressed (DR-166).
+    compressed (DR-166). Returns the transcript and the seconds the retry took (0 when none
+    was dispatched), so the caller can keep that time off the deadline the OTHER passages run
+    under: the retry is optional work, and it must not spend the next section's budget.
 
     The retry is bounded and optional by construction: at most one per passage, skipped
     entirely when `may_retry` says the job is cancelled or out of wall clock, and the longer of
@@ -750,17 +755,19 @@ def _narrate_faithfully(text: str, *, model: str | None, section: tuple[int, int
     with _narration_lease(None if ticket_covers_first else unit, model):
         part = _narrate_one(text, model=model, section=section)
     if _narration_is_faithful(text, part) or not may_retry():
-        return part
+        return part, 0.0
     log.warning("narration compressed, retrying section=%s source_chars=%d spoken_chars=%d",
                 f"{section[0]}/{section[1]}" if section else "whole",
                 _speakable_length(text), _speakable_length(part))
+    started = time.monotonic()
     try:
         with _narration_lease(unit, model):
             second = _narrate_one(text, model=model, section=section, insist=True)
     except (AgentError, quotas.QuotaError) as exc:
         log.warning("narration retry failed, keeping the first transcript: %s", exc)
-        return part
-    return second if _speakable_length(second) > _speakable_length(part) else part
+        return part, max(0.0, time.monotonic() - started)
+    elapsed = max(0.0, time.monotonic() - started)
+    return (second if _speakable_length(second) > _speakable_length(part) else part), elapsed
 
 
 def _narrate_one(text: str, *, model: str | None, section: tuple[int, int] | None,
@@ -802,7 +809,10 @@ def narrate(canonical_text: str, *, unit_id: str | None = None,
     holds for itself through `per_unit` on both paths, including the single-call one where the
     first attempt does not. It also runs under the same total deadline on both paths: the
     single-call path had no wall-clock bound at all while it was one unconditional call, and a
-    second call is exactly what such a bound is for.
+    second call is exactly what such a bound is for. The deadline gates whether a retry is
+    DISPATCHED; the time a retry then takes is added back to the deadline, so a slow retry
+    cannot push a later section past it and fail a narration that would have finished without
+    the guard (the guard may cost spend, never the job).
 
     `should_stop` is the caller's cancellation checkpoint, polled between sections and again
     before any retry. Without one, `audio_jobs.cancel_job`'s promise — at most one in-flight
@@ -816,28 +826,36 @@ def narrate(canonical_text: str, *, unit_id: str | None = None,
     model = settings.get("narration_model") or settings.get("model")
     sections = narration_sections(canonical_text)
     unit = unit_id or uuid.uuid4().hex
-    deadline = time.monotonic() + NARRATION_TOTAL_TIMEOUT_S
+    # Mutable on purpose: a retry moves it out by the time it took (see the loop below), and
+    # `may_retry` must read the moved value, not the one it closed over.
+    budget = {"deadline": time.monotonic() + NARRATION_TOTAL_TIMEOUT_S}
+
+    def may_retry() -> bool:
+        return ((should_stop is None or not should_stop())
+                and time.monotonic() <= budget["deadline"])
+
     if len(sections) == 1:
-        return _narrate_faithfully(
+        part, _ = _narrate_faithfully(
             sections[0], model=model, section=None, unit=unit, ticket_covers_first=True,
-            may_retry=lambda: ((should_stop is None or not should_stop())
-                               and time.monotonic() <= deadline))
+            may_retry=may_retry)
+        return part
     spoken: list[str] = []
     for index, section in enumerate(sections, start=1):
         if should_stop is not None and should_stop():
             raise AgentError("Narration was cancelled.")
-        if index > 1 and time.monotonic() > deadline:
+        if index > 1 and time.monotonic() > budget["deadline"]:
             raise AgentError(
                 f"Narration took too long: {index - 1} of {len(sections)} sections were spoken "
                 f"within {int(NARRATION_TOTAL_TIMEOUT_S)}s.")
         # A retry is only worth its wall clock while there is wall clock left: past the
         # deadline the compressed transcript is kept rather than spending the next section's
-        # budget re-reading this one.
-        part = _narrate_faithfully(
+        # budget re-reading this one. And a retry that IS dispatched pays for its own time:
+        # the deadline moves out by however long it took, so the sections still to come keep
+        # the budget they had before the guard intervened.
+        part, retry_seconds = _narrate_faithfully(
             section, model=model, section=(index, len(sections)), unit=unit,
-            ticket_covers_first=False,
-            may_retry=lambda: ((should_stop is None or not should_stop())
-                               and time.monotonic() <= deadline))
+            ticket_covers_first=False, may_retry=may_retry)
+        budget["deadline"] += retry_seconds
         if not part:
             raise AgentError(
                 f"The narration model returned nothing for section {index} of {len(sections)}.")

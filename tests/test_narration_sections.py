@@ -497,6 +497,63 @@ def test_a_narration_out_of_wall_clock_does_not_buy_a_retry(monkeypatch):
     assert len(calls) == 1, "no retry once the wall clock is gone"
 
 
+def _slow_calls(monkeypatch, *, seconds: float, reply):
+    """A model whose every call takes `seconds` of a simulated clock — the shape the third
+    Opus review of #530 reproduced: calls each under the per-call ceiling whose SUM nears the
+    total deadline, so a retry's time decides whether the last section is ever dispatched."""
+    now = {"t": 0.0}
+    calls: list[dict] = []
+
+    def fake_complete(messages, **kwargs):
+        calls.append({"messages": messages, **kwargs})
+        now["t"] += seconds
+        return reply(messages[-1]["content"])
+
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+    monkeypatch.setattr(agent.time, "monotonic", lambda: now["t"])
+    return calls, now
+
+
+def test_a_retry_does_not_spend_the_next_sections_deadline(monkeypatch):
+    """Four sections at 200s each fit the 900s total (800s). If sections 1 and 2 come back
+    compressed, their two retries add 400s; charging that against the shared deadline would
+    refuse section 4 at t=1000 and error a job that would have produced complete audio without
+    the guard. The retry's time is added back to the deadline instead, so the job completes —
+    with every section spoken, the compressed ones re-read."""
+    calls_seen = {"n": 0}
+
+    def reply(text: str) -> str:
+        # The fixture's sections are identical text, so route on call ORDER: call 1 is
+        # section 1's first attempt, call 2 its retry, call 3 section 2's first attempt,
+        # call 4 its retry, then sections 3 and 4 once each.
+        calls_seen["n"] += 1
+        return "It compresses. " if calls_seen["n"] in (1, 3) else _faithful(text)
+
+    assert agent.NARRATION_TOTAL_TIMEOUT_S == 900.0
+    calls, now = _slow_calls(monkeypatch, seconds=200.0, reply=reply)
+    _held(monkeypatch)
+    text = _long_text()
+    assert len(agent.narration_sections(text)) == 4
+
+    spoken = agent.narrate(text, unit_id="job-1")
+
+    assert len(calls) == 6, "four sections, two of them narrated twice"
+    assert now["t"] == 1200.0, "the wall clock really did pass the 900s total"
+    assert spoken.count("Spoken sentence.") > 0
+    assert "It compresses." not in spoken, "every compressed section was re-read"
+
+
+def test_a_slow_retry_still_cannot_start_a_section_past_the_moved_deadline(monkeypatch):
+    """The deadline moves by the retry's time and no more. A section that is late for reasons
+    other than a retry is still refused, so the total bound stays a bound."""
+    calls, now = _slow_calls(monkeypatch, seconds=350.0, reply=_faithful)
+    _held(monkeypatch)
+    with pytest.raises(agent.AgentError) as excinfo:
+        agent.narrate(_long_text(), unit_id="job-1")
+    assert "3 of 4" in str(excinfo.value)
+    assert len(calls) == 3
+
+
 # ---- what the first Opus review of #530 found -----------------------------------------------
 
 
@@ -658,9 +715,20 @@ def test_a_bounded_math_span_is_still_discounted(monkeypatch):
 
 def test_the_math_stripper_is_linear_too(monkeypatch):
     """Same quadratic shape as `_MD_LINK_RE`, for the same reason: a lazy span against a
-    delimiter that cannot pair with itself gives every opener a full scan."""
+    delimiter that cannot pair with itself gives every opener a full scan.
+
+    Asserted as SCALING, not as a wall-clock figure: the bounded window still costs up to
+    2,000 steps per opener, so 20k openers take about a second on a quiet machine and more on
+    a loaded one — an absolute bound flaked at load average 15. Quadratic growth would make
+    the 4x input cost about 16x; linear costs about 4x, and the bound below leaves room for
+    timer noise without letting a quadratic through."""
     import time as clock
 
-    started = clock.monotonic()
-    agent._speakable_length("\\[" * 20_000)
-    assert clock.monotonic() - started < 1.0
+    def measure(openers: int) -> float:
+        started = clock.monotonic()
+        agent._speakable_length("\\[" * openers)
+        return clock.monotonic() - started
+
+    small = max(measure(5_000), 1e-3)
+    large = measure(20_000)
+    assert large / small < 8, f"4x the openers cost {large / small:.1f}x the time"
