@@ -9,7 +9,7 @@ import { router, Slot, Tabs, useRouter } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 import { ScrollView } from 'react-native';
 
-import GraphScreen from '@/app/(tabs)/graph';
+import GraphScreen, { MAP_SEARCH_PLACEHOLDER } from '@/app/(tabs)/graph';
 import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
@@ -298,7 +298,12 @@ test('a built project renders one Map surface with the graph above the unified p
   );
 
   expect(await screen.findByTestId('combined-map-canvas')).toBeTruthy();
-  expect(screen.getByPlaceholderText('Type a topic or question')).toBeTruthy();
+  // DR-052 step 4: with a map, the ONE search box above it is the query editor. The explore
+  // entry opens that box; the list below keeps the saved query as a summary, with no second
+  // editor of its own.
+  expect(await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeTruthy();
+  expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+  expect(screen.getByText('Saved goal')).toBeTruthy();
   expect(await screen.findByText('Next Paper')).toBeTruthy();
   expect(screen.getByText('Project graph')).toBeTruthy();
   expect(screen.queryByLabelText('Recommendations')).toBeNull();
@@ -344,7 +349,9 @@ test('the explore landing stops following layout changes after the reader scroll
     session_state: null,
     arxiv_id: '',
   }]) as never);
-  jest.mocked(api.getGraph).mockResolvedValue(builtGraph());
+  // No map yet: there is no search box, so the landing is still the list's own editor below
+  // "Build map". With a map the entry opens the box instead (tested further down).
+  jest.mocked(api.getGraph).mockResolvedValue(emptyGraph(1));
 
   renderRouter(
     { _layout: TestLayout, graph: GraphScreen },
@@ -446,4 +453,112 @@ test('adding the first result keeps the rest of the paid search visible for this
   await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
   expect(await screen.findByText('Build map')).toBeTruthy();
   expect(screen.getByText('Second Result')).toBeTruthy();
+});
+
+
+// ---- DR-052 step 4: one search box ----------------------------------------------------------
+
+const KNOWN = {
+  slug: 'known-paper', title: 'Known Paper', group: 'Unsorted', list_status: 'unread',
+  cites: [], retrieved: true, has_notes: false, session_state: null, arxiv_id: '',
+};
+
+function twoNodeGraph(): GraphResponse {
+  const base = builtGraph();
+  return {
+    ...base,
+    graph: {
+      ...base.graph!,
+      nodes: [
+        ...base.graph!.nodes,
+        {
+          ...base.graph!.nodes[0], id: 'ext:hybrid', kind: 'external', slug: null,
+          title: 'Hybrid Bonding for Stacked DRAM', authors: ['C. Writer'], year: 2024,
+        },
+      ],
+    },
+  } as GraphResponse;
+}
+
+test('typing narrows the map, and Search runs Discover once with that text', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  // Closed by default: an idle map is not narrowed and offers no paid action.
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  expect(screen.queryByText('Search for papers')).toBeNull();
+
+  await fireEventAsync.changeText(box, 'hybrid bonding stacked DRAM for AI workloads');
+  // A topic, not a title fragment: it still finds the one map paper about it.
+  expect(await screen.findByText('1 on the map')).toBeTruthy();
+  // The default Significant view is not what a search shows, and the pill must not claim it.
+  expect(screen.getByText('All matches')).toBeTruthy();
+  expect(screen.queryByText('Significant')).toBeNull();
+  expect(api.startDiscovery).not.toHaveBeenCalled();
+
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+  expect(jest.mocked(api.startDiscovery).mock.calls[0]).toEqual(
+    expect.arrayContaining(['hybrid bonding stacked DRAM for AI workloads']),
+  );
+  // The map build's poll, the discovery poll and re-renders must not buy a second search.
+  act(() => { jest.runOnlyPendingTimers(); });
+  expect(api.startDiscovery).toHaveBeenCalledTimes(1);
+});
+
+test('the keyboard Search key submits the same way as the button', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  await fireEventAsync.changeText(box, 'stacked dram');
+  await fireEventAsync(box, 'submitEditing');
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+});
+
+test('a search that matches nothing on the map says so and still offers the wider search', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'protein folding',
+  );
+  expect(await screen.findByText(/Nothing on the map matches this search/)).toBeTruthy();
+  expect(screen.getByText('0 on the map')).toBeTruthy();
+  expect(screen.getByText('Search for papers')).toBeTruthy();
+});
+
+test('Edit on the saved search hands its text back to the one box', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: null,
+    goals: 'stacked dram',
+    result: {
+      goals: 'stacked dram', model: 'test', queries: [], candidate_count: 0, top_n: 5,
+      suggestions: [], in_library: [], generated_at: '2026-09-19T00:00:00Z',
+    },
+  } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+
+  await fireEventAsync.press(await screen.findByLabelText('Edit your search'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  expect(box.props.value).toBe('stacked dram');
+  expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
 });

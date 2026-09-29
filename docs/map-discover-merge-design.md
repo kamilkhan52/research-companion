@@ -239,6 +239,20 @@ no other step leaves the tab half-merged.
    route remains tab-owned during its redirect so it cannot flash a second mini-player.
 4. **Query ↔ graph highlighting.** Matching nodes light up; no new nodes.
 
+   **Implemented as one search box (Kamil's decision 1, 2026-09-13).** The box in the Map's
+   rail narrows the map while typing and runs the paid Discover search on submit — from the
+   keyboard's Search key or the explicit **Search for papers** button beside the match count.
+   The list below the graph no longer has an editor of its own when a map exists: it shows the
+   saved query, and **Edit** hands that text back to the box. Old `/discover` links and Add
+   paper's Explore action open the box. A project with papers but no map has no box, so its
+   list keeps its own editor.
+
+   Two choices worth stating. The map is NARROWED, not dimmed: his answer said "filters", and
+   the canvas pages by a visible-node limit that dimming would not reduce. And a search looks
+   across every paper on the map rather than only the default Significant view, with the pill
+   reading "All matches" while it does — a topic query is matched by words (every word for a
+   short query, most for a long one), since a whole sentence is never a substring of a title.
+
 ## Scope and settled surface mechanics
 
 **Mobile only.** The web SPA has its own `discover` view and hash route (`web/src/App.tsx`) and

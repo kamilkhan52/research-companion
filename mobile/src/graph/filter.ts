@@ -66,3 +66,32 @@ export function pageSignificant(ranked: GraphNode[], edges: GraphEdge[], limit: 
   }
   return out;
 }
+
+
+const QUERY_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'that', 'this', 'are', 'was', 'were', 'what', 'which',
+  'how', 'why', 'does', 'into', 'about', 'such', 'than', 'their', 'there', 'papers', 'paper',
+  'work', 'works', 'find', 'related', 'new', 'using', 'use', 'like',
+]);
+
+/** Whether a graph node matches the Map's search text (DR-052 step 4).
+ *
+ * The same box filters the map while typing and runs Discover on submit, so the text is often
+ * a TOPIC ("hybrid bonded 3D DRAM for AI workloads") rather than a fragment of one title. A
+ * plain substring test would empty the map for every such query. Order of tests:
+ * the whole text as a substring (the old behaviour, so a typed title fragment, author or year
+ * still narrows exactly); otherwise by words — every word for a short query, most of them for
+ * a long one, since no title repeats a whole sentence. */
+export function nodeMatchesQuery(node: GraphNode, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [node.title, ...node.authors, String(node.year ?? '')].join(' ').toLowerCase();
+  if (haystack.includes(q)) return true;
+  const words = Array.from(new Set(
+    q.split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2 && !QUERY_STOPWORDS.has(w)),
+  ));
+  if (words.length < 2) return false;
+  const hits = words.filter((w) => haystack.includes(w)).length;
+  const needed = words.length <= 3 ? words.length : Math.ceil(words.length * 0.6);
+  return hits >= needed;
+}
