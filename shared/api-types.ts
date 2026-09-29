@@ -1259,6 +1259,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/session/{slug}/reset_source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Source
+         * @description DR-167 — forget a paper's fetched text so it can be fetched (or uploaded) again.
+         *
+         *     Kamil, after the third paper in two days was filed with ANOTHER paper's full text: "clear
+         *     all wrong full texts. Also add an option to remove an existing PDF so that the user can
+         *     reset it for whatever reason." Once a paper is retrieved the setup surface — Fetch, link,
+         *     upload — is gone, so a wrong source had no in-app way out.
+         *
+         *     What goes: the corpus file (the text itself), its derived caches (cover, figures, the
+         *     graph's per-paper reference text — every one of them was computed FROM the wrong text),
+         *     the retained retrieval snapshot (the client reads `retrieved` off it on re-entry and would
+         *     keep showing "Full text ready"), and every discussion thread — a summary of the wrong paper
+         *     is not worth keeping, and the setup surface only renders for a paper with no discussion.
+         *     What stays: the reading-list entry (title, group, any pinned id), committed notes, and the
+         *     Project Notes — exactly what `clear_chats` and `remove_paper` keep, for the same
+         *     invariant-4 reasons; the client offers the notes retraction separately.
+         *
+         *     Destructive by design, so it takes the same posture as `clear_chats`: refused while a turn
+         *     is generating, an approval is in flight, or a retrieval is still running; done under the
+         *     paper's lock; and the deletion of git-tracked files (corpus, transcripts) is committed at
+         *     once with a pathspec limited to exactly those files, so a reset is recoverable from git
+         *     history rather than swept into the next unrelated approval.
+         */
+        post: operations["reset_source_api_projects__pid__session__slug__reset_source_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/chat/jobs/active/{slug}": {
         parameters: {
             query?: never;
@@ -4668,6 +4708,38 @@ export interface operations {
         };
     };
     clear_chats_api_projects__pid__session__slug__clear_chats_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_source_api_projects__pid__session__slug__reset_source_post: {
         parameters: {
             query?: never;
             header?: never;

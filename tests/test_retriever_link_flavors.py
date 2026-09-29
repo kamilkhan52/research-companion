@@ -95,7 +95,8 @@ def test_a_bare_id_still_falls_back_to_title_search(monkeypatch):
     monkeypatch.setattr(retriever, "_fetch",
                         lambda url: (_ for _ in ()).throw(RetrievalError("HTTP 404"))
                         if "9999" in url else b"%PDF-fake")
-    monkeypatch.setattr(retriever, "_extract_pdf", lambda data, **k: "Full text. " * 60)
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data, **k: "Some Title. Author. " + "Full text. " * 60)
     monkeypatch.setattr(retriever, "search_arxiv", lambda title: [
         {"arxiv_id": "2201.11705", "title": title, "score": 0.99,
          "pdf_url": "https://arxiv.org/pdf/2201.11705"}])

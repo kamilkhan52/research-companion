@@ -115,7 +115,9 @@ def test_an_unreachable_doi_falls_back_to_arxiv_under_the_dois_own_title(monkeyp
     })
     monkeypatch.setattr(retriever, "search_arxiv", fake_search)
     monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF-preprint")
-    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Full text. " * 60)
+    # DR-167: a title-search hit is filed only when its first page names the title searched.
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data: "New Computer Evaluation Metrics. " + "Full text. " * 60)
 
     out = retriever.retrieve("metrics paper", pdf_url=f"https://doi.org/{DOI}")
     assert searched == ["New Computer Evaluation Metrics"]
@@ -187,7 +189,8 @@ def test_openalex_being_unavailable_is_not_a_failed_retrieval(monkeypatch):
          "score": 0.99},
     ])
     monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF-ok")
-    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Full text. " * 60)
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data: "A Paper. Jane Author. " + "Full text. " * 60)
 
     out = retriever.retrieve("A Paper", pdf_url=f"https://doi.org/{DOI}")
     assert out["arxiv_id"] == "2401.00003"

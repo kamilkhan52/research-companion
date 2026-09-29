@@ -16,7 +16,10 @@ def test_bad_arxiv_id_falls_back_to_title_search(monkeypatch):
         return b"%PDF-fake-bytes"
 
     monkeypatch.setattr(retriever, "_fetch", fake_fetch)
-    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Full text. " * 60)
+    # DR-167: a title-search hit is filed only when its PDF names the title, so the fake PDF
+    # carries it — a bare "Full text." body would now (correctly) be sent to confirmation.
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data: "A Real Paper Title. Author. " + "Full text. " * 60)
     monkeypatch.setattr(retriever, "search_arxiv", lambda title, max_results=6: [
         {"arxiv_id": "2401.00001", "title": title, "abstract": "",
          "pdf_url": "https://arxiv.org/pdf/2401.00001", "score": 0.99},
@@ -25,7 +28,7 @@ def test_bad_arxiv_id_falls_back_to_title_search(monkeypatch):
     res = retriever.retrieve("A Real Paper Title", arxiv_id="bad-id")
     assert "bad-id" in fetched[0]                 # the wrong id was tried first
     assert res["arxiv_id"] == "2401.00001"        # then title search rescued it
-    assert res["full_text"].startswith("Full text.")
+    assert "Full text." in res["full_text"]
 
 
 def test_bad_arxiv_id_with_no_title_still_raises(monkeypatch):
@@ -155,3 +158,67 @@ def test_arxiv_get_exhausted_429s_raise_actionable_error(monkeypatch):
     # The message must tell the user what to do, not just echo an HTTP code.
     assert "rate-limiting" in str(e.value)
     assert "Provide a source" in str(e.value)
+
+
+# ---- DR-167: the title-search path checks the PDF too --------------------------------------
+#
+# The third wrong full text in two days arrived through the ORDINARY title search, the day after
+# DR-165 guarded the throttled fallback and the hunt: "Monolithically Stackable 1T1C 3-D DRAM:
+# A Technical Survey" scored past the 0.62 floor against arXiv's "Row Hammer Effect and Floating
+# Body Effect of Monolithic 3D Stackable 1T1C DRAM" — a different paper sharing most of the
+# title words — and the search path filed it with nothing to say so.
+
+_SURVEY = "Monolithically Stackable 1T1C 3-D DRAM: A Technical Survey"
+_ROW_HAMMER_HEAD = (
+    "Row Hammer Effect and Floating Body Effect of Monolithic 3D Stackable 1T1C DRAM Sungwon "
+    "Cho, Po-Kai Hsu, Kiseok Lee, Janak Sharda, Suman Datta, Shimeng Yu School of Electrical and "
+    "Computer Engineering, Georgia Institute of Technology, GA, USA Abstract— Monolithic 3D "
+    "stackable 1T1C DRAM technology is on the rise, with initial prototypes reported by the "
+    "industry. " + "This work presents a comprehensive reliability study. " * 40
+)
+
+
+def _search_returns(monkeypatch, title: str, score: float):
+    monkeypatch.setattr(retriever, "search_arxiv", lambda t, max_results=6: [
+        {"arxiv_id": "2511.00638", "title": title, "abstract": "",
+         "pdf_url": "https://arxiv.org/pdf/2511.00638", "score": score},
+    ])
+
+
+def test_a_search_match_whose_pdf_does_not_name_the_title_is_not_filed(monkeypatch):
+    _search_returns(monkeypatch, "Row Hammer Effect and Floating Body Effect of Monolithic 3D "
+                                 "Stackable 1T1C DRAM", 0.7)
+    monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF")
+    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: _ROW_HAMMER_HEAD)
+
+    res = retriever.retrieve(_SURVEY)
+
+    # Not a wrong paper, not an error: the reader's confirmation case, with the candidate's REAL
+    # title on the list and a reason that names it.
+    assert res.get("needs_confirmation") is True
+    assert "full_text" not in res
+    assert res["candidates"][0]["arxiv_id"] == "2511.00638"
+    assert "Row Hammer" in res["reason"]
+
+
+def test_a_search_match_whose_pdf_names_the_title_is_still_filed(monkeypatch):
+    _search_returns(monkeypatch, _SURVEY, 0.7)
+    monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF")
+    monkeypatch.setattr(retriever, "_extract_pdf",
+                        lambda data: _SURVEY + " Jane Author. Abstract. " + "Body. " * 80)
+
+    res = retriever.retrieve(_SURVEY)
+    assert res["arxiv_id"] == "2511.00638"
+    assert res["full_text"].startswith(_SURVEY)
+
+
+def test_a_reader_picked_candidate_is_the_override_and_is_not_checked(monkeypatch):
+    """DR-165's rule: an explicit id is the reader's own decision. Picking a candidate from the
+    confirmation list retrieves by id, so a paper the reader insists on is filed as asked."""
+    monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF")
+    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: _ROW_HAMMER_HEAD)
+    monkeypatch.setattr(retriever, "fetch_arxiv_metadata", lambda aid: None)
+
+    res = retriever.retrieve(_SURVEY, arxiv_id="2511.00638")
+    assert res["arxiv_id"] == "2511.00638"
+    assert res["full_text"] == _ROW_HAMMER_HEAD

@@ -654,6 +654,63 @@ export default function DiscussionScreen() {
   // confirmed destructively, and the Project Notes retraction is a SEPARATE offer that goes
   // through the notes agent's propose/review flow (invariant 4 — removing committed notes
   // content is a proposal the human approves, never a side effect).
+  // DR-167 — reset a paper's fetched text (a wrong paper was filed as its full text, or the
+  // reader wants a different copy). The backend keeps the entry and committed notes and clears
+  // the chats; the token tells the setup surface to forget the retrieval it was showing.
+  const [sourceResetToken, setSourceResetToken] = useState(0);
+  function confirmResetSource() {
+    if (!pid || !slug) return;
+    Alert.alert(
+      'Reset the fetched text?',
+      'The fetched text and this paper\u2019s discussion threads are removed so you can fetch it again, paste a link, or upload a PDF. The paper stays in the project and committed notes are kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset text',
+          style: 'destructive',
+          onPress: () => {
+            void api.resetSource(pid, slug).then(
+              async (result) => {
+                setSourceResetToken((n) => n + 1);
+                await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
+                await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+                void qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
+                void qc.invalidateQueries({ queryKey: keys.recentSessions });
+                if (result.contributed) offerNotesRetraction();
+              },
+              (e) => Alert.alert('Could not reset the text', (e as Error).message),
+            );
+          },
+        },
+      ],
+    );
+  }
+
+  function offerNotesRetraction() {
+    if (!pid || !slug) return;
+    Alert.alert(
+      'This paper contributed to Project Notes',
+      'Want to propose removing its contribution? You review the edit before anything changes.',
+      [
+        { text: 'Keep notes', style: 'cancel' },
+        {
+          text: 'Propose removal',
+          onPress: () => {
+            const title = session.data?.paper.title ?? slug;
+            void api.startNotesAgent(
+              pid,
+              'working',
+              `Remove the contribution of the paper \u201c${title}\u201d from the Project Notes. Take out claims, threads and references that exist only because of that paper, smooth the surrounding text, and keep anything other papers independently support.`,
+            ).then(
+              () => router.push('/notes/working'),
+              (e) => Alert.alert('Could not start the proposal', (e as Error).message),
+            );
+          },
+        },
+      ],
+    );
+  }
+
   function confirmClearChats() {
     if (!pid || !slug) return;
     Alert.alert(
@@ -671,29 +728,7 @@ export default function DiscussionScreen() {
                 await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
                 void qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
                 void qc.invalidateQueries({ queryKey: keys.recentSessions });
-                if (result.contributed) {
-                  Alert.alert(
-                    'This paper contributed to Project Notes',
-                    'Want to propose removing its contribution? You review the edit before anything changes.',
-                    [
-                      { text: 'Keep notes', style: 'cancel' },
-                      {
-                        text: 'Propose removal',
-                        onPress: () => {
-                          const title = session.data?.paper.title ?? slug;
-                          void api.startNotesAgent(
-                            pid,
-                            'working',
-                            `Remove the contribution of the paper “${title}” from the Project Notes. Take out claims, threads and references that exist only because of that paper, smooth the surrounding text, and keep anything other papers independently support.`,
-                          ).then(
-                            () => router.push('/notes/working'),
-                            (e) => Alert.alert('Could not start the proposal', (e as Error).message),
-                          );
-                        },
-                      },
-                    ],
-                  );
-                }
+                if (result.contributed) offerNotesRetraction();
               },
               (e) => Alert.alert('Could not clear chats', (e as Error).message),
             );
@@ -817,6 +852,9 @@ export default function DiscussionScreen() {
               onPickReadingMode={() => setModePickerOpen(true)}
               onRename={() => setRenameOpen(true)}
               onDelete={confirmDeletePaper}
+              showResetSource={!!session.data?.paper.retrieved}
+              resetSourceDisabled={stream.streaming}
+              onResetSource={confirmResetSource}
               showClearChats={hasSession}
               clearChatsDisabled={stream.streaming}
               onClearChats={confirmClearChats}
@@ -918,6 +956,7 @@ export default function DiscussionScreen() {
           bootstrapHadSetupSurface={bootstrapHadSetupSurface}
           retrieved={!!session.data?.paper.retrieved}
           titleConfirmed={!!session.data?.paper.title_confirmed}
+          sourceResetToken={sourceResetToken}
         />
       ) : (
         <DiscussionThread
@@ -1018,6 +1057,9 @@ export function OverflowMenu({
   onPickReadingMode,
   onRename,
   onDelete,
+  showResetSource = false,
+  resetSourceDisabled = false,
+  onResetSource = () => undefined,
   showClearChats,
   clearChatsDisabled,
   onClearChats,
@@ -1047,6 +1089,10 @@ export function OverflowMenu({
   onPickReadingMode: () => void;
   onRename: () => void;
   onDelete: () => void;
+  /** DR-167: the paper has fetched text that can be forgotten and fetched/uploaded again. */
+  showResetSource?: boolean;
+  resetSourceDisabled?: boolean;
+  onResetSource?: () => void;
   showClearChats: boolean;
   clearChatsDisabled: boolean;
   onClearChats: () => void;
@@ -1178,6 +1224,21 @@ export function OverflowMenu({
       onPress: onRename,
     },
   );
+  if (showResetSource) {
+    // DR-167: three papers were filed with another paper's text and had no way out once
+    // retrieved. Destructive (the chats go with the text), so it sits with Clear/Delete and
+    // the screen confirms first.
+    options.push({
+      key: 'reset-source',
+      title: 'Reset fetched text',
+      subtitle: 'Fetch, link or upload the paper again \u2014 notes are kept',
+      icon: 'refresh-ccw',
+      accent: t.danger,
+      disabled: resetSourceDisabled,
+      disabledHint: 'Wait for the current response to finish.',
+      onPress: onResetSource,
+    });
+  }
   if (showClearChats) {
     // DR-079: destructive, so it lives in the same section as Delete; the screen shows a
     // confirm before anything happens, and offers the Project Notes retraction separately.
@@ -3048,6 +3109,7 @@ export function ComposeFirst({
   onPickModel = () => undefined,
   bootstrapStartedAt,
   bootstrapHadSetupSurface = false,
+  sourceResetToken = 0,
 }: {
   pid: string;
   slug: string;
@@ -3067,6 +3129,9 @@ export function ComposeFirst({
   bootstrapStartedAt?: number;
   /** Whether stage one could already have painted this same setup-shaped placeholder. */
   bootstrapHadSetupSurface?: boolean;
+  /** DR-167: bumps when the reader reset the fetched text. The retrieval this surface was
+   *  showing is gone server-side, so forget it here too and open the own-source panel. */
+  sourceResetToken?: number;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3113,6 +3178,7 @@ export function ComposeFirst({
   const [uploadedReady, setUploadedReady] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [retrievalJob, setRetrievalJob] = useState<RetrievalJob | null>(null);
+  const [sourceReset, setSourceReset] = useState(false);
   const [titleDecisionConfirmed, setTitleDecisionConfirmed] = useState(titleConfirmed);
   const [updatingTitle, setUpdatingTitle] = useState(false);
   const autoStartAttempted = useRef(false);
@@ -3158,6 +3224,14 @@ export function ComposeFirst({
       void promptDraft.clear(opening.data.prompt);
     }
   }, [customPrompt, opening.data?.prompt, promptDraft.clear, promptDraft.submitted, sessionState]);
+
+  useEffect(() => {
+    if (!sourceResetToken) return;
+    setRetrievalJob(null);
+    setUploadedReady(false);
+    setLocalError(null);
+    setSourceReset(true);
+  }, [sourceResetToken]);
 
   // Reattach to a durable retrieval when this screen is reopened mid-fetch or after a failure.
   useEffect(() => {
@@ -3571,6 +3645,9 @@ export function ComposeFirst({
               <Text variant="caption" color={t.muted}>
                 {isRetrieved
                   ? 'The analyst can read and cite the paper.'
+                  : retrievalJob?.phase === 'confirmation' && retrievalJob.detail
+                    // DR-167: which paper was refused and why, not only that a choice is due.
+                    ? retrievalJob.detail
                   : retrievalJob?.status === 'running'
                     ? retrievalJob.detail || 'This continues if you leave the screen.'
                     : 'Fetch now, or Start reading to fetch automatically.'}
@@ -3635,7 +3712,8 @@ export function ComposeFirst({
             </View>
           ) : null}
 
-          {!isRetrieved && (retrieveError || candidates.length > 0 || template === 'custom') ? (
+          {!isRetrieved
+          && (retrieveError || candidates.length > 0 || template === 'custom' || sourceReset) ? (
             <View style={{ gap: space.sm }}>
               <Text variant="overline">Use your own source</Text>
               <TextInput

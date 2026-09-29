@@ -254,6 +254,21 @@ def read_retrieved_text(slug: str) -> str:
         return ""
 
 
+def forget_retrieval(slug: str) -> None:
+    """Drop the graph's own cached text for a paper (DR-167, a source reset).
+
+    Only the text file goes. The `retrievals` record stays: `graph.build` treats a `done`
+    record with no text as invalid and retrieves again, so removing the file alone is enough
+    to make the next build re-fetch, and it avoids a deletion-by-pop write that `save`'s
+    dirty-merge would not carry. The references extracted from a paper that HAD a corpus file
+    live in the graph's own sections and refresh on the next build, when the new corpus text's
+    key no longer matches."""
+    try:
+        _retrieved_text_file(slug).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 def set_graph(data: dict, graph_payload: dict) -> None:
     data["graph"] = graph_payload
     mark_dirty(data, "graph")

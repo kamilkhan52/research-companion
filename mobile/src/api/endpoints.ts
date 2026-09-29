@@ -463,6 +463,16 @@ export const clearChats = (pid: string, slug: string) =>
   apiPost<{ cleared: boolean; contributed: boolean }>(
     `${P(pid)}/session/${encodeURIComponent(slug)}/clear_chats`, {},
   );
+/** DR-167: forget a paper's fetched text so it can be fetched or uploaded again. Destructive
+ *  and confirmed by the caller: the corpus text, its derived caches, the retained retrieval
+ *  snapshot and every discussion thread go; the reading-list entry and committed notes stay.
+ *  The backend refuses (409) while a fetch or a turn is in flight and git-commits the tracked
+ *  deletions so they stay recoverable. `contributed` cues the same Project Notes retraction
+ *  offer `clearChats` makes. */
+export const resetSource = (pid: string, slug: string) =>
+  apiPost<{ reset: string; chats_cleared: boolean; contributed: boolean }>(
+    `${P(pid)}/session/${encodeURIComponent(slug)}/reset_source`, {},
+  );
 /** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
  *  the backend git-commits this change — the caller must have shown a confirm first. */
 export const removePaper = (pid: string, slug: string) =>

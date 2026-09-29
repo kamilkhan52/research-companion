@@ -21,7 +21,7 @@ from . import (
     spend_ceiling,
     store,
 )
-from .jobs import Job, JobRegistry, new_id, now_iso
+from .jobs import _PID_ATTR, Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
 RetrieveFn = Callable[[str, str | None, str | None], dict]
@@ -77,6 +77,27 @@ def snapshot(job_id: str) -> dict | None:
 
 def latest_for(slug: str) -> RetrievalJob | None:
     return _registry.latest_for(slug)
+
+
+def forget_for(slug: str) -> int:
+    """Drop every RETAINED (terminal) retrieval job for this paper in the active project.
+
+    A reset of the paper's source (DR-167) must take the retained snapshot with it: the client
+    reads ``latest_for`` on re-entry and treats ``retrieved=True`` on it as "this paper has
+    text", which would keep showing the fetched state after the file is gone. Running jobs are
+    never dropped — the caller refuses the reset while one is in flight — so this only ever
+    forgets what has already settled. Returns how many were forgotten."""
+    pid = config.active_project_id()
+    dropped = 0
+    with _registry.lock:
+        for job_id, job in list(_registry.jobs.items()):
+            if job.slug != slug or getattr(job, _PID_ATTR, None) != pid:
+                continue
+            if job.finished_at is None:
+                continue
+            del _registry.jobs[job_id]
+            dropped += 1
+    return dropped
 
 
 def set_analysis_job(job: RetrievalJob, chat_job_id: str) -> None:
@@ -146,6 +167,11 @@ def start_retrieval(
             with _registry.lock:
                 job.phase = "confirmation"
                 job.candidates = result.get("candidates") or []
+                # DR-167: why the best match was NOT filed (its first page does not name this
+                # paper). The client shows `detail` under the confirmation heading, so the
+                # reader learns which paper was refused rather than only that a choice is due.
+                if result.get("reason"):
+                    job.detail = str(result["reason"])
             return
 
         if result:

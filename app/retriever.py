@@ -765,6 +765,20 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     if best["score"] < min_score:
         return {"needs_confirmation": True, "candidates": candidates[:5], "title": title}
     data = _fetch(best["pdf_url"])
-    return {"full_text": _extract_pdf(data), "arxiv_id": best["arxiv_id"],
+    full_text = _extract_pdf(data)
+    # DR-167 (the third wrong full text, the day after DR-165 shipped): the title-similarity
+    # score is not identity. "Monolithically Stackable 1T1C 3-D DRAM: A Technical Survey" scored
+    # past the floor against "Row Hammer Effect and Floating Body Effect of Monolithic 3D
+    # Stackable 1T1C DRAM" — a different paper whose title shares most of the words — and this
+    # path filed it with nothing to say so. Same guard as the throttled fallback and the hunt:
+    # the PDF's first page must carry the requested title. When it does not, this is exactly
+    # the "confirm the paper you meant" case, so the reader sees the candidates (with their
+    # real titles) and the link/upload panel instead of a wrong paper. An id the reader picks
+    # from that list is their own override and is not checked (DR-165's rule).
+    if not text_names_title(full_text, title):
+        return {"needs_confirmation": True, "candidates": candidates[:5], "title": title,
+                "reason": (f"The closest arXiv match is \u201c{best['title']}\u201d, which does "
+                           f"not name this paper on its first page.")}
+    return {"full_text": full_text, "arxiv_id": best["arxiv_id"],
             "source": f"https://arxiv.org/abs/{best['arxiv_id']}",
             "matched_title": best["title"], "score": best["score"], "pdf_bytes": data}

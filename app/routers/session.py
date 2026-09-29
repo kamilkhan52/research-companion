@@ -611,39 +611,132 @@ def clear_chats(slug: str):
             raise HTTPException(
                 status_code=409,
                 detail="A response is still generating — stop it before clearing chats.")
-        # Only paths git already knows about may enter the commit's pathspec (project_split's
-        # lesson: a never-committed transcript errors with "pathspec did not match").
-        # quotePath=false: ls-files otherwise octal-quotes non-ASCII names, which would fail
-        # the exact-membership test and silently drop such a file from the pathspec.
-        tracked = set(
-            projects._git(pid, "-c", "core.quotePath=false", "ls-files").splitlines())
-        rels: list[str] = []
-        for jsonl, _branches in sessions.thread_storage_paths(slug):
-            try:
-                rel = str(jsonl.relative_to(root))
-            except ValueError:
-                continue
-            if rel in tracked:
-                rels.append(rel)
+        rels = _tracked_thread_files(pid, root, slug)
         sessions.remove_thread_storage(slug)
         sessions.drop_session(slug)
         # Git INSIDE the lock (Opus review, PR #406): after release, a fresh chat_start_job
         # can recreate one of these very paths, and `add -A -- <rel>` would then stage the
         # NEW transcript's content under a "Clear chats" message. The commit is also
         # pathspec-limited so a previous failure's staged leftovers can't ride along.
-        if rels:
-            try:
-                projects._git(pid, "add", "-A", "--", *rels)
-                projects._git(pid, "commit", "-q", "-m", f"Clear chats: {slug}", "--", *rels)
-            except projects.ProjectError:
-                # The clear itself succeeded; a failed bookkeeping commit leaves deletions
-                # staged/dirty for the next approval to sweep — annoying, not incorrect.
-                pass
+        _commit_deletions(pid, f"Clear chats: {slug}", rels)
     paper = store.get_paper(slug)
     return {
         "cleared": True,
         # The client's cue for the second, separate offer: propose retracting this paper's
         # contribution from the Project Notes (through the notes agent's review flow).
+        "contributed": bool(paper and paper.has_notes),
+    }
+
+
+def _tracked_paths(pid: str, root, paths) -> list[str]:
+    """Of `paths`, the ones git already knows about, as repo-relative pathspecs.
+
+    Only tracked paths may enter a deletion commit's pathspec (project_split's lesson: a
+    never-committed file errors with "pathspec did not match"). quotePath=false: ls-files
+    otherwise octal-quotes non-ASCII names, which would fail the exact-membership test and
+    silently drop such a file from the pathspec."""
+    from .. import projects
+
+    tracked = set(projects._git(pid, "-c", "core.quotePath=false", "ls-files").splitlines())
+    rels: list[str] = []
+    for path in paths:
+        try:
+            rel = str(path.relative_to(root))
+        except ValueError:
+            continue
+        if rel in tracked:
+            rels.append(rel)
+    return rels
+
+
+def _tracked_thread_files(pid: str, root, slug: str) -> list[str]:
+    return _tracked_paths(pid, root, [jsonl for jsonl, _b in sessions.thread_storage_paths(slug)])
+
+
+def _commit_deletions(pid: str, message: str, rels: list[str]) -> None:
+    """Commit the deletion of exactly `rels` (already removed from disk), or nothing.
+
+    A failed bookkeeping commit leaves the deletions staged/dirty for the next approval to
+    sweep — annoying, not incorrect — so it is swallowed; the removal itself already held."""
+    from .. import projects
+
+    if not rels:
+        return
+    try:
+        projects._git(pid, "add", "-A", "--", *rels)
+        projects._git(pid, "commit", "-q", "-m", message, "--", *rels)
+    except projects.ProjectError:
+        pass
+
+
+@project_router.post("/session/{slug}/reset_source")
+def reset_source(slug: str):
+    """DR-167 — forget a paper's fetched text so it can be fetched (or uploaded) again.
+
+    Kamil, after the third paper in two days was filed with ANOTHER paper's full text: "clear
+    all wrong full texts. Also add an option to remove an existing PDF so that the user can
+    reset it for whatever reason." Once a paper is retrieved the setup surface — Fetch, link,
+    upload — is gone, so a wrong source had no in-app way out.
+
+    What goes: the corpus file (the text itself), its derived caches (cover, figures, the
+    graph's per-paper reference text — every one of them was computed FROM the wrong text),
+    the retained retrieval snapshot (the client reads `retrieved` off it on re-entry and would
+    keep showing "Full text ready"), and every discussion thread — a summary of the wrong paper
+    is not worth keeping, and the setup surface only renders for a paper with no discussion.
+    What stays: the reading-list entry (title, group, any pinned id), committed notes, and the
+    Project Notes — exactly what `clear_chats` and `remove_paper` keep, for the same
+    invariant-4 reasons; the client offers the notes retraction separately.
+
+    Destructive by design, so it takes the same posture as `clear_chats`: refused while a turn
+    is generating, an approval is in flight, or a retrieval is still running; done under the
+    paper's lock; and the deletion of git-tracked files (corpus, transcripts) is committed at
+    once with a pathspec limited to exactly those files, so a reset is recoverable from git
+    history rather than swept into the next unrelated approval.
+    """
+    paper = store.get_paper(slug)
+    if paper is None:
+        raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
+    if not paper.retrieved:
+        raise HTTPException(status_code=409, detail="This paper has no fetched text to reset.")
+    if committer.approval_in_flight(slug):
+        raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
+    running = retrieval_jobs.latest_for(slug)
+    if running is not None and running.finished_at is None:
+        raise HTTPException(
+            status_code=409, detail="A fetch is still running — wait for it to finish.")
+    from .. import cover_jobs, figures, graph_store, projects
+
+    pid = config.active_project_id()
+    root = projects.project_path(pid)
+    with sessions.paper_lock(slug):
+        if chat_jobs.any_active_for_slug(slug):
+            raise HTTPException(
+                status_code=409,
+                detail="A response is still generating — stop it before resetting the source.")
+        corpus = store.corpus_path(slug)
+        rels = _tracked_paths(pid, root, [corpus]) + _tracked_thread_files(pid, root, slug)
+        had_chats = sessions.get_state(slug) is not None
+        notes = store.read_notes(slug)
+        if notes:
+            # Committed Paper Notes live in the corpus file, below the text. They are the
+            # human-approved record and stay; only the text goes — the file becomes the same
+            # notes-only shape `append_notes_block` writes for a never-fetched paper, which
+            # `has_full_text` reads as "not retrieved".
+            store.write_full_text(slug, paper.title, store.FULL_TEXT_PLACEHOLDER, {"slug": slug})
+            store.append_notes_block(slug, paper.title, notes)
+        else:
+            corpus.unlink(missing_ok=True)
+        cover_jobs.cover_path(slug).unlink(missing_ok=True)
+        figures._drop(slug)
+        graph_store.forget_retrieval(slug)
+        retrieval_jobs.forget_for(slug)
+        sessions.remove_thread_storage(slug)
+        sessions.drop_session(slug)
+        _commit_deletions(pid, f"Reset source: {slug}", rels)
+    paper = store.get_paper(slug)
+    return {
+        "reset": slug,
+        "chats_cleared": had_chats,
         "contributed": bool(paper and paper.has_notes),
     }
 
