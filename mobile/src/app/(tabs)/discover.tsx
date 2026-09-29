@@ -47,6 +47,7 @@ import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
+import { showToast } from '@/ui/Toast';
 import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { discoverProgress } from '@/lib/discoverProgress';
@@ -219,10 +220,21 @@ export function DiscoverContent({
   embedded = false,
   editorRequest,
   showNeighbourhood = true,
+  sharedQuery,
 }: {
   embedded?: boolean;
   /** A changed non-empty token opens the editor when an old /discover entry point lands here. */
   editorRequest?: string;
+  /** DR-052 step 4: the Map's one search box owns the query. When set, this surface has no
+   *  editor of its own — a new `submit.token` runs the search with `submit.text`, and tapping
+   *  the summary hands the text back to the box through `onEdit`. */
+  sharedQuery?: {
+    submit: { pid: string; text: string; token: number } | null;
+    /** Called as soon as a submit is taken, so the owner drops it. The owner outlives this
+     *  component; a submit it kept would be run again by the next mount. */
+    onConsumed: (token: number) => void;
+    onEdit: (text: string) => void;
+  };
   /** The combined Map already renders the shared freshness line above its graph. */
   showNeighbourhood?: boolean;
 } = {}) {
@@ -287,16 +299,44 @@ export function DiscoverContent({
   const searchedFor = describeRunFocus(result?.focus, result?.generated_at);
 
   const hasRunContext = runState.running || !!result;
-  const showEditor = !hasRunContext || editingGoals;
+  const showEditor = !sharedQuery && (!hasRunContext || editingGoals);
 
-  async function runDiscovery() {
-    const text = goals.trim();
+  async function runDiscovery(override?: string) {
+    const text = (override ?? goals).trim();
     if (!text) return;
+    // A submit from the Map's box can arrive while a search is already running: the box stays
+    // open so the map can be narrowed during a run. `run` refuses silently in that state, so
+    // taking the text first would drop the search the reader asked for AND label the running
+    // one's results with it (second review of #536). Refuse out loud and change nothing.
+    if (override !== undefined
+      && (runState.running || discovery.data?.job?.status === 'running')) {
+      showToast('A search is already running. Stop it, or wait for it to finish, then search again.');
+      return;
+    }
     setShowAll(false);
     setEditingGoals(false);
+    if (override !== undefined) setGoals(text);
     await goalsDraft.markSubmitted();
     if (await runState.run(text)) await goalsDraft.clear(text);
   }
+
+  // The Map's box submitted. One paid run per explicit submit, in the project it was typed
+  // for: the submit is handed back to its owner the moment it is taken (so a later mount of
+  // this list finds nothing to run), one for another project is dropped unrun, and the token
+  // guards the renders in between.
+  const submitToken = sharedQuery?.submit?.token;
+  const handledSubmit = useRef<number | undefined>(undefined);
+  const runFromBox = useRef(runDiscovery);
+  runFromBox.current = runDiscovery;
+  useEffect(() => {
+    const submit = sharedQuery?.submit;
+    if (!submit || handledSubmit.current === submit.token) return;
+    handledSubmit.current = submit.token;
+    sharedQuery?.onConsumed(submit.token);
+    if (submit.pid !== pid) return;
+    void runFromBox.current(submit.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submitToken]);
 
   const content = (
     <>
@@ -318,7 +358,7 @@ export function DiscoverContent({
               />
               <Button
                 title={runState.running ? 'Searching…' : result ? 'Search again' : 'Search'}
-                onPress={runDiscovery}
+                onPress={() => void runDiscovery()}
                 loading={runState.running}
                 disabled={!goals.trim()}
                 style={{ marginTop: space.xs }}
@@ -327,10 +367,22 @@ export function DiscoverContent({
                 <Button title="Cancel" variant="ghost" onPress={() => setEditingGoals(false)} />
               ) : null}
             </Card>
+          ) : sharedQuery && !hasRunContext ? (
+            <Card style={styles.goalsSummary}>
+              <Text variant="overline">Explore</Text>
+              <Text variant="caption" style={{ marginTop: space.xs }}>
+                Type a topic or question in the search box above the map. It narrows the map as
+                you type; Search scans scholarly sources for papers to add.
+              </Text>
+            </Card>
           ) : (
             // Compact goals summary — the search is the focus now; tap to edit & search again.
             <Pressable
-              onPress={() => !runState.running && setEditingGoals(true)}
+              onPress={() => {
+                if (runState.running) return;
+                if (sharedQuery) sharedQuery.onEdit(goals || result?.goals || '');
+                else setEditingGoals(true);
+              }}
               disabled={runState.running}
               accessibilityLabel="Edit your search">
               <Card style={styles.goalsSummary}>

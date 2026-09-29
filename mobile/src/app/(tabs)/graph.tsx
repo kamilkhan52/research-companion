@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Linking,
   Pressable,
   ScrollView,
@@ -26,7 +27,7 @@ import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
-import { pageSignificant, significantNodes } from '@/graph/filter';
+import { nodeMatchesQuery, pageSignificant, significantNodes } from '@/graph/filter';
 import { readableError } from '@/api/errorMessage';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
@@ -91,8 +92,27 @@ export default function GraphScreen() {
   // The ref closes the gap before setParams removes the route param on the next render.
   const exploreLandingActive = useRef(Boolean(explore));
 
+  // DR-052 step 4 — ONE search box (Kamil, 2026-09-13): it narrows the map while typing and
+  // runs the paid Discover search on submit. `discoverSubmit` is the hand-off to the list
+  // below the graph; the token makes each submit a distinct request even for the same text.
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  // The hand-off is ONE-SHOT and belongs to one project. It is consumed (nulled) the moment
+  // the list takes it and dropped on a project switch: this screen outlives both, and a
+  // retained submit was re-run by a remounted list — a paid search nobody asked for, in
+  // whichever project was active by then (first review of #536).
+  const [discoverSubmit, setDiscoverSubmit] = useState<
+    { pid: string; text: string; token: number } | null
+  >(null);
+  const submitCounter = useRef(0);
+  useEffect(() => {
+    setDiscoverSubmit(null);
+    setQuery('');
+    setShowSearch(false);
+  }, [activePid]);
+  const consumeDiscoverSubmit = useCallback((token: number) => {
+    setDiscoverSubmit((current) => (current?.token === token ? null : current));
+  }, []);
   const [filter, setFilter] = useState<FilterKind>('significant');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(GRAPH_PAGE_SIZE);
@@ -178,32 +198,28 @@ export default function GraphScreen() {
     return m;
   }, [graph]);
 
+  const searching = query.trim().length > 0;
   const filteredNodes = useMemo(() => {
     if (!graph) return [];
     let ns = graph.nodes;
     if (filter === 'project') ns = ns.filter((n) => n.kind === 'project');
     else if (filter === 'external') ns = ns.filter((n) => n.kind === 'external');
-    else if (filter === 'significant') ns = significantNodes(ns, graph.edges);
-    const q = query.trim().toLowerCase();
-    if (q) {
-      ns = ns.filter(
-        (n) =>
-          n.title.toLowerCase().includes(q) ||
-          n.authors.some((a) => a.toLowerCase().includes(q)) ||
-          String(n.year ?? '').includes(q),
-      );
-    }
+    // A search looks at every paper on the map. "Significant" is the default VIEW, not a
+    // property the reader asked for: leaving it on would report "0 on the map" for a paper
+    // that is there, merely without a significant citation yet.
+    else if (filter === 'significant' && !searching) ns = significantNodes(ns, graph.edges);
+    if (searching) ns = ns.filter((n) => nodeMatchesQuery(n, query));
     return [...ns].sort(rankNode);
-  }, [graph, filter, query]);
+  }, [graph, filter, query, searching]);
 
   // What actually gets rendered: the current filter/search's matches, paginated (not "render all
   // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
   // tabs). Edges are kept only between visible nodes.
   const pagedNodes = useMemo(
-    () => (filter === 'significant'
+    () => (filter === 'significant' && !searching
       ? pageSignificant(filteredNodes, graph?.edges ?? [], visibleLimit)
       : filteredNodes.slice(0, visibleLimit)),
-    [filteredNodes, filter, graph, visibleLimit],
+    [filteredNodes, filter, graph, visibleLimit, searching],
   );
 
   const visibleGraph = useMemo(() => {
@@ -276,13 +292,39 @@ export default function GraphScreen() {
     router.setParams({ explore: undefined });
   }, [router]);
 
+  // With a built map the search box IS the query editor, so an explore entry (an old
+  // /discover link, Add paper's "Explore") opens the box instead of scrolling past the map.
+  // Without a map there is no box, and the list's own editor below is still the landing.
+  const hasSearchBox = Boolean(graph) && !showFirstRunDiscover;
   useEffect(() => {
-    if (!explore || !exploreLandingActive.current || discoverSectionY.current <= 0) return;
+    if (!explore || !exploreLandingActive.current) return;
+    if (hasSearchBox) {
+      setShowSearch(true);
+      consumeExploreLanding();
+      return;
+    }
+    if (discoverSectionY.current <= 0) return;
     const frame = requestAnimationFrame(() => {
       if (exploreLandingActive.current) scrollToDiscover(true);
     });
     return () => cancelAnimationFrame(frame);
-  }, [explore, scrollToDiscover]);
+  }, [explore, hasSearchBox, consumeExploreLanding, scrollToDiscover]);
+
+  const submitSearch = useCallback(() => {
+    const text = query.trim();
+    if (!text || !activePid) return;
+    Keyboard.dismiss();
+    submitCounter.current += 1;
+    setDiscoverSubmit({ pid: activePid, text, token: submitCounter.current });
+    // The run's progress and results are below the map; take the reader to them.
+    requestAnimationFrame(() => scrollToDiscover(true));
+  }, [query, activePid, scrollToDiscover]);
+
+  const editSearch = useCallback((text: string) => {
+    setQuery(text);
+    setShowSearch(true);
+    combinedScrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
 
   return (
     <Screen edges={['top']}>
@@ -301,7 +343,7 @@ export default function GraphScreen() {
                 return !v;
               });
             },
-            accessibilityLabel: showSearch ? 'Hide search' : 'Search papers',
+            accessibilityLabel: showSearch ? 'Hide search' : 'Search the map and explore papers',
           },
           {
             name: 'refresh-cw',
@@ -439,6 +481,8 @@ export default function GraphScreen() {
             progress={build.progress}
             query={query}
             onQueryChange={setQuery}
+            onSubmitQuery={submitSearch}
+            matchCount={filteredNodes.length}
             showSearch={showSearch}
             filters={filters}
             filter={filter}
@@ -458,7 +502,9 @@ export default function GraphScreen() {
           <View style={[styles.graphViewport, {
             height: Math.max(360, Math.min(520, windowHeight * 0.56)),
           }]}>
-            {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
+            {query.trim() && filteredNodes.length === 0 ? (
+              <Centered text="Nothing on the map matches this search. Search explores papers beyond it." />
+            ) : filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
               <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />
             ) : (
               <GraphCanvas
@@ -504,7 +550,7 @@ export default function GraphScreen() {
             testID="map-discover-section"
             onLayout={(event) => {
               discoverSectionY.current = event.nativeEvent.layout.y;
-              if (exploreLandingActive.current) {
+              if (exploreLandingActive.current && !hasSearchBox) {
                 requestAnimationFrame(() => {
                   if (exploreLandingActive.current) scrollToDiscover(false);
                 });
@@ -512,8 +558,15 @@ export default function GraphScreen() {
             }}>
             <DiscoverContent
               embedded
-              editorRequest={explore}
+              editorRequest={hasSearchBox ? undefined : explore}
               showNeighbourhood={false}
+              sharedQuery={hasSearchBox
+                ? {
+                  submit: discoverSubmit,
+                  onConsumed: consumeDiscoverSubmit,
+                  onEdit: editSearch,
+                }
+                : undefined}
             />
           </View>
           </ScrollView>
@@ -933,11 +986,15 @@ function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => v
 // real content already below it. Once a usable map exists, both collapse into one 48px
 // segmented rail; each segment opens a bottom sheet instead of expanding in place. Designed via
 // a codex session against a live emulator capture — see `docs/device-review-assets/DR-069/`.
+export const MAP_SEARCH_PLACEHOLDER = 'Search the map, or explore a topic';
+
 export function MapControlRail({
   building,
   progress,
   query,
   onQueryChange,
+  onSubmitQuery,
+  matchCount,
   showSearch,
   filters,
   filter,
@@ -948,6 +1005,10 @@ export function MapControlRail({
   progress: GraphBuildState['progress'];
   query: string;
   onQueryChange: (v: string) => void;
+  /** DR-052 step 4: submit runs the paid Discover search with the text in the box. */
+  onSubmitQuery?: () => void;
+  /** How many map papers match the text, shown beside the explicit Search button. */
+  matchCount?: number;
   showSearch: boolean;
   filters: { key: FilterKind; label: string }[];
   filter: FilterKind;
@@ -958,7 +1019,12 @@ export function MapControlRail({
   const styles = useThemedStyles(makeStyles);
   const [buildSheetOpen, setBuildSheetOpen] = useState(false);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
-  const active = filters.find((item) => item.key === filter) ?? filters[0];
+  const chosen = filters.find((item) => item.key === filter) ?? filters[0];
+  // A search looks across every paper on the map, so while one is typed the default
+  // "Significant" view is not what is on screen and must not be what the pill claims.
+  const active = query.trim() && filter === 'significant'
+    ? { key: filter, label: 'All matches' }
+    : chosen;
   const { hint, showHint, dismissHint } = useBuildHint(progress);
 
   // The build segment disappears the moment a build finishes (that's the whole point — it's
@@ -971,16 +1037,38 @@ export function MapControlRail({
   return (
     <View style={styles.railWrap}>
       {showSearch ? (
-        <TextInput
-          value={query}
-          onChangeText={onQueryChange}
-          placeholder="Search title, author, year…"
-          placeholderTextColor={t.muted}
-          style={styles.searchInput}
-          autoCapitalize="none"
-          returnKeyType="search"
-          autoFocus
-        />
+        <View style={{ gap: space.xs }}>
+          <TextInput
+            value={query}
+            onChangeText={onQueryChange}
+            onSubmitEditing={onSubmitQuery}
+            placeholder={MAP_SEARCH_PLACEHOLDER}
+            placeholderTextColor={t.muted}
+            style={styles.searchInput}
+            autoCapitalize="none"
+            returnKeyType="search"
+            accessibilityLabel="Search the map or explore a topic"
+            autoFocus
+          />
+          {query.trim() && onSubmitQuery ? (
+            // The keyboard's Search key is easy to miss and the run it starts is paid work, so
+            // the same action is also a visible button that says what it does.
+            <View style={styles.searchActions}>
+              <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+                {matchCount === undefined
+                  ? ''
+                  : `${matchCount} on the map`}
+              </Text>
+              <Button
+                title="Search for papers"
+                icon="compass"
+                variant="ghost"
+                onPress={onSubmitQuery}
+                accessibilityLabel="Search scholarly sources for papers on this topic"
+              />
+            </View>
+          ) : null}
+        </View>
       ) : null}
       <View style={styles.rail}>
         {building ? (
@@ -1236,6 +1324,7 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create(
     gap: 6,
   },
   filterChipTargetActive: { borderColor: t.mint, backgroundColor: t.mintWash },
+  searchActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   searchInput: {
     backgroundColor: t.elevated,
     borderWidth: 1,

@@ -28,7 +28,28 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-09-19)
+## Current position (updated 2026-09-29)
+
+**Delta at 2026-09-29** (PRs #529–#535 and #536):
+- DR-052's surface merge is complete in code: step 3 (#529) moved the unified list under the graph
+  and removed the Discover tab; step 4 makes the Map's search box the one query input. The row is
+  `implemented — verify`; the open device question is the graph-pan versus page-scroll boundary.
+- Three papers were filed with another paper's full text in two days. #533 guarded the
+  rate-limit fallback and the PDF hunt, #534 guarded the ordinary title search and added
+  **Reset fetched text** (DR-165, DR-167). `retrieved` now means "has text".
+- DR-164 (#532): Discover screening reads model answers by content; a year can no longer become
+  a 10/10 score. DR-096 is back to `partial`: an explicit query must outrank project context,
+  and that weighting is not built.
+- DR-166 (#530): a narration that comes back under 60% of its source is narrated once more.
+- DR-141 (#535): reference extraction sent only the first 120,000 characters, so long papers
+  (DeepSeek-V4.1-Flash, Llama 2, GPT-3, PaLM, T5) never had their reference list read.
+- DR-161: Kamil decided the single name is **Seminar**; the consistency pass is not started.
+- The device ledger has 167 rows: 108 `implemented — verify`, 44 closed, 7 partial, 4 open, 2 planned, 2 deferred.
+- Not determined: why an overnight map build did not finish (2026-09-23). Builds are in-process
+  and die with any server restart; M6 owns job persistence.
+
+### Position at 2026-09-19
+
 
 **Delta at 2026-09-19** (DR-160/DR-162 and DR-052 surface work in
 [#526](https://github.com/kamilkhan52/research-companion/pull/526) and

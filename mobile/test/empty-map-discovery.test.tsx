@@ -9,7 +9,7 @@ import { router, Slot, Tabs, useRouter } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 import { ScrollView } from 'react-native';
 
-import GraphScreen from '@/app/(tabs)/graph';
+import GraphScreen, { MAP_SEARCH_PLACEHOLDER } from '@/app/(tabs)/graph';
 import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
@@ -21,10 +21,13 @@ import type {
   PaperSuggestion,
 } from '@/api/types';
 import { GraphSettingsProvider } from '@/store/graphSettings';
-import { ProjectProvider } from '@/store/project';
+import { ProjectProvider, useActiveProject } from '@/store/project';
 import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { Button } from '@/ui';
 import { createTestQueryClient } from './queryClient';
+import * as toast from '@/ui/Toast';
+
+let toastSpy: jest.SpyInstance;
 
 jest.mock('@/components/graph/GraphCanvas', () => ({
   GraphCanvas: () => require('react').createElement(
@@ -217,6 +220,10 @@ beforeEach(async () => {
   });
 });
 
+beforeEach(() => {
+  toastSpy = jest.spyOn(toast, 'showToast').mockImplementation(() => {});
+});
+
 afterEach(() => {
   jest.restoreAllMocks();
 });
@@ -298,7 +305,12 @@ test('a built project renders one Map surface with the graph above the unified p
   );
 
   expect(await screen.findByTestId('combined-map-canvas')).toBeTruthy();
-  expect(screen.getByPlaceholderText('Type a topic or question')).toBeTruthy();
+  // DR-052 step 4: with a map, the ONE search box above it is the query editor. The explore
+  // entry opens that box; the list below keeps the saved query as a summary, with no second
+  // editor of its own.
+  expect(await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeTruthy();
+  expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+  expect(screen.getByText('Saved goal')).toBeTruthy();
   expect(await screen.findByText('Next Paper')).toBeTruthy();
   expect(screen.getByText('Project graph')).toBeTruthy();
   expect(screen.queryByLabelText('Recommendations')).toBeNull();
@@ -344,7 +356,9 @@ test('the explore landing stops following layout changes after the reader scroll
     session_state: null,
     arxiv_id: '',
   }]) as never);
-  jest.mocked(api.getGraph).mockResolvedValue(builtGraph());
+  // No map yet: there is no search box, so the landing is still the list's own editor below
+  // "Build map". With a map the entry opens the box instead (tested further down).
+  jest.mocked(api.getGraph).mockResolvedValue(emptyGraph(1));
 
   renderRouter(
     { _layout: TestLayout, graph: GraphScreen },
@@ -446,4 +460,203 @@ test('adding the first result keeps the rest of the paid search visible for this
   await waitFor(() => expect(rendered.getPathname()).toBe('/graph'));
   expect(await screen.findByText('Build map')).toBeTruthy();
   expect(screen.getByText('Second Result')).toBeTruthy();
+});
+
+
+// ---- DR-052 step 4: one search box ----------------------------------------------------------
+
+const KNOWN = {
+  slug: 'known-paper', title: 'Known Paper', group: 'Unsorted', list_status: 'unread',
+  cites: [], retrieved: true, has_notes: false, session_state: null, arxiv_id: '',
+};
+
+function twoNodeGraph(): GraphResponse {
+  const base = builtGraph();
+  return {
+    ...base,
+    graph: {
+      ...base.graph!,
+      nodes: [
+        ...base.graph!.nodes,
+        {
+          ...base.graph!.nodes[0], id: 'ext:hybrid', kind: 'external', slug: null,
+          title: 'Hybrid Bonding for Stacked DRAM', authors: ['C. Writer'], year: 2024,
+        },
+      ],
+    },
+  } as GraphResponse;
+}
+
+test('typing narrows the map, and Search runs Discover once with that text', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  // Closed by default: an idle map is not narrowed and offers no paid action.
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  expect(screen.queryByText('Search for papers')).toBeNull();
+
+  await fireEventAsync.changeText(box, 'hybrid bonding stacked DRAM for AI workloads');
+  // A topic, not a title fragment: it still finds the one map paper about it.
+  expect(await screen.findByText('1 on the map')).toBeTruthy();
+  // The default Significant view is not what a search shows, and the pill must not claim it.
+  expect(screen.getByText('All matches')).toBeTruthy();
+  expect(screen.queryByText('Significant')).toBeNull();
+  expect(api.startDiscovery).not.toHaveBeenCalled();
+
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+  expect(jest.mocked(api.startDiscovery).mock.calls[0]).toEqual(
+    expect.arrayContaining(['hybrid bonding stacked DRAM for AI workloads']),
+  );
+  // The map build's poll, the discovery poll and re-renders must not buy a second search.
+  act(() => { jest.runOnlyPendingTimers(); });
+  expect(api.startDiscovery).toHaveBeenCalledTimes(1);
+});
+
+test('the keyboard Search key submits the same way as the button', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  await fireEventAsync.changeText(box, 'stacked dram');
+  await fireEventAsync(box, 'submitEditing');
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+});
+
+test('a search that matches nothing on the map says so and still offers the wider search', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'protein folding',
+  );
+  expect(await screen.findByText(/Nothing on the map matches this search/)).toBeTruthy();
+  expect(screen.getByText('0 on the map')).toBeTruthy();
+  expect(screen.getByText('Search for papers')).toBeTruthy();
+});
+
+test('Edit on the saved search hands its text back to the one box', async () => {
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: null,
+    goals: 'stacked dram',
+    result: {
+      goals: 'stacked dram', model: 'test', queries: [], candidate_count: 0, top_n: 5,
+      suggestions: [], in_library: [], generated_at: '2026-09-19T00:00:00Z',
+    },
+  } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+
+  await fireEventAsync.press(await screen.findByLabelText('Edit your search'));
+  const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
+  expect(box.props.value).toBe('stacked dram');
+  expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+});
+
+
+function SwitchingLayout() {
+  return (
+    <QueryClientProvider client={client}>
+      <ProjectProvider>
+        <GraphSettingsProvider>
+          <ReadingSettingsProvider>
+            <ProjectSwitcher />
+            <Slot />
+          </ReadingSettingsProvider>
+        </GraphSettingsProvider>
+      </ProjectProvider>
+    </QueryClientProvider>
+  );
+}
+
+function ProjectSwitcher() {
+  const { setActivePid } = useActiveProject();
+  return (
+    <>
+      <Button title="Go to empty" onPress={() => setActivePid('empty-project')} />
+      <Button title="Go to first" onPress={() => setActivePid(PID)} />
+      <Button title="Go to third" onPress={() => setActivePid('third-project')} />
+    </>
+  );
+}
+
+test('a search is never re-run by leaving the map and coming back, in any project', async () => {
+  // First review of #536: the Map screen outlives project switches and kept the last submit;
+  // the list remounts after a visit to an empty project and ran it again — once more in the
+  // same project, or as a paid search in a DIFFERENT project with the first one's text.
+  jest.mocked(api.getProjectState).mockImplementation(async (pid: string) => (
+    projectState(pid === 'empty-project' ? [] : [KNOWN]) as never
+  ));
+  jest.mocked(api.getGraph).mockImplementation(async (pid: string) => (
+    pid === 'empty-project' ? (emptyGraph(0) as never) : twoNodeGraph()
+  ));
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: SwitchingLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'stacked dram',
+  );
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+
+  await fireEventAsync.press(screen.getByText('Go to empty'));
+  await waitFor(() => expect(screen.queryByTestId('combined-map-scroll')).toBeNull());
+  await fireEventAsync.press(screen.getByText('Go to third'));
+  await screen.findByTestId('combined-map-canvas');
+  act(() => { jest.runOnlyPendingTimers(); });
+  await fireEventAsync.press(screen.getByText('Go to empty'));
+  await waitFor(() => expect(screen.queryByTestId('combined-map-scroll')).toBeNull());
+  await fireEventAsync.press(screen.getByText('Go to first'));
+  await screen.findByTestId('combined-map-canvas');
+  act(() => { jest.runOnlyPendingTimers(); });
+
+  expect(api.startDiscovery).toHaveBeenCalledTimes(1);
+  // And the box does not carry one project's text into the next.
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+});
+
+
+test('a search submitted while one is running is refused out loud and relabels nothing', async () => {
+  // Second review of #536: the box stays usable during a run. The second submit was dropped
+  // in silence and its text became the label over the FIRST search's progress and results.
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: RUNNING_DISCOVERY, goals: 'first topic', result: null,
+  } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  expect(await screen.findByLabelText('Stop discovery search')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'second topic',
+  );
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  act(() => { jest.runOnlyPendingTimers(); });
+
+  expect(api.startDiscovery).not.toHaveBeenCalled();
+  expect(screen.getByText('first topic')).toBeTruthy();
+  expect(screen.queryByText('second topic')).toBeNull();
+  expect(toastSpy).toHaveBeenCalledWith(expect.stringMatching(/already running/));
 });
