@@ -21,7 +21,7 @@ import type {
   PaperSuggestion,
 } from '@/api/types';
 import { GraphSettingsProvider } from '@/store/graphSettings';
-import { ProjectProvider } from '@/store/project';
+import { ProjectProvider, useActiveProject } from '@/store/project';
 import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { Button } from '@/ui';
 import { createTestQueryClient } from './queryClient';
@@ -561,4 +561,68 @@ test('Edit on the saved search hands its text back to the one box', async () => 
   const box = await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER);
   expect(box.props.value).toBe('stacked dram');
   expect(screen.queryByPlaceholderText('Type a topic or question')).toBeNull();
+});
+
+
+function SwitchingLayout() {
+  return (
+    <QueryClientProvider client={client}>
+      <ProjectProvider>
+        <GraphSettingsProvider>
+          <ReadingSettingsProvider>
+            <ProjectSwitcher />
+            <Slot />
+          </ReadingSettingsProvider>
+        </GraphSettingsProvider>
+      </ProjectProvider>
+    </QueryClientProvider>
+  );
+}
+
+function ProjectSwitcher() {
+  const { setActivePid } = useActiveProject();
+  return (
+    <>
+      <Button title="Go to empty" onPress={() => setActivePid('empty-project')} />
+      <Button title="Go to first" onPress={() => setActivePid(PID)} />
+      <Button title="Go to third" onPress={() => setActivePid('third-project')} />
+    </>
+  );
+}
+
+test('a search is never re-run by leaving the map and coming back, in any project', async () => {
+  // First review of #536: the Map screen outlives project switches and kept the last submit;
+  // the list remounts after a visit to an empty project and ran it again — once more in the
+  // same project, or as a paid search in a DIFFERENT project with the first one's text.
+  jest.mocked(api.getProjectState).mockImplementation(async (pid: string) => (
+    projectState(pid === 'empty-project' ? [] : [KNOWN]) as never
+  ));
+  jest.mocked(api.getGraph).mockImplementation(async (pid: string) => (
+    pid === 'empty-project' ? (emptyGraph(0) as never) : twoNodeGraph()
+  ));
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: RUNNING_DISCOVERY } as never);
+
+  renderRouter({ _layout: SwitchingLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'stacked dram',
+  );
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  await waitFor(() => expect(api.startDiscovery).toHaveBeenCalledTimes(1));
+
+  await fireEventAsync.press(screen.getByText('Go to empty'));
+  await waitFor(() => expect(screen.queryByTestId('combined-map-scroll')).toBeNull());
+  await fireEventAsync.press(screen.getByText('Go to third'));
+  await screen.findByTestId('combined-map-canvas');
+  act(() => { jest.runOnlyPendingTimers(); });
+  await fireEventAsync.press(screen.getByText('Go to empty'));
+  await waitFor(() => expect(screen.queryByTestId('combined-map-scroll')).toBeNull());
+  await fireEventAsync.press(screen.getByText('Go to first'));
+  await screen.findByTestId('combined-map-canvas');
+  act(() => { jest.runOnlyPendingTimers(); });
+
+  expect(api.startDiscovery).toHaveBeenCalledTimes(1);
+  // And the box does not carry one project's text into the next.
+  expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
 });

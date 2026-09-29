@@ -97,7 +97,22 @@ export default function GraphScreen() {
   // below the graph; the token makes each submit a distinct request even for the same text.
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [discoverSubmit, setDiscoverSubmit] = useState<{ text: string; token: number } | null>(null);
+  // The hand-off is ONE-SHOT and belongs to one project. It is consumed (nulled) the moment
+  // the list takes it and dropped on a project switch: this screen outlives both, and a
+  // retained submit was re-run by a remounted list — a paid search nobody asked for, in
+  // whichever project was active by then (first review of #536).
+  const [discoverSubmit, setDiscoverSubmit] = useState<
+    { pid: string; text: string; token: number } | null
+  >(null);
+  const submitCounter = useRef(0);
+  useEffect(() => {
+    setDiscoverSubmit(null);
+    setQuery('');
+    setShowSearch(false);
+  }, [activePid]);
+  const consumeDiscoverSubmit = useCallback((token: number) => {
+    setDiscoverSubmit((current) => (current?.token === token ? null : current));
+  }, []);
   const [filter, setFilter] = useState<FilterKind>('significant');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(GRAPH_PAGE_SIZE);
@@ -297,12 +312,13 @@ export default function GraphScreen() {
 
   const submitSearch = useCallback(() => {
     const text = query.trim();
-    if (!text) return;
+    if (!text || !activePid) return;
     Keyboard.dismiss();
-    setDiscoverSubmit((prev) => ({ text, token: (prev?.token ?? 0) + 1 }));
+    submitCounter.current += 1;
+    setDiscoverSubmit({ pid: activePid, text, token: submitCounter.current });
     // The run's progress and results are below the map; take the reader to them.
     requestAnimationFrame(() => scrollToDiscover(true));
-  }, [query, scrollToDiscover]);
+  }, [query, activePid, scrollToDiscover]);
 
   const editSearch = useCallback((text: string) => {
     setQuery(text);
@@ -545,7 +561,11 @@ export default function GraphScreen() {
               editorRequest={hasSearchBox ? undefined : explore}
               showNeighbourhood={false}
               sharedQuery={hasSearchBox
-                ? { submit: discoverSubmit, onEdit: editSearch }
+                ? {
+                  submit: discoverSubmit,
+                  onConsumed: consumeDiscoverSubmit,
+                  onEdit: editSearch,
+                }
                 : undefined}
             />
           </View>

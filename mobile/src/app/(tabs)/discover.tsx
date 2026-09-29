@@ -228,7 +228,10 @@ export function DiscoverContent({
    *  editor of its own — a new `submit.token` runs the search with `submit.text`, and tapping
    *  the summary hands the text back to the box through `onEdit`. */
   sharedQuery?: {
-    submit: { text: string; token: number } | null;
+    submit: { pid: string; text: string; token: number } | null;
+    /** Called as soon as a submit is taken, so the owner drops it. The owner outlives this
+     *  component; a submit it kept would be run again by the next mount. */
+    onConsumed: (token: number) => void;
     onEdit: (text: string) => void;
   };
   /** The combined Map already renders the shared freshness line above its graph. */
@@ -307,8 +310,10 @@ export function DiscoverContent({
     if (await runState.run(text)) await goalsDraft.clear(text);
   }
 
-  // The Map's box submitted. Keyed on the token alone: the text rides with it, and a re-render
-  // with the same token (a poll tick, a project refetch) must never buy a second search.
+  // The Map's box submitted. One paid run per explicit submit, in the project it was typed
+  // for: the submit is handed back to its owner the moment it is taken (so a later mount of
+  // this list finds nothing to run), one for another project is dropped unrun, and the token
+  // guards the renders in between.
   const submitToken = sharedQuery?.submit?.token;
   const handledSubmit = useRef<number | undefined>(undefined);
   const runFromBox = useRef(runDiscovery);
@@ -317,6 +322,8 @@ export function DiscoverContent({
     const submit = sharedQuery?.submit;
     if (!submit || handledSubmit.current === submit.token) return;
     handledSubmit.current = submit.token;
+    sharedQuery?.onConsumed(submit.token);
+    if (submit.pid !== pid) return;
     void runFromBox.current(submit.text);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [submitToken]);
