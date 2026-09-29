@@ -109,6 +109,13 @@ LLM_TIMEOUT_S = 240
 # term adds at most 1.5. A famous tangential paper cannot outrank a central reading on fame alone.
 CREDIBILITY_TERM_SCALE = 0.5
 CITATION_TERM_CAP = 1.5
+#: The most the non-relevance terms can sum to: citations 1.5, provenance 1.25 + 1.0 (significant
+#: citer) + 1.0 + 0.75, connectivity 1.05, momentum 1.0. `blend_and_rank` scales their sum by
+#: this into `SECONDARY_SPAN`, which stays under the screen's one-point relevance step so that
+#: relevance to the query always decides first (DR-096). A test pins the sum against the
+#: constants, so adding a term without raising this fails loudly instead of compressing silently.
+SECONDARY_TERMS_MAX = 7.55
+SECONDARY_SPAN = 0.95
 CITATION_TERM_SCALE = 0.375
 RRF_K = 10.0
 MIN_PROVIDER_EXCLUSIVE = 8
@@ -893,7 +900,12 @@ def _profile_text(goals: str, papers: list) -> str:
     titles = [t for t in titles if t]
     lines = [f"FOCUS: {goals.strip()}"]
     if titles:
-        lines.append("ALREADY READING: " + "; ".join(t[:90] for t in titles))
+        # DR-096: the list is context for a focus that names no topic ("find related work"),
+        # not a second criterion. Said in the profile itself because the profile is what every
+        # batch is judged against, whichever prompt file is installed.
+        lines.append("ALREADY READING (context only — relevance is fit to the FOCUS; use this "
+                     "list to interpret a focus that names no topic): "
+                     + "; ".join(t[:90] for t in titles))
     return "\n".join(lines)
 
 
@@ -1357,18 +1369,27 @@ def blend_and_rank(candidates: list[dict]) -> list[dict]:
             reasons.append(f"~{cites:,} citations overall — a well-established work")
 
         relevance = float(candidate.get("relevance") or 0.0)
+        # DR-096 — Kamil: "When a query is provided it should be the highest relevance criteria
+        # … the project content is secondary." The terms above used to be ADDED to relevance at
+        # face value, and together they reach 7.55 on a 0–10 relevance scale: a paper the screen
+        # scored 3 for the query, but well cited and tied to the reading list, outranked one it
+        # scored 9. They now order papers WITHIN one relevance score and can never lift a paper
+        # past a more relevant one: scaled into [0, 1), below the screen's one-point step.
+        secondary = citation_term + provenance_term + connectivity_term + momentum_term
         out.append({
             **candidate,
             "relevance": relevance,
             "credibility": 0.0,
-            "score": round(relevance + citation_term + provenance_term
-                           + connectivity_term + momentum_term, 3),
+            "score": round(relevance + min(secondary, SECONDARY_TERMS_MAX)
+                           / SECONDARY_TERMS_MAX * SECONDARY_SPAN, 3),
             # 5, up from 4: the connectivity line lands on exactly the multi-channel candidates
             # that already carry a screen note plus one reason per channel, where a cap of 4
             # cut the very line that distinguishes them.
             "reasons": list(dict.fromkeys(r for r in reasons if r))[:5],
         })
-    out.sort(key=lambda c: (c["score"], c["relevance"], c.get("citation_count") or 0),
+    # Relevance FIRST, as its own key: the screen may answer with a fraction (7.5), and the
+    # scaled terms inside `score` must not carry a 7.5 past an 8 either.
+    out.sort(key=lambda c: (c["relevance"], c["score"], c.get("citation_count") or 0),
              reverse=True)
     return out
 

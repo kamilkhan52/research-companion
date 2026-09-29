@@ -8,6 +8,7 @@ this stage existed.
 """
 from __future__ import annotations
 
+import pytest
 from app import discovery, significance
 
 
@@ -198,7 +199,11 @@ def test_significant_citer_outranks_and_leads_with_the_evidence_line():
                                 "mentions": 3, "prescore": 1.2})
     ranked = discovery.blend_and_rank([plain, winner])
     assert ranked[0]["title"] == "Significant One"
-    assert ranked[0]["score"] - ranked[1]["score"] == discovery.SIGNIFICANT_CITER_BONUS
+    # The bonus orders papers of equal relevance; it is scaled below one relevance point so it
+    # can never lift a paper past a more relevant one (DR-096).
+    expected = (discovery.SIGNIFICANT_CITER_BONUS / discovery.SECONDARY_TERMS_MAX
+                * discovery.SECONDARY_SPAN)
+    assert ranked[0]["score"] - ranked[1]["score"] == pytest.approx(expected, abs=1e-3)
     # reasons[0], not merely present: clients render the first reason, and the classified line
     # is the one this stage paid for. The anchor comes from the significance block itself.
     line = ranked[0]["reasons"][0]
