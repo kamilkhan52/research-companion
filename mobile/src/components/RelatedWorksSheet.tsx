@@ -232,7 +232,12 @@ const STATUS_LABELS: Record<PaperBuildStatus, string> = {
   error: 'Needs attention',
 };
 
-const MAPPED_STATUSES = new Set<PaperBuildStatus>(['metadata_cached']);
+/** A paper still being mapped, or not reached yet. Every OTHER status means its mapping step
+ *  finished: a cache hit arrives as `metadata_cached`, but a paper the build actually fetched
+ *  arrives as `done`, `not_found` or `error` (`neighbourhood` emits the provider's own status),
+ *  so counting cache hits alone read "0 of N mapped" for the whole of a first build — the
+ *  reported symptom under a new word (second review of #535). */
+const UNMAPPED_STATUSES = new Set<PaperBuildStatus>(['pending', 'metadata']);
 
 /** The header count, in the terms of the step the build is ON.
  *
@@ -246,7 +251,7 @@ export function buildCounter(progress: GraphBuildProgress): string {
   const total = progress.total > 0 ? progress.total : progress.ready;
   if (progress.phase === 'preparing') return 'Starting…';
   if (progress.phase === 'metadata' || progress.phase === 'skeleton_ready') {
-    const mapped = statuses.filter((s) => MAPPED_STATUSES.has(s)).length;
+    const mapped = statuses.filter((s) => !UNMAPPED_STATUSES.has(s)).length;
     return total > 0 ? `${mapped} of ${total} mapped` : `${mapped} mapped`;
   }
   if (progress.phase === 'retrieval') {

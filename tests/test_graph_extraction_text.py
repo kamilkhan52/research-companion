@@ -75,3 +75,18 @@ def test_the_extraction_call_is_given_the_reference_list(monkeypatch):
 
     assert result["status"] == "done"
     assert "[60] A. Author" in sent[0]
+
+
+def test_a_list_before_the_halfway_point_with_a_long_appendix_after_it_is_sent():
+    """Llama 2: 260k characters, bibliography at 124k (47%), appendix after. A "second half of
+    the paper" rule rejected the only heading and sent the old slice, which held no list."""
+    body, refs = _long_paper(124_000)
+    appendix = " A Appendix. " + "Additional results and prompts follow in detail. " * 2_700
+    text = body + refs + appendix
+    at = text.index("References [1]")
+    assert graph.MAX_FULL_TEXT_CHARS < at < len(text) // 2
+
+    sent = graph.extraction_text(text)
+
+    assert len(sent) <= graph.MAX_FULL_TEXT_CHARS
+    assert "[1] A. Author" in sent and "Paper number 60." in sent

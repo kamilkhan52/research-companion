@@ -195,9 +195,13 @@ def extraction_text(full_text: str) -> str:
     if len(text) <= MAX_FULL_TEXT_CHARS:
         return text
     headings = list(_REFERENCES_HEADING_RE.finditer(text))
-    # The LAST heading in the second half: "References" also appears in running prose and in
-    # tables of contents near the top, and an appendix can follow the list.
-    start = next((m.start() for m in reversed(headings) if m.start() > len(text) // 2), None)
+    # The LAST heading past the middle of what the old slice covered. Not "in the second half
+    # of the paper": Llama 2 is 260k characters with its list at 124k (47%) and a long appendix
+    # after it, and that rule sent it the old slice (second review of #535). A table of
+    # contents or a passing mention sits near the top, below this floor; a heading the head
+    # already contains is handled below.
+    floor = MAX_FULL_TEXT_CHARS // 2
+    start = next((m.start() for m in reversed(headings) if m.start() >= floor), None)
     if start is None:
         return text[:MAX_FULL_TEXT_CHARS]
     references = text[start:start + MAX_REFERENCE_SECTION_CHARS]

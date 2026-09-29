@@ -103,6 +103,16 @@ test('the mapping step counts mapped papers instead of reading "0 analyzed"', ()
   expect(buildCounter(mapping)).not.toMatch(/analyzed/);
 });
 
+test('a first build counts papers it fetched, not only cache hits', () => {
+  // A fetched paper's mapping ends as the provider's own status, never `metadata_cached`.
+  const first = progress({
+    phase: 'metadata',
+    perPaper: { a: 'done', b: 'not_found', c: 'error', d: 'metadata', e: 'pending' },
+  });
+  expect(buildCounter(first)).toBe('3 of 65 mapped');
+  expect(buildCounter({ ...first, phase: 'skeleton_ready' })).toBe('3 of 65 mapped');
+});
+
 test('each step reports in its own terms, and analysis still counts analyses', () => {
   expect(buildCounter(progress({ phase: 'preparing' }))).toBe('Starting…');
   expect(buildCounter(progress({ phase: 'retrieval', ready: 40 }))).toBe('40 with full text');
