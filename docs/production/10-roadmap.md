@@ -30,7 +30,7 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ## Current position (updated 2026-09-29)
 
-**Delta at 2026-09-29** (PRs #529–#535 and the DR-052 step-4 PR):
+**Delta at 2026-09-29** (PRs #529–#535 and #536):
 - DR-052's surface merge is complete in code: step 3 (#529) moved the unified list under the graph
   and removed the Discover tab; step 4 makes the Map's search box the one query input. The row is
   `implemented — verify`; the open device question is the graph-pan versus page-scroll boundary.
