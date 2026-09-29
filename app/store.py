@@ -265,6 +265,41 @@ _NOTES_MARKER = b"\n## Notes"
 _NOTES_TAIL = 64 * 1024   # notes are appended last, so this tail almost always catches the marker
 
 
+#: What `append_notes_block` writes in place of the text for a paper whose notes were committed
+#: before (or without) its full text ever being fetched. A corpus file whose body is only this
+#: is a notes file, not a retrieved paper.
+FULL_TEXT_PLACEHOLDER = "(full text not cached)"
+_text_cache: dict[str, tuple[_FileKey, bool]] = {}
+
+
+def has_full_text(slug: str) -> bool:
+    """Whether the paper's corpus file holds fetched text — the `retrieved` a paper reports.
+
+    Existence of the file used to be the whole test, which made a notes-only corpus file (the
+    placeholder body above) read as "retrieved": the setup surface never showed, and a source
+    reset (DR-167) that must KEEP committed notes could not make the paper fetchable again.
+    Memoized by the file's (mtime, size) like `has_notes`, and only the head of the file is
+    read: the placeholder, when present, is the first line under the heading."""
+    p = corpus_path(slug)
+    key = _file_key(p)
+    if key is None:
+        _text_cache.pop(str(p), None)
+        return False
+    hit = _text_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    marker = "\n## Full text\n"
+    try:
+        with p.open(encoding="utf-8", errors="replace") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return False
+    body = head.split(marker, 1)[1] if marker in head else head
+    result = body.strip()[:len(FULL_TEXT_PLACEHOLDER)] != FULL_TEXT_PLACEHOLDER
+    _text_cache[str(p)] = (key, result)
+    return result
+
+
 def has_notes(slug: str) -> bool:
     """Whether a paper's corpus file carries a committed Paper Notes block, memoized by the file's
     (mtime, size). The former implementation read the *entire* corpus file (the full paper
@@ -308,7 +343,7 @@ def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
             group=e["group"],
             list_status=e["status"],
             cites=e["cites"],
-            retrieved=corpus_path(slug).exists(),
+            retrieved=has_full_text(slug),
             has_notes=has_notes(slug),
             session_state=session_states.get(slug),
             arxiv_id=e["arxiv_id"],
@@ -600,18 +635,27 @@ def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None =
 # ---- corpus full-text ----
 
 def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
+    """Write (or replace) a paper's corpus file: header, meta, full text — and the committed
+    Paper Notes block it already carried, if any. The notes are the human-approved record
+    (invariant 4) and must survive the text being fetched again: a source reset (DR-167)
+    keeps them in a placeholder file precisely so the reader can fetch or upload the right
+    paper afterwards, and an explicit id/link re-fetch of a retrieved paper reaches here too."""
     with config.paper_identity_guard(slug):
         _corpus_dir().mkdir(parents=True, exist_ok=True)
+        notes = read_notes(slug)
         lines = [f"# {title}", ""]
         for k in ("slug", "arxiv_id", "source", "venue"):
             if meta.get(k):
                 lines.append(f"- {k}: {meta[k]}")
         lines.append(f"- retrieved: {_now()}")
         lines += ["", "## Full text", "", full_text.strip(), ""]
+        if notes:
+            lines += ["", notes.strip(), ""]
         p = corpus_path(slug)
         atomic_write_text(p, "\n".join(lines))
         _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
         _source_url_cache.pop(str(p), None)
+        _text_cache.pop(str(p), None)
         # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
         # the reading-list entry never had — record it there too, so the entry gains its year and
         # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
@@ -682,7 +726,7 @@ def selected_prior_notes(slug: str) -> list[tuple[str, str]]:
 def append_notes_block(slug: str, title: str, notes_block: str) -> None:
     p = corpus_path(slug)
     if not p.exists():
-        write_full_text(slug, title, "(full text not cached)", {"slug": slug})
+        write_full_text(slug, title, FULL_TEXT_PLACEHOLDER, {"slug": slug})
     text = p.read_text(encoding="utf-8")
     if "\n## Notes" in text:
         text = text.split("\n## Notes", 1)[0]  # replace an existing draft
