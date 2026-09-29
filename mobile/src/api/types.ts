@@ -656,6 +656,10 @@ export interface GraphStatus {
   semantic_scholar_stale_papers: string[];
   retrieval_candidates: Record<string, GraphRetrievalCandidate[]>;
   retrieval_errors: Record<string, string>;
+  /** DR-141: papers whose reference extraction failed, with the reason. Their Related works
+   *  is empty because of it, and they are retried on the next build (already in
+   *  stale_papers). Absent on a server older than the field. */
+  extraction_errors?: Record<string, string>;
 }
 
 export interface GraphRetrievalCandidate {

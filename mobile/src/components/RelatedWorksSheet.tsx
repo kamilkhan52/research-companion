@@ -97,6 +97,7 @@ export function RelatedWorksSheet({
     status?.has_graph && (status.graph_needs_enrichment || status.stale_papers.length > 0),
   );
   const canBuild = canStartGraphBuild(status);
+  const extractionFailed = Boolean(slug && status?.extraction_errors?.[slug]);
   const candidateSources = build.progress?.retrievalCandidates
     ?? status?.retrieval_candidates
     ?? {};
@@ -169,11 +170,19 @@ export function RelatedWorksSheet({
           ))}
 
           {!works.length ? (
-            <Text variant="body" color={t.muted} style={styles.emptyCopy}>
+            <Text
+              variant="body"
+              color={extractionFailed ? t.amber : t.muted}
+              style={styles.emptyCopy}>
               {build.building
                 ? 'Related works will appear here as the map gains evidence.'
                 : !status || graphRefreshFailed
                   ? 'Map status is unavailable right now.'
+                  : extractionFailed
+                  // DR-141: an empty list because this paper's references were never read is
+                  // not "nothing significant surfaced" — say which it is, and that the
+                  // button below retries exactly this.
+                  ? 'This paper’s references could not be read on the last build, so it has no related works yet. Update related works to try again.'
                   : status.has_graph
                   ? 'No significant related works surfaced for this paper yet.'
                   : 'No related works yet. Build the project reference map here; it keeps running if you close this sheet.'}
@@ -223,6 +232,36 @@ const STATUS_LABELS: Record<PaperBuildStatus, string> = {
   error: 'Needs attention',
 };
 
+/** A paper still being mapped, or not reached yet. Every OTHER status means its mapping step
+ *  finished: a cache hit arrives as `metadata_cached`, but a paper the build actually fetched
+ *  arrives as `done`, `not_found` or `error` (`neighbourhood` emits the provider's own status),
+ *  so counting cache hits alone read "0 of N mapped" for the whole of a first build — the
+ *  reported symptom under a new word (second review of #535). */
+const UNMAPPED_STATUSES = new Set<PaperBuildStatus>(['pending', 'metadata']);
+
+/** The header count, in the terms of the step the build is ON.
+ *
+ * DR-141 — Kamil: "Even while the works were being analyzed, the total analyzed count remained
+ * 0 which seemed like a bug." `done` counts finished full-text analyses, the LAST step. During
+ * the reference-mapping and retrieval steps before it the header read "0 of 65 analyzed" above
+ * a list of papers each ticked "References mapped": true, and indistinguishable from a stall.
+ * Each step now reports its own progress under its own word. */
+export function buildCounter(progress: GraphBuildProgress): string {
+  const statuses = Object.values(progress.perPaper);
+  const total = progress.total > 0 ? progress.total : progress.ready;
+  if (progress.phase === 'preparing') return 'Starting…';
+  if (progress.phase === 'metadata' || progress.phase === 'skeleton_ready') {
+    const mapped = statuses.filter((s) => !UNMAPPED_STATUSES.has(s)).length;
+    return total > 0 ? `${mapped} of ${total} mapped` : `${mapped} mapped`;
+  }
+  if (progress.phase === 'retrieval') {
+    return progress.ready > 0 ? `${progress.ready} with full text` : 'Finding full text';
+  }
+  return progress.ready > 0
+    ? `${progress.done} of ${progress.ready} analyzed`
+    : `${progress.done} analyzed`;
+}
+
 function RelatedBuildProgress({
   progress,
   papers,
@@ -235,6 +274,7 @@ function RelatedBuildProgress({
   const titles = new Map(papers.map((paper) => [paper.slug, paper.title]));
   const events = Object.entries(progress.perPaper);
   const complete = progress.phase === 'complete';
+  const counter = buildCounter(progress);
 
   return (
     <Card style={styles.progressCard}>
@@ -244,9 +284,7 @@ function RelatedBuildProgress({
           <Text variant="heading">{complete ? 'Related works updated' : 'Building related works…'}</Text>
         </View>
         <Text variant="caption" color={t.muted}>
-          {progress.ready > 0
-            ? `${progress.done} of ${progress.ready} analyzed`
-            : `${progress.done} analyzed`}
+          {counter}
         </Text>
       </View>
       <Text variant="caption" color={t.muted} style={{ marginTop: 4 }}>

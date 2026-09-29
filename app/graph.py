@@ -88,6 +88,14 @@ MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus'
 # task, not one that benefits from deep chain-of-thought) via REASONING_EFFORT, and keep a
 # generous max_tokens as a safety net regardless. _salvage_references is the last-resort net
 # for a response that's still truncated or malformed despite both.
+#: Of `MAX_FULL_TEXT_CHARS`, how much a long paper's bibliography may claim. A reference list
+#: of 150 entries is roughly 30k characters; past this the list itself is cut, from its end.
+MAX_REFERENCE_SECTION_CHARS = 40_000
+#: The last "References"/"Bibliography" heading in a paper. pypdf flattens line breaks, so the
+#: heading is matched as a word followed by what a first entry starts with — a bracketed or
+#: numbered label, or a capitalised author — and not by its position on a line.
+_REFERENCES_HEADING_RE = re.compile(r"\b(?:References|REFERENCES|Bibliography|BIBLIOGRAPHY)\s+"
+                                    r"(?=\[|\d{1,3}[.\s]|[A-Z])")
 EXTRACTION_MAX_TOKENS = 48_000
 REASONING_EFFORT = "low"
 
@@ -166,6 +174,42 @@ def _extract_json(content: str) -> dict:
     if m:
         return json.loads(m.group(0))
     raise GraphError("The extraction model did not return valid JSON.")
+
+
+def extraction_text(full_text: str) -> str:
+    """What the reference extraction is shown of a paper: all of it when it fits, otherwise the
+    start of the body AND the reference list.
+
+    DR-141: the call used to send `text[:MAX_FULL_TEXT_CHARS]`. A long paper keeps its
+    bibliography at the end, so for anything past the cap the model was asked to extract
+    references from a text that did not contain them and answered with none — "No parseable
+    references in the model's response", a paid call that could never succeed and was bought
+    again on every rebuild. DeepSeek-V4.1-Flash's list starts at character 120,745 of a
+    120,000 cap; Llama 2, GPT-3, PaLM and T5 fail the same way.
+
+    The body is cut from its END (appendices, then late sections), which costs citation
+    contexts for the omitted part but keeps every reference; the omission is marked so the
+    model does not read the join as continuous prose. A paper with no recognisable heading
+    keeps the old behaviour."""
+    text = (full_text or "").strip()
+    if len(text) <= MAX_FULL_TEXT_CHARS:
+        return text
+    headings = list(_REFERENCES_HEADING_RE.finditer(text))
+    # The LAST heading past the middle of what the old slice covered. Not "in the second half
+    # of the paper": Llama 2 is 260k characters with its list at 124k (47%) and a long appendix
+    # after it, and that rule sent it the old slice (second review of #535). A table of
+    # contents or a passing mention sits near the top, below this floor; a heading the head
+    # already contains is handled below.
+    floor = MAX_FULL_TEXT_CHARS // 2
+    start = next((m.start() for m in reversed(headings) if m.start() >= floor), None)
+    if start is None:
+        return text[:MAX_FULL_TEXT_CHARS]
+    references = text[start:start + MAX_REFERENCE_SECTION_CHARS]
+    marker = "\n\n[… part of the paper's body is omitted here for length …]\n\n"
+    head = text[:min(start, MAX_FULL_TEXT_CHARS - len(references) - len(marker))]
+    if start <= len(head):
+        return text[:MAX_FULL_TEXT_CHARS]     # the list already fits inside the cap
+    return head + marker + references
 
 
 def _salvage_references(content: str) -> list[dict]:
@@ -262,7 +306,8 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
 
     messages = [
         {"role": "system", "content": prompts.get("graph_extraction")},
-        {"role": "user", "content": f"Paper title: {title}\n\nFull text:\n\n{text[:MAX_FULL_TEXT_CHARS]}"},
+        {"role": "user",
+         "content": f"Paper title: {title}\n\nFull text:\n\n{extraction_text(text)}"},
     ]
     # One retry (tries=2) for a transient blip; the hard deadline below bounds total wall-clock
     # regardless, so a stuck call can't consume more than EXTRACTION_HARD_DEADLINE. The llm
@@ -1291,6 +1336,16 @@ def status(papers: list[Paper]) -> dict:
         "retrieval_errors": {
             slug: record.get("error") for slug, record in retrievals.items()
             if record.get("status") == "error" and record.get("error")
+        },
+        # DR-141: a paper whose reference extraction failed has no outgoing edges, so its
+        # Related works is empty for a reason the reader could not see — the sheet said "no
+        # significant related works surfaced" beside an Update button. Same contract as
+        # `retrieval_errors`: these slugs are already in `stale_papers` (retried on the next
+        # build); this map is the reason.
+        "extraction_errors": {
+            p.slug: str(record.get("error"))[:400] for p in papers
+            if (record := graph_store.get_paper_extraction(data, p.slug))
+            and record.get("status") == "error" and record.get("error")
         },
     }
 
