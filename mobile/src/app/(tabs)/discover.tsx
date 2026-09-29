@@ -47,6 +47,7 @@ import { DiscoverLoadingSkeleton } from '@/components/LoadingSkeletons';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
+import { showToast } from '@/ui/Toast';
 import { useDelayedInitialSkeleton } from '@/hooks/useDelayedInitialSkeleton';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { discoverProgress } from '@/lib/discoverProgress';
@@ -303,6 +304,15 @@ export function DiscoverContent({
   async function runDiscovery(override?: string) {
     const text = (override ?? goals).trim();
     if (!text) return;
+    // A submit from the Map's box can arrive while a search is already running: the box stays
+    // open so the map can be narrowed during a run. `run` refuses silently in that state, so
+    // taking the text first would drop the search the reader asked for AND label the running
+    // one's results with it (second review of #536). Refuse out loud and change nothing.
+    if (override !== undefined
+      && (runState.running || discovery.data?.job?.status === 'running')) {
+      showToast('A search is already running. Stop it, or wait for it to finish, then search again.');
+      return;
+    }
     setShowAll(false);
     setEditingGoals(false);
     if (override !== undefined) setGoals(text);

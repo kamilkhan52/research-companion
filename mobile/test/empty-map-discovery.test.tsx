@@ -25,6 +25,9 @@ import { ProjectProvider, useActiveProject } from '@/store/project';
 import { ReadingSettingsProvider } from '@/store/readingSettings';
 import { Button } from '@/ui';
 import { createTestQueryClient } from './queryClient';
+import * as toast from '@/ui/Toast';
+
+let toastSpy: jest.SpyInstance;
 
 jest.mock('@/components/graph/GraphCanvas', () => ({
   GraphCanvas: () => require('react').createElement(
@@ -215,6 +218,10 @@ beforeEach(async () => {
     time_stale: false,
     ever_swept: false,
   });
+});
+
+beforeEach(() => {
+  toastSpy = jest.spyOn(toast, 'showToast').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -625,4 +632,31 @@ test('a search is never re-run by leaving the map and coming back, in any projec
   expect(api.startDiscovery).toHaveBeenCalledTimes(1);
   // And the box does not carry one project's text into the next.
   expect(screen.queryByPlaceholderText(MAP_SEARCH_PLACEHOLDER)).toBeNull();
+});
+
+
+test('a search submitted while one is running is refused out loud and relabels nothing', async () => {
+  // Second review of #536: the box stays usable during a run. The second submit was dropped
+  // in silence and its text became the label over the FIRST search's progress and results.
+  jest.mocked(api.getProjectState).mockResolvedValue(projectState([KNOWN]) as never);
+  jest.mocked(api.getGraph).mockResolvedValue(twoNodeGraph());
+  jest.mocked(api.getDiscovery).mockResolvedValue({
+    job: RUNNING_DISCOVERY, goals: 'first topic', result: null,
+  } as never);
+
+  renderRouter({ _layout: TestLayout, graph: GraphScreen }, { initialUrl: '/graph' });
+  await screen.findByTestId('combined-map-canvas');
+  expect(await screen.findByLabelText('Stop discovery search')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByLabelText('Search the map and explore papers'));
+  await fireEventAsync.changeText(
+    await screen.findByPlaceholderText(MAP_SEARCH_PLACEHOLDER), 'second topic',
+  );
+  await fireEventAsync.press(screen.getByText('Search for papers'));
+  act(() => { jest.runOnlyPendingTimers(); });
+
+  expect(api.startDiscovery).not.toHaveBeenCalled();
+  expect(screen.getByText('first topic')).toBeTruthy();
+  expect(screen.queryByText('second topic')).toBeNull();
+  expect(toastSpy).toHaveBeenCalledWith(expect.stringMatching(/already running/));
 });
