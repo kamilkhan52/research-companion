@@ -152,6 +152,10 @@ way they did. This is an index, not a substitute for reading them.
 
 ## Dev workflow
 
+- **On the Mac mini the backend and Metro run as launchd agents** (2026-10-01) — always up after
+  login, restarted on crash or hang, Metro pinned to `device-main`. Don't start them by hand;
+  `scripts/device-services/install.sh status` / `launchctl kickstart -k gui/$(id -u)/io.scholiast.rc.{backend,metro}`.
+  See `scripts/device-services/README.md`.
 - **Run backend:** `./run.sh` (boots venv, installs deps, serves `:8000`, one worker, **no
   `--reload`** by default). After backend edits you must **restart** it — a stale server answers
   routes added since startup with **405** (the static catch-all mount handles unknown POSTs).
