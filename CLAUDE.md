@@ -156,7 +156,8 @@ way they did. This is an index, not a substitute for reading them.
   login, restarted on crash or hang, Metro pinned to `device-main`. Don't start them by hand;
   `scripts/device-services/install.sh status` / `launchctl kickstart -k gui/$(id -u)/io.scholiast.rc.{backend,metro}`.
   See `scripts/device-services/README.md`.
-- **Run backend:** `./run.sh` (boots venv, installs deps, serves `:8000`, one worker, **no
+- **Run backend:** (off the Mac mini, or for a second instance — see the launchd bullet above)
+  `./run.sh` (boots venv, installs deps, serves `:8000`, one worker, **no
   `--reload`** by default). After backend edits you must **restart** it — a stale server answers
   routes added since startup with **405** (the static catch-all mount handles unknown POSTs).
 - **Dev auto-reload (opt-in):** `RC_RELOAD=1 ./run.sh` restarts the worker on changes under
@@ -315,8 +316,8 @@ way they did. This is an index, not a substitute for reading them.
   cloudflared quick tunnel above remains the fallback for a device NOT on the tailnet (its
   URL is ephemeral). If Tailscale HTTPS certs get enabled in the admin console,
   `tailscale serve` can upgrade this to a real https URL. The Metro `exp://` tunnel is still
-  per-session, so a device test = restart `./run.sh`, start the Metro tunnel, reload — the
-  backend URL takes care of itself on-tailnet.
+  per-session off-tailnet. On-tailnet, both servers are already up under launchd (see the first
+  Dev-workflow bullet) — a device test is just a reload.
 
 ## Environments and deployment (M1 onward)
 

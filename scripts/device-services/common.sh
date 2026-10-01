@@ -42,7 +42,7 @@ free_port() {
   [ -z "$pids" ] && return 0
   for pid in $pids; do
     [ "$pid" = "$$" ] && continue
-    cmd="$(ps -o command= -p "$pid" 2>/dev/null)"
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null)" || continue   # exited since lsof
     # uvicorn --reload's worker shares the listening socket but its command line is a bare
     # multiprocessing stub; it is ours if its parent is. Killing the parent takes it down too.
     parent="$(ps -o command= -p "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" 2>/dev/null)"
@@ -51,6 +51,11 @@ free_port() {
       kill -TERM "$pid" 2>/dev/null || true
     elif printf '%s' "$parent" | grep -Eq "$pattern"; then
       log "port $port also held by pid $pid, a worker of a stray server — its parent takes it down"
+    elif printf '%s' "$cmd" | grep -q 'multiprocessing' \
+         && [ "$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" = "$RC_REPO" ]; then
+      # An orphaned uvicorn --reload worker (its reloader was SIGKILLed): ours by its cwd.
+      log "port $port held by orphaned worker pid $pid — stopping it"
+      kill -TERM "$pid" 2>/dev/null || true
     else
       log "port $port held by unrelated pid $pid ($cmd) — not touching it"
       foreign=1

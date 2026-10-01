@@ -22,8 +22,12 @@ LABELS="io.scholiast.rc.awake io.scholiast.rc.backend io.scholiast.rc.metro io.s
 
 # The MAIN checkout, even when run from a worktree: the backend must run from the tree deploys
 # advance, never from wherever this script was invoked.
-REPO="$(cd "$(git -C "$SRC" rev-parse --git-common-dir)/.." && pwd)"
+REPO="$(dirname "$(git -C "$SRC" rev-parse --path-format=absolute --git-common-dir)")"
 DEVICE="${RC_DEVICE_WORKTREE:-$REPO/.claude/worktrees/device-main}"
+# Physical path: the watchdog compares it as a string against lsof's view of Metro's cwd.
+DEVICE="$(cd "$DEVICE" 2>/dev/null && pwd -P || echo "$DEVICE")"
+PORT="$(sed -n 's/^RC_PORT=["]*\([0-9]*\).*/\1/p' "$REPO/.env" 2>/dev/null | tail -1)"
+PORT="${PORT:-8000}"
 PATH_VALUE="/opt/homebrew/bin:/opt/homebrew/sbin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 bootout() { launchctl bootout "$DOMAIN/$1" >/dev/null 2>&1 || true; }
@@ -38,7 +42,7 @@ status() {
       printf '%-28s NOT LOADED\n' "$l"
     fi
   done
-  printf 'backend /api/health: '; curl -fsS -m 5 http://127.0.0.1:8000/api/health || echo DOWN; echo
+  printf 'backend /api/health: '; curl -fsS -m 5 "http://127.0.0.1:$PORT/api/health" || echo DOWN; echo
   printf 'metro   /status:     '; curl -fsS -m 5 http://127.0.0.1:8081/status || echo DOWN; echo
   local m; m="$(lsof -nP -t -iTCP:8081 -sTCP:LISTEN 2>/dev/null | head -1)"
   [ -n "$m" ] && echo "metro serves:        $(lsof -a -p "$m" -d cwd -Fn | sed -n 's/^n//p')"
@@ -99,9 +103,18 @@ install() {
   [ -d "$DEVICE/mobile" ] || { echo "device worktree $DEVICE/mobile is missing" >&2; exit 1; }
 
   if [ "$force" != "--force" ]; then
-    local active
-    active="$(curl -fsS -m 10 'http://127.0.0.1:8000/api/devtest/deploy?fetch=false' 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin)["deploy"]; print(d.get("active_job") or d.get("active_dispatch") or "")' 2>/dev/null || true)"
+    # Fail closed: only a backend that is not listening at all counts as idle. A slow, erroring
+    # or unparseable answer could be a busy server, and restarting it would kill its jobs.
+    local body rc=0 active
+    body="$(curl -fsS -m 10 "http://127.0.0.1:$PORT/api/devtest/deploy?fetch=false" 2>/dev/null)" || rc=$?
+    if [ "$rc" = 7 ]; then
+      active=""
+    elif [ "$rc" != 0 ]; then
+      active="unknown — the backend did not answer the deploy probe (curl exit $rc)"
+    else
+      active="$(printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin)["deploy"]; print(d.get("active_job") or d.get("active_dispatch") or "")' 2>/dev/null)" \
+        || active="unknown — unreadable deploy status"
+    fi
     if [ -n "$active" ]; then
       echo "a background job is running ($active) — installing restarts the backend and would kill it." >&2
       echo "wait for it, or re-run with --force." >&2
@@ -115,6 +128,7 @@ install() {
   cat > "$DEST/services.env" <<EOF
 RC_REPO="$REPO"
 RC_DEVICE_WORKTREE="$DEVICE"
+RC_PORT="$PORT"
 EOF
 
   # An existing node_modules is taken to match the current lockfile, so installing does not
@@ -124,7 +138,10 @@ EOF
     shasum "$DEVICE/mobile/package-lock.json" | cut -d' ' -f1 > "$DEST/state/metro-lock.sha"
   fi
 
-  local l; for l in $LABELS; do bootout "$l"; done
+  # Watchdog out first and in last, or a run in between re-bootstraps a half-installed set.
+  local l
+  bootout io.scholiast.rc.watchdog
+  for l in $LABELS; do bootout "$l"; done
 
   # -i: no idle sleep; -s: no system sleep on AC power (a Mac mini always is). An asleep Mac is
   # indistinguishable, from the phone, from a crashed server.
@@ -137,7 +154,10 @@ EOF
 
   date +%s > "$DEST/state/backend.restarted"
   date +%s > "$DEST/state/metro.restarted"
-  for l in $LABELS; do launchctl bootstrap "$DOMAIN" "$AGENTS/$l.plist"; done
+  for l in $LABELS; do
+    bootout "$l"
+    launchctl bootstrap "$DOMAIN" "$AGENTS/$l.plist" || launchctl print "$DOMAIN/$l" >/dev/null
+  done
   echo "installed; logs in $LOG_DIR. Check with: $0 status"
 }
 
