@@ -11,6 +11,14 @@ being killed before the agent was found. Its plist lived in `/private/tmp`, not
 `~/Library/LaunchAgents`, so it did not show up in the obvious place. `launchctl list | grep -i
 metro` is what finds it.
 
+**Since 2026-10-01 the backend and Metro are themselves launchd agents** —
+`io.scholiast.rc.backend` and `io.scholiast.rc.metro`, plists in `~/Library/LaunchAgents`, with a
+watchdog that restarts either when it stops answering and restarts Metro if port 8081 is ever
+serving anything but `.claude/worktrees/device-main/mobile`. See
+[`scripts/device-services/README.md`](../../scripts/device-services/README.md);
+`scripts/device-services/install.sh status` answers "is it up, and what is it serving" in one
+command. A respawning server is now expected — kill it with `launchctl kickstart -k`, not `kill`.
+
 So: **prove what is served, never that a server is up.**
 
 - Metro's actual working directory: `lsof -a -p $(lsof -ti :8081) -d cwd`.
