@@ -53,6 +53,18 @@ time. (The old second reason — that uploading freezes the package name — is 
 corrected in H8 on 2026-08-18: the package is bound permanently when the app is CREATED. So an
 early upload buys nothing at all, which makes the conclusion stronger, not weaker.)
 
+## Open since the Fly shutdown (2026-10-25)
+
+### H31 — Remove or reserve the deleted `*.fly.dev` auth origins · `todo`
+Both Fly apps were deleted on 2026-10-25 (`CLAUDE.md` → Environments and deployment). Staging
+Supabase's **Site URL** and **Redirect URLs** (H4) still name `https://research-companion-staging.fly.dev`,
+and the Google OAuth client (H5) still lists `https://research-companion.fly.dev` as an authorized
+origin. Fly app names are global, so whoever claims one of those names could receive sign-in
+redirects that carry a Supabase session. The impact is small while there is no backend, but the
+Supabase accounts outlive a relaunch. Either remove those entries from both Supabase projects and
+the OAuth client, or reserve both names with `flyctl apps create research-companion` and
+`flyctl apps create research-companion-staging` (an app with no machines costs nothing).
+
 ## Blocking now (M1)
 
 ### H1 — Fix GitHub Actions billing · ✅ `done` (2026-07-24)
