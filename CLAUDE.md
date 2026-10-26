@@ -342,17 +342,29 @@ workflow). Production (`research-companion`, `fly.toml`) and staging (`research-
 each `/data` volume (`projects/` + `.app-state/`) was backed up to the Mac mini at
 `~/Backups/fly-research-companion-2026-10-25/` and checked file by file against a checksum
 manifest taken on the machine: `prod-data.tgz` (1394 files) and `staging-data.tgz` (449), with
-extracted copies alongside. Unpack them with Python's `tarfile`, not macOS `tar` — bsdtar silently
-folds the `._*` session files into file metadata and drops them. Fly secret values could not be
-read back and are gone; `*-secret-names.txt` in the backup lists which ones existed. The Supabase
-projects live outside Fly and were not touched. The Play-store build still points at the deleted
-production host.
+extracted copies alongside. For a byte-exact restore that matches the manifests, unpack with
+Python's `tarfile`, not macOS `tar`: bsdtar folds staging's 56 `._*` AppleDouble sidecars
+(macOS metadata a Mac-side upload left under `sessions/`, no session content) into xattrs, so
+its output won't match. Fly secret values could not be read back and are gone;
+`*-secret-names.txt` in the backup lists which ones existed (values come from each provider's
+dashboard). No Play build was ever uploaded, and `app.json` bakes the tailnet address, but a
+client with a `*.fly.dev` URL saved under Settings → server URL (it overrides the baked one) now
+fails to connect — clear it or set `http://100.83.161.127:8000`.
+
+**The Supabase projects live outside Fly and were not touched — which leaves a loose end.** Staging
+Supabase's Site URL and Redirect URLs, and the Google OAuth client's authorized origins, still
+list the deleted `research-companion*.fly.dev` hosts. Fly app names are global, so whoever claims
+one could receive auth redirects carrying a Supabase session. Either remove those entries or
+reserve both names with an empty `flyctl apps create` (no machines, no cost) — HUMAN_ACTIONS H31.
 
 **Do not `flyctl deploy` unless Kamil asks.** The two `fly*.toml` files stay as the recipe for a
-relaunch, which means `fly launch` for each app, new volumes, every secret set again, and `/data`
-restored from the backup. When it was live: one machine per app with a persistent volume at
-`/data`, deployed with `flyctl deploy -c fly.staging.toml --remote-only --yes` (remote builder —
-the local Docker daemon is usually not running), secrets via `flyctl secrets set`, never in the repo.
+relaunch: `flyctl apps create <name>` (if the name is still free), `flyctl volumes create rc_data
+-a research-companion -r sjc -s 20` (staging: `rc_data_staging`, `dfw`, 3 GB), set every secret,
+restore `/data` from the backup before the app serves (`RC_DATABASE_URL` still holds ownership
+rows for those projects), then `flyctl deploy -c …`. Not `fly launch`, which is interactive and
+rewrites the config. When it was live: one machine per app with a persistent volume at `/data`,
+deployed with `--remote-only --yes` (remote builder — the local Docker daemon is usually not
+running), secrets via `flyctl secrets set`, never in the repo.
 
 If it is relaunched, two Fly settings are correctness, not tuning: `auto_stop_machines = "off"` with
 `min_machines_running = 1` (Fly's default stops idle machines, which would kill background jobs —

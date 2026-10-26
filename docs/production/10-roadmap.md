@@ -35,8 +35,9 @@ staging stopped on 2026-10-20 and deleted on 2026-10-25: development has slowed,
 sight, and all work is now local on the Mac mini. Both `/data` volumes were backed up and checked
 file by file first, to `~/Backups/fly-research-companion-2026-10-25/` on the Mac mini. The
 details, and what a relaunch would take, are in `CLAUDE.md` → Environments and deployment. The
-milestones aimed at a hosted launch (M4 RevenueCat, M7 compliance and legal surfaces, and M6's
-deploy-drain hook) are paused, not cancelled. Supabase was not touched.
+remainder of M2.5 and M4–M11 are paused, not cancelled. Supabase was not touched, but staging
+Supabase and the Google OAuth client still allow the deleted `*.fly.dev` hosts as redirect
+targets (HUMAN_ACTIONS H31).
 
 ### Position at 2026-09-29
 
@@ -493,7 +494,7 @@ gets updated as each lands.
 
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
-| M1 | Hosting, environments, and secrets | — | L | ✅ **complete** — production live on Fly, running Kamil's real corpus |
+| M1 | Hosting, environments, and secrets | — | L | ✅ **complete** — production live on Fly, running Kamil's real corpus (both Fly apps deleted 2026-10-25; see Current position) |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | ✅ **complete** — ownership enforced, per-user settings, verified against the live schema |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build | M1, M2 | L | **code-complete** — deletion, reporting and legal surfaces shipped; the AAB and Play Data Safety answers are the remainder |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | **shipped, with a remainder** — exact-cost metering, the reservation ledger, per-operation caps and plans are live; see "Current position" |

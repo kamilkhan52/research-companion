@@ -1,3 +1,6 @@
+# !! App DESTROYED 2026-10-25 (with its volume). Do not deploy unless Kamil asks; relaunch
+# !! steps and the backup location are in CLAUDE.md -> Environments and deployment.
+#
 # Fly.io — STAGING. Mirrors fly.toml; differs only in app name, volume name, and RC_ENV.
 #
 # Deploy: flyctl deploy -c fly.staging.toml
