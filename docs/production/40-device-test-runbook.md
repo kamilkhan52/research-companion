@@ -32,5 +32,7 @@ So: **prove what is served, never that a server is up.**
 - The phone is `oneplus-15` (`100.79.189.127`) and was directly connected on the tailnet.
 
 **For anything auth-gated, point the app at staging** — Settings → server URL →
-`https://research-companion-staging.fly.dev`. `app.json`'s baked `extra.apiBaseUrl` is the Mac's
+`https://research-companion-staging.fly.dev`. *(Staging was deleted on 2026-10-25 along with
+production — see `CLAUDE.md` → Environments and deployment — so there is no auth-gated instance
+until one is relaunched.)* `app.json`'s baked `extra.apiBaseUrl` is the Mac's
 tailnet address, which is the open-auth instance.

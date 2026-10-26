@@ -23,8 +23,9 @@ live ledgers.
 - **Agent proposes, you commit**: notes + synthesis edits land only after you approve.
 - **Every long or LLM-touching operation is a background job + polling** — never a blocking
   request (see invariant 1 in `CLAUDE.md`).
-- **Production is live** on Fly.io behind Supabase auth with per-account plans, exact-cost
-  metering, and a monthly spend ceiling; see `docs/production/`.
+- **Production is shut down.** The Fly.io deployment (Supabase auth, per-account plans,
+  exact-cost metering, a monthly spend ceiling) was deleted on 2026-10-25 and development is
+  local only; the code for all of it is still here. See `CLAUDE.md` and `docs/production/`.
 
 ## Quick start
 

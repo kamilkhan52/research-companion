@@ -335,13 +335,26 @@ but leaves clients unable to sign in), `RC_AUTH_TOKEN` is unset, `RC_DEV` is off
 ownership lands — Supabase sign-up is self-service, so authentication alone does not restrict who
 reaches this single-tenant instance. A valid user who is not allowlisted gets **403**, not 401.
 
-**Deployment** is Fly.io: `fly.toml` (production, app `research-companion`) and `fly.staging.toml`
-(`research-companion-staging`), one machine each with a persistent volume at `/data` holding
-`projects/` and `.app-state/`. Deploy with `flyctl deploy -c fly.staging.toml --remote-only --yes`
-(remote builder — the local Docker daemon is usually not running). Secrets via `flyctl secrets set`,
-never in the repo.
+**There is no deployment: both Fly apps were shut down and deleted on 2026-10-25** (Kamil:
+development has slowed and no release is scheduled, so all work is local on the Mac mini — see Dev
+workflow). Production (`research-companion`, `fly.toml`) and staging (`research-companion-staging`,
+`fly.staging.toml`) were destroyed together with their volumes, so Fly bills nothing. Before that,
+each `/data` volume (`projects/` + `.app-state/`) was backed up to the Mac mini at
+`~/Backups/fly-research-companion-2026-10-25/` and checked file by file against a checksum
+manifest taken on the machine: `prod-data.tgz` (1394 files) and `staging-data.tgz` (449), with
+extracted copies alongside. Unpack them with Python's `tarfile`, not macOS `tar` — bsdtar silently
+folds the `._*` session files into file metadata and drops them. Fly secret values could not be
+read back and are gone; `*-secret-names.txt` in the backup lists which ones existed. The Supabase
+projects live outside Fly and were not touched. The Play-store build still points at the deleted
+production host.
 
-Two Fly settings are correctness, not tuning: `auto_stop_machines = "off"` with
+**Do not `flyctl deploy` unless Kamil asks.** The two `fly*.toml` files stay as the recipe for a
+relaunch, which means `fly launch` for each app, new volumes, every secret set again, and `/data`
+restored from the backup. When it was live: one machine per app with a persistent volume at
+`/data`, deployed with `flyctl deploy -c fly.staging.toml --remote-only --yes` (remote builder —
+the local Docker daemon is usually not running), secrets via `flyctl secrets set`, never in the repo.
+
+If it is relaunched, two Fly settings are correctness, not tuning: `auto_stop_machines = "off"` with
 `min_machines_running = 1` (Fly's default stops idle machines, which would kill background jobs —
 invariant 1), and exactly one machine (invariant 6). **A deploy still stops the machine**, so
 in-flight jobs die: until the drain hook lands with M6, check for active jobs before deploying.

@@ -28,7 +28,17 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-09-29)
+## Current position (updated 2026-10-25)
+
+**Delta at 2026-10-25 — the hosted deployment is shut down.** Kamil had Fly production and
+staging stopped on 2026-10-20 and deleted on 2026-10-25: development has slowed, no release is in
+sight, and all work is now local on the Mac mini. Both `/data` volumes were backed up and checked
+file by file first, to `~/Backups/fly-research-companion-2026-10-25/` on the Mac mini. The
+details, and what a relaunch would take, are in `CLAUDE.md` → Environments and deployment. The
+milestones aimed at a hosted launch (M4 RevenueCat, M7 compliance and legal surfaces, and M6's
+deploy-drain hook) are paused, not cancelled. Supabase was not touched.
+
+### Position at 2026-09-29
 
 **Delta at 2026-09-29** (PRs #529–#535 and #536):
 - DR-052's surface merge is complete in code: step 3 (#529) moved the unified list under the graph
